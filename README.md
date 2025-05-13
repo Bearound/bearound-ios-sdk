@@ -134,8 +134,6 @@ Para configurar a sincronização com sua API, edite o método `syncWithAPI` na 
 
 ---
 
----
-
 ## 🍏 bearound-ios-sdk
 
 **Swift SDK for iOS — secure beacon proximity events and indoor location.**
