@@ -121,6 +121,8 @@ Para alterar as propriedades do beacon, edite as seguintes constantes no arquivo
 
 Para configurar a sincronização com sua API, edite o método `syncWithAPI` na classe `BeaconDetector.swift`:
 
+- O método aceita agora um parâmetro opcional `eventType` que indica se o evento foi `enter` ou `exit`.
+
 - Substitua a URL placeholder por sua URL real
 - Ajuste o formato dos dados conforme necessário
 - Implemente autenticação se necessário
