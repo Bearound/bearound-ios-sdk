@@ -105,7 +105,7 @@ class BeaconDetector: NSObject, CLLocationManagerDelegate {
     
     // MARK: - Sincronização com API
     
-    func syncWithAPI(completion: @escaping (Bool, Error?) -> Void) {
+    func syncWithAPI(eventType: String? = nil, completion: @escaping (Bool, Error?) -> Void) {
         
         let appState = UIApplication.shared.applicationState
         let stateString = {
@@ -126,9 +126,13 @@ class BeaconDetector: NSObject, CLLocationManagerDelegate {
             "uuid": beaconUUID.uuidString,
             "idfa": idfa,
             "DeviceID": idfa,
-            "DeviceType":"iOS",
+            "DeviceType": "iOS",
             "appState": stateString
         ]
+
+        if let eventType = eventType {
+            data["eventType"] = eventType
+        }
         
         // Adicionar Major e Minor se detectados
         if let major = detectedMajor {
@@ -186,7 +190,7 @@ class BeaconDetector: NSObject, CLLocationManagerDelegate {
             didEnterRegionHandler?()
             
             // Sincronizar com a API quando entrar na região
-            syncWithAPI { success, error in
+            syncWithAPI(eventType: "enter") { success, error in
                 if let error = error {
                     print("(1) Erro ao sincronizar com a API: \(error.localizedDescription)")
                 } else if success {
@@ -202,7 +206,7 @@ class BeaconDetector: NSObject, CLLocationManagerDelegate {
             didExitRegionHandler?()
 
             // Sincronizar com a API quando sair da região
-            syncWithAPI { success, error in
+            syncWithAPI(eventType: "exit") { success, error in
                 if let error = error {
                     print("(1-exit) Erro ao sincronizar com a API: \(error.localizedDescription)")
                 } else if success {

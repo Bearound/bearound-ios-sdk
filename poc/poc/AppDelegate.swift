@@ -25,7 +25,7 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
             self.sendNotification(title: "Beacon Detectado (!)", body: "Você entrou na região do beacon")
             
             // Sincronizar com a API quando entrar na região
-            self.beaconDetector.syncWithAPI { success, error in
+            self.beaconDetector.syncWithAPI(eventType: "enter") { success, error in
                 if let error = error {
                     print("Erro ao sincronizar com a API: \(error.localizedDescription)")
                 } else if success {
