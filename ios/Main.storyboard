@@ -29,7 +29,7 @@
                                         <rect key="frame" x="0.0" y="50" width="353" height="1"/>
                                         <color key="backgroundColor" systemColor="separatorColor"/>
                                         <constraints>
-                                            <constraint firstAttribute="height" constant="1" id="Ycf-Ib-Hhc"/>
+                                            <constraint firstAttribute="height" constant="1" id="Ycf-Ib-Hhc-"/>
                                         </constraints>
                                     </view>
                                     <stackView opaque="NO" contentMode="scaleToFill" translatesAutoresizingMaskIntoConstraints="NO" id="Ycf-Ib-Hhc">

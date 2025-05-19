@@ -106,13 +106,28 @@ class BeaconDetector: NSObject, CLLocationManagerDelegate {
     // MARK: - Sincronização com API
     
     func syncWithAPI(completion: @escaping (Bool, Error?) -> Void) {
+        
+        let appState = UIApplication.shared.applicationState
+        let stateString = {
+            switch appState {
+            case .active: return "foreground"
+            case .background: return "background"
+            case .inactive: return "inactive"
+            @unknown default: return "unknown"
+            }
+        }()
+        
+        
         // Obter o IDFA do dispositivo
         let idfa = getIDFA()
         
         // Criar o objeto de dados para enviar para a API
         var data: [String: Any] = [
             "uuid": beaconUUID.uuidString,
-            "idfa": idfa
+            "idfa": idfa,
+            "DeviceID": idfa,
+            "DeviceType":"iOS",
+            "appState": stateString
         ]
         
         // Adicionar Major e Minor se detectados
@@ -132,7 +147,7 @@ class BeaconDetector: NSObject, CLLocationManagerDelegate {
         
         // Criar a requisição para a API
         // Nota: O endpoint da API não está definido ainda, então estamos usando um placeholder
-        let url = URL(string: "https://api.example.com/sync")!
+        let url = URL(string: "https://api.bearound.io/ingest")!
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.httpBody = jsonData
@@ -173,7 +188,7 @@ class BeaconDetector: NSObject, CLLocationManagerDelegate {
             // Sincronizar com a API quando entrar na região
             syncWithAPI { success, error in
                 if let error = error {
-                    print("Erro ao sincronizar com a API: \(error.localizedDescription)")
+                    print("(1) Erro ao sincronizar com a API: \(error.localizedDescription)")
                 } else if success {
                     print("Sincronização com a API bem-sucedida")
                 }
@@ -211,13 +226,15 @@ class BeaconDetector: NSObject, CLLocationManagerDelegate {
             @unknown default:
                 proximityText = "Desconhecida"
             }
-            
-            print("Beacon detectado - UUID: \(beacon.uuid.uuidString), Major: \(beacon.major), Minor: \(beacon.minor), Proximidade: \(proximityText), RSSI: \(beacon.rssi)")
+            let formatter = DateFormatter()
+            formatter.dateFormat = "yyyy-MM-dd HH:mm:ss"
+            let formattedDate = formatter.string(from: Date())
+            print("[\(formattedDate)]Beacon detectado - UUID: \(beacon.uuid.uuidString), Major: \(beacon.major), Minor: \(beacon.minor), Proximidade: \(proximityText), RSSI: \(beacon.rssi)")
             
             // Sincronizar com a API quando detectar um beacon
             syncWithAPI { success, error in
                 if let error = error {
-                    print("Erro ao sincronizar com a API: \(error.localizedDescription)")
+                    print("(2) Erro ao sincronizar com a API: \(error.localizedDescription)")
                 } else if success {
                     print("Sincronização com a API bem-sucedida")
                 }

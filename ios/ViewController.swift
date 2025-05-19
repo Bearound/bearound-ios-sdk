@@ -167,13 +167,17 @@ class ViewController: UIViewController {
             
             // Atualizar labels de Major e Minor com os valores detectados
             if let major = detector.detectedMajor {
-                self.majorLabel.text = String(major)
+                self.majorLabel?.text = detector.detectedMajor
+                            .map(String.init)           // converte Int -> String
+                            ?? "---"
             } else {
                 self.majorLabel.text = "---"
             }
             
             if let minor = detector.detectedMinor {
-                self.minorLabel.text = String(minor)
+                self.minorLabel?.text = detector.detectedMinor
+                            .map(String.init)
+                            ?? "---"
             } else {
                 self.minorLabel.text = "---"
             }
