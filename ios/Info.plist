@@ -14,10 +14,6 @@
     <string>Este aplicativo precisa de acesso à sua localização para detectar beacons próximos mesmo em segundo plano.</string>
     <key>NSLocationWhenInUseUsageDescription</key>
     <string>Este aplicativo precisa de acesso à sua localização para detectar beacons próximos.</string>
-    <key>UIBackgroundModes</key>
-    <array>
-        <string>location</string>
-    </array>
     <key>CFBundleInfoDictionaryVersion</key>
     <string>6.0</string>
     <key>UIBackgroundModes</key>
