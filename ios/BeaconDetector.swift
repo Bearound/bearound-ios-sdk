@@ -200,6 +200,15 @@ class BeaconDetector: NSObject, CLLocationManagerDelegate {
         if region is CLBeaconRegion {
             print("Saiu da região do beacon")
             didExitRegionHandler?()
+
+            // Sincronizar com a API quando sair da região
+            syncWithAPI { success, error in
+                if let error = error {
+                    print("(1-exit) Erro ao sincronizar com a API: \(error.localizedDescription)")
+                } else if success {
+                    print("Sincronização com a API bem-sucedida")
+                }
+            }
         }
     }
     
