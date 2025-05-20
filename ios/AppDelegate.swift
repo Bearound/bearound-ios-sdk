@@ -1,4 +1,6 @@
 import UIKit
+import UserNotifications
+import AppTrackingTransparency
 
 @main
 class AppDelegate: UIResponder, UIApplicationDelegate {
@@ -17,6 +19,13 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
                 print("Permissão para notificações concedida")
             } else if let error = error {
                 print("Erro ao solicitar permissão para notificações: \(error.localizedDescription)")
+            }
+        }
+
+        // Solicitar autorização para rastreamento (IDFA)
+        if #available(iOS 14, *) {
+            ATTrackingManager.requestTrackingAuthorization { status in
+                print("Tracking authorization status: \(status.rawValue)")
             }
         }
         
