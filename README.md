@@ -123,6 +123,8 @@ Para configurar a sincronização com sua API, edite o método `syncWithAPI` na 
 
 - O método aceita agora um parâmetro opcional `eventType` que indica se o evento foi `enter` ou `exit`.
 
+- Os dados enviados agora incluem a força do sinal (`rssi`) quando disponível.
+
 - Substitua a URL placeholder por sua URL real
 - Ajuste o formato dos dados conforme necessário
 - Implemente autenticação se necessário

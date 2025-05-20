@@ -15,9 +15,10 @@ class BeaconDetector: NSObject, CLLocationManagerDelegate {
     // Região do beacon que estamos monitorando
     var beaconRegion: CLBeaconRegion!
     
-    // Armazenar os valores de Major e Minor detectados
+    // Armazenar os valores de Major, Minor e RSSI detectados
     var detectedMajor: CLBeaconMajorValue?
     var detectedMinor: CLBeaconMinorValue?
+    var detectedRSSI: Int?
     
     // Callback para quando o status de proximidade do beacon mudar
     var proximityHandler: ((CLProximity) -> Void)?
@@ -138,9 +139,14 @@ class BeaconDetector: NSObject, CLLocationManagerDelegate {
         if let major = detectedMajor {
             data["major"] = major
         }
-        
+
         if let minor = detectedMinor {
             data["minor"] = minor
+        }
+
+        // Adicionar RSSI se detectado
+        if let rssi = detectedRSSI {
+            data["rssi"] = rssi
         }
         
         // Converter o objeto de dados para JSON
@@ -218,9 +224,10 @@ class BeaconDetector: NSObject, CLLocationManagerDelegate {
     
     func locationManager(_ manager: CLLocationManager, didRangeBeacons beacons: [CLBeacon], in region: CLBeaconRegion) {
         if let beacon = beacons.first {
-            // Armazenar os valores de Major e Minor detectados
+            // Armazenar os valores de Major, Minor e RSSI detectados
             detectedMajor = beacon.major.uint16Value
             detectedMinor = beacon.minor.uint16Value
+            detectedRSSI  = beacon.rssi
             
             // Atualizar o status de proximidade
             proximityHandler?(beacon.proximity)
@@ -256,6 +263,7 @@ class BeaconDetector: NSObject, CLLocationManagerDelegate {
             // Nenhum beacon encontrado
             detectedMajor = nil
             detectedMinor = nil
+            detectedRSSI  = nil
             proximityHandler?(.unknown)
         }
     }
