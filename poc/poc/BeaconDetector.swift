@@ -1,4 +1,5 @@
 import UIKit
+import AppTrackingTransparency
 import CoreLocation
 import AdSupport
 
@@ -100,6 +101,15 @@ class BeaconDetector: NSObject, CLLocationManagerDelegate {
     
     func getIDFA() -> String {
         // Obter o IDFA (Identifier for Advertisers) do dispositivo
+        ATTrackingManager.requestTrackingAuthorization { status in
+            if status == .authorized {
+                let idfa = ASIdentifierManager.shared().advertisingIdentifier
+                print("IDFA: \(idfa)")
+            } else {
+                print("Tracking não autorizado")
+            }
+        }
+        
         let idfa = ASIdentifierManager.shared().advertisingIdentifier.uuidString
         return idfa
     }
