@@ -23,25 +23,60 @@ class ViewController: UIViewController {
         // Configurar a interface
         setupUI()
         
-        // Obter o detector de beacons do AppDelegate
-        if let appDelegate = UIApplication.shared.delegate as? AppDelegate {
-            beaconDetector = appDelegate.beaconDetector
-            
-            // Atualizar labels com informações do beacon
-            uuidLabel.text = beaconDetector.beaconUUID.uuidString
-            idfaLabel.text = beaconDetector.getIDFA()
-            
-            // Solicitar permissão de localização explicitamente no ViewController
-            // Isso garante que o diálogo de permissão seja exibido
-            beaconDetector.locationManager.requestAlwaysAuthorization()
-        } else {
-            // Se não conseguir obter o beaconDetector do AppDelegate, criar um novo
-            let locationManager = CLLocationManager()
-            locationManager.requestAlwaysAuthorization()
+        Timer.scheduledTimer(withTimeInterval: 5.0, repeats: true) { _ in
+            self.scanBeacon()
         }
         
-        // Registrar para notificações de mudança de proximidade
-        NotificationCenter.default.addObserver(self, selector: #selector(beaconProximityChanged(_:)), name: NSNotification.Name("BeaconProximityChanged"), object: nil)
+        // Obter o detector de beacons do AppDelegate
+//        if let appDelegate = UIApplication.shared.delegate as? AppDelegate {
+//            beaconDetector = appDelegate.beaconDetector
+//            
+//            // Atualizar labels com informações do beacon
+//            uuidLabel.text = beaconDetector.beaconUUID.uuidString
+//            idfaLabel.text = beaconDetector.getIDFA()
+//            
+//            // Solicitar permissão de localização explicitamente no ViewController
+//            // Isso garante que o diálogo de permissão seja exibido
+//            beaconDetector.locationManager.requestAlwaysAuthorization()
+//        } else {
+//            // Se não conseguir obter o beaconDetector do AppDelegate, criar um novo
+//            let locationManager = CLLocationManager()
+//            locationManager.requestAlwaysAuthorization()
+//        }
+//        
+//        // Registrar para notificações de mudança de proximidade
+//        NotificationCenter.default.addObserver(self, selector: #selector(beaconProximityChanged(_:)), name: NSNotification.Name("BeaconProximityChanged"), object: nil)
+        
+        
+    }
+    
+    @objc func scanBeacon() {
+        let scanner = RNLBeaconScanner.shared()
+        scanner?.startScanning()
+        
+        // Execute this code periodically (every second or so) to view the beacons detected
+        if let detectedBeacons = scanner?.trackedBeacons() as? [RNLBeacon] {
+            for beacon in detectedBeacons {
+                if (beacon.beaconTypeCode.intValue == 0xbeac) {
+                    // this is an AltBeacon
+                    NSLog("Detected AltBeacon id1: %@ id2: %@ id3: %@", beacon.id1, beacon.id2, beacon.id3)
+                }
+                else if (beacon.beaconTypeCode.intValue == 0x00 && beacon.serviceUuid.intValue == 0xFEAA) {
+                    // this is eddystone uid
+                    NSLog("Detected EDDYSTONE-UID with namespace %@ instance %@", beacon.id1, beacon.id2)
+                }
+                else if (beacon.beaconTypeCode.intValue == 0x10 && beacon.serviceUuid.intValue == 0xFEAA) {
+                    // this is eddystone url
+                    NSLog("Detected EDDYSTONE-URL with %@", RNLURLBeaconCompressor.urlString(fromEddystoneURLIdentifier: beacon.id1))
+                }
+                else {
+                    NSLog("Some other beacon detectd")
+                    // some other beacon type
+                }
+                NSLog("The beacon is about %.1f meters away", beacon.distance)
+                
+            }
+        }
     }
     
     override func viewWillAppear(_ animated: Bool) {
