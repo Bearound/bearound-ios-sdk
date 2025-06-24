@@ -75,8 +75,8 @@ class BeaconScanner: NSObject, CBCentralManagerDelegate {
         if let name = peripheral.name, name.contains("bearound") {
             guard let major = BeaconParser().getMajor(name) else { return }
             guard let minor = BeaconParser().getMinor(name) else { return }
-            let address = peripheral.identifier.uuidString //BeaconParser().getBluetoothAdress()
-            let distance = BeaconParser().getDistanceInMeters()
+            let address = peripheral.identifier.uuidString 
+            let distance = BeaconParser().getDistanceInMeters(rssi: Float(truncating: RSSI))
             
             let beacon = Beacon(
                 major: major,

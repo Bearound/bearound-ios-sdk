@@ -23,25 +23,15 @@ public class Bearound: BeaconActionsDelegate {
         self.clientToken = clientToken
         BeaconScanner.shared.delegate = self
         BeaconTracker.shared.delegate = self
+        
+        self.timer = Timer.scheduledTimer(withTimeInterval: 5.0, repeats: true) { _ in
+            self.syncWithAPI()
+        }
     }
     
     deinit {
         timer?.invalidate()
         timer = nil
-    }
-    
-    public func initServices() {
-        if BeaconScanner.shared.getCBManagerState() == .poweredOn {
-            BeaconScanner.shared.startScanning()
-        } else if CLLocationManager().authorizationStatus == .authorizedAlways || CLLocationManager().authorizationStatus == .authorizedWhenInUse {
-            BeaconTracker.shared.startTracking()
-        } else {
-            print("🚫 permissões de bllutooth ou localização negada")
-        }
-        
-        timer = Timer.scheduledTimer(withTimeInterval: 5.0, repeats: true) { _ in
-            self.syncWithAPI()
-        }
     }
     
     private func syncWithAPI() {
@@ -58,7 +48,7 @@ public class Bearound: BeaconActionsDelegate {
         }
         
         if !exitBeacons.isEmpty {
-            sendBeacons(isRemoving: true, activeBeacons)
+            sendBeacons(isRemoving: true, exitBeacons)
         }
     }
     
@@ -84,7 +74,10 @@ public class Bearound: BeaconActionsDelegate {
                     beacons: beacons
                 )
             )
-            removeBeacons(beacons)
+            
+            if isRemoving {
+                removeBeacons(beacons)
+            }
         }
     }
     

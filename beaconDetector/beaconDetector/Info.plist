@@ -2,10 +2,6 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-    <key>NSBluetoothAlwaysUsageDescription</key>
-    <string>Este app precisa acessar o Bluetooth para se conectar a dispositivos próximos.</string>
-    <key>NSUserTrackingUsageDescription</key>
-    <string>Este identificador será usado para oferecer anúncios mais relevantes.</string>
 	<key>UIApplicationSceneManifest</key>
 	<dict>
 		<key>UIApplicationSupportsMultipleScenes</key>
@@ -25,5 +21,14 @@
 			</array>
 		</dict>
 	</dict>
+    <key>NSLocationAlwaysAndWhenInUseUsageDescription</key>
+    <string>Usamos sua localização para detectar beacons mesmo em segundo plano.</string>
+    <key>NSLocationWhenInUseUsageDescription</key>
+    <string>Precisamos da sua localização para identificar beacons próximos.</string>
+	<key>UIBackgroundModes</key>
+	<array>
+		<string>bluetooth-central</string>
+		<string>location</string>
+	</array>
 </dict>
 </plist>

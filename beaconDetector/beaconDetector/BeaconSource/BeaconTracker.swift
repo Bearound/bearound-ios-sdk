@@ -28,9 +28,6 @@ class BeaconTracker: NSObject, CLLocationManagerDelegate {
         
         super.init()
         self.locationManager.delegate = self
-        self.locationManager.allowsBackgroundLocationUpdates = true
-        self.locationManager.pausesLocationUpdatesAutomatically = false
-        
         self.beaconRegion.notifyEntryStateOnDisplay = true
         self.beaconRegion.notifyOnEntry = true
         self.beaconRegion.notifyOnExit = true
@@ -39,12 +36,12 @@ class BeaconTracker: NSObject, CLLocationManagerDelegate {
     //-------------------------------
     // MARK: - Access Functions
     //-------------------------------
-    public func startTracking() {
+    func startTracking() {
         locationManager.startMonitoring(for: beaconRegion)
         locationManager.startRangingBeacons(satisfying: beaconRegion.beaconIdentityConstraint)
     }
     
-    public func stopTracking() {
+    func stopTracking() {
         locationManager.stopMonitoring(for: beaconRegion)
         locationManager.stopRangingBeacons(satisfying: beaconRegion.beaconIdentityConstraint)
     }
@@ -55,6 +52,8 @@ class BeaconTracker: NSObject, CLLocationManagerDelegate {
     //-------------------------------
     func locationManager(_ manager: CLLocationManager, didChangeAuthorization status: CLAuthorizationStatus) {
         if status == .authorizedAlways || status == .authorizedWhenInUse {
+            locationManager.allowsBackgroundLocationUpdates = true
+            locationManager.startUpdatingLocation()
             startTracking()
         }
     }
@@ -67,7 +66,7 @@ class BeaconTracker: NSObject, CLLocationManagerDelegate {
                 rssi: beacon.rssi,
                 bluetoothName: nil,
                 bluetoothAddress: nil,
-                distanceMeters: nil,
+                distanceMeters: BeaconParser().getDistanceInMeters(rssi: Float(beacon.rssi)),
                 lastSeen: Date()
             )
             self.delegate?.updateBeaconList(beacon)

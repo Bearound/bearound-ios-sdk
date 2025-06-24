@@ -10,43 +10,35 @@ import Foundation
 class BeaconParser {
     
     func getMajor(_ name: String) -> String? {
-        let pattern = #"bearound_m(\d+)\.(\d+)_\d+\.\d+"#
-        if let regex = try? NSRegularExpression(pattern: pattern) {
-            let nsrange = NSRange(name.startIndex..<name.endIndex, in: name)
-            
-            if let match = regex.firstMatch(in: name, options: [], range: nsrange) {
-                if let majorRange = Range(match.range(at: 1), in: name),
-                   let minorRange = Range(match.range(at: 2), in: name) {
-                    
-                    return String(name[majorRange])
-                }
+        if let regex = try? NSRegularExpression(pattern: #"m(\d+)\.(\d+)"#),
+           let match = regex.firstMatch(in: name, range: NSRange(name.startIndex..., in: name)) {
+            if let majorRange = Range(match.range(at: 1), in: name) {
+                let major = Int(name[majorRange]) ?? 0
+                return String(major)
             }
         }
         return nil
     }
     
     func getMinor(_ name: String) -> String? {
-        let pattern = #"bearound_m(\d+)\.(\d+)_\d+\.\d+"#
-        if let regex = try? NSRegularExpression(pattern: pattern) {
-            let nsrange = NSRange(name.startIndex..<name.endIndex, in: name)
-            
-            if let match = regex.firstMatch(in: name, options: [], range: nsrange) {
-                if let majorRange = Range(match.range(at: 1), in: name),
-                   let minorRange = Range(match.range(at: 2), in: name) {
-                    
-                    
-                    return String(name[minorRange])
-                }
+        if let regex = try? NSRegularExpression(pattern: #"m(\d+)\.(\d+)"#),
+           let match = regex.firstMatch(in: name, range: NSRange(name.startIndex..., in: name)) {
+            if let majorRange = Range(match.range(at: 1), in: name) {
+                let major = Int(name[majorRange]) ?? 0
+                return String(major)
             }
         }
         return nil
     }
     
-    func getBluetoothAdress() -> String? {
-        return ""
-    }
-    
-    func getDistanceInMeters() -> Float? {
-        return 0.5
+    func getDistanceInMeters(rssi: Float, txPower: Float = -59) -> Float? {
+        if rssi == 0 { return -1 } // RSSI inválido
+        
+        let ratio = rssi / txPower
+        if ratio < 1 {
+            return pow(ratio, 10)
+        } else {
+            return 0.89976 * pow(ratio, 7.7095) + 0.111
+        }
     }
 }
