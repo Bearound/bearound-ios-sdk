@@ -25,7 +25,9 @@ class BeaconScanner: NSObject, CBCentralManagerDelegate {
     override init() {
         self.isScanning = false
         super.init()
-        self.cbManager = CBCentralManager(delegate: self, queue: nil)
+        self.cbManager = CBCentralManager(delegate: self, queue: nil, options: [
+            CBCentralManagerOptionRestoreIdentifierKey: "com.bearound.bluetoothCentral"
+        ])
     }
     
     deinit {
@@ -72,7 +74,7 @@ class BeaconScanner: NSObject, CBCentralManagerDelegate {
     }
     
     func centralManager(_ central: CBCentralManager, didDiscover peripheral: CBPeripheral, advertisementData: [String : Any], rssi RSSI: NSNumber) {
-        if let name = peripheral.name, name.contains("bearound") {
+        if let name = peripheral.name, name.contains("BeA:") {
             guard let major = BeaconParser().getMajor(name) else { return }
             guard let minor = BeaconParser().getMinor(name) else { return }
             let address = peripheral.identifier.uuidString 
@@ -89,5 +91,14 @@ class BeaconScanner: NSObject, CBCentralManagerDelegate {
             )
             self.delegate?.updateBeaconList(beacon)
         }
+    }
+    
+    func centralManager(_ central: CBCentralManager, willRestoreState dict: [String : Any]) {
+        self.cbManager.scanForPeripherals(
+            withServices: nil,
+            options: [
+                CBCentralManagerScanOptionAllowDuplicatesKey: true
+            ]
+        )
     }
 }

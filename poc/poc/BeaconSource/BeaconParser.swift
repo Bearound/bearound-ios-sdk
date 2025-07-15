@@ -10,22 +10,22 @@ import Foundation
 class BeaconParser {
     
     func getMajor(_ name: String) -> String? {
-        if let regex = try? NSRegularExpression(pattern: #"m(\d+)\.(\d+)"#),
-           let match = regex.firstMatch(in: name, range: NSRange(name.startIndex..., in: name)) {
-            if let majorRange = Range(match.range(at: 1), in: name) {
-                let major = Int(name[majorRange]) ?? 0
-                return String(major)
+        if let regex = try? NSRegularExpression(pattern: #"b_(\d+)\.(\d+)"#) {
+            let range = NSRange(name.startIndex..<name.endIndex, in: name)
+            if let match = regex.firstMatch(in: name, range: range),
+               let majorRange = Range(match.range(at: 1), in: name) {
+                return String(name[majorRange])
             }
         }
         return nil
     }
     
     func getMinor(_ name: String) -> String? {
-        if let regex = try? NSRegularExpression(pattern: #"m(\d+)\.(\d+)"#),
-           let match = regex.firstMatch(in: name, range: NSRange(name.startIndex..., in: name)) {
-            if let majorRange = Range(match.range(at: 1), in: name) {
-                let major = Int(name[majorRange]) ?? 0
-                return String(major)
+        if let regex = try? NSRegularExpression(pattern: #"b_(\d+)\.(\d+)"#) {
+            let range = NSRange(name.startIndex..<name.endIndex, in: name)
+            if let match = regex.firstMatch(in: name, range: range),
+               let minorRange = Range(match.range(at: 2), in: name) {
+                return String(name[minorRange])
             }
         }
         return nil

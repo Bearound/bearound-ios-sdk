@@ -21,9 +21,10 @@
         <string>fetch</string>
         <string>location</string>
         <string>processing</string>
+        <string>bluetooth-central</string>
     </array>
     <key>NSBluetoothAlwaysUsageDescription</key>
-    <string>Este app usa Bluetooth para localizar dispositivos próximos.</string>
+    <string>Este aplicativo usa o Bluetooth para detectar dispositivos próximos, mesmo em segundo plano.</string>
     <key>UIApplicationSceneManifest</key>
     <dict>
         <key>UIApplicationSupportsMultipleScenes</key>
