@@ -24,11 +24,13 @@ public class Bearound: BeaconActionsDelegate {
     private var clientToken: String
     private var beacons: Array<Beacon>
     private var lostBeacons: Array<Beacon>
+    private var debugger: DebuggerHelper
     
-    public init(clientToken: String) {
+    public init(clientToken: String, isDebugEnable: Bool) {
         self.beacons = []
         self.lostBeacons = []
         self.clientToken = clientToken
+        self.debugger = DebuggerHelper(isDebugEnable)
         BeaconScanner.shared.delegate = self
         BeaconTracker.shared.delegate = self
         
@@ -87,6 +89,8 @@ public class Bearound: BeaconActionsDelegate {
                         beacons: beacons
                     )
                 )
+                
+                debugger.printStatments(type: type)
                 
                 if type == .exit {
                     removeBeacons(beacons)

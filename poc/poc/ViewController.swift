@@ -14,7 +14,7 @@ class ViewController: UIViewController, CLLocationManagerDelegate {
         locationManager.delegate = self
         locationManager.requestAlwaysAuthorization()
         
-        Bearound(clientToken: "")
+        Bearound(clientToken: "", isDebugEnable: false)
     }
 
     func locationManagerDidChangeAuthorization(_ manager: CLLocationManager) {
