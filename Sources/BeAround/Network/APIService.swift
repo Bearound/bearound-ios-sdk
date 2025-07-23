@@ -8,29 +8,44 @@
 import Foundation
 
 struct PostData: Codable {
-       let deviceType: String
-       let idfa: String?
-       let eventType: String
-       let appState: String
-       let beacons: Array<Beacon>
+    let deviceType: String
+    let idfa: String?
+    let eventType: String
+    let appState: String
+    let beacons: Array<Beacon>
 }
 
 class APIService {
     
-    func sendBeacons(_ postData: PostData) async throws {
+    func sendBeacons(_ postData: PostData, completion: @escaping (Result<Data, Error>) -> Void) {
+        
         guard let url = URL(string: "https://api.bearound.io/ingest") else {
-            throw URLError(.badURL)
+            completion(.failure(NSError(domain: "InvalidURL", code: 0, userInfo: nil)))
+            return
         }
+        
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         
         do {
             let jsonData = try JSONEncoder().encode(postData)
-            let (_, response) = try await Session().data(with: url, and: jsonData)
-            guard let httpResponse = response as? HTTPURLResponse,
-                  (200...299).contains(httpResponse.statusCode) else {
-                throw URLError(.badServerResponse)
-            }
+            request.httpBody = jsonData
         } catch {
-            throw URLError(.unknown)
+            completion(.failure(error))
+            return
         }
+        
+        let task = URLSession.shared.dataTask(with: request) { data, response, error in
+            
+            guard let data = data else {
+                completion(.failure(NSError(domain: "NoData", code: 0, userInfo: nil)))
+                return
+            }
+            
+            completion(.success(data))
+        }
+        
+        task.resume()
     }
 }

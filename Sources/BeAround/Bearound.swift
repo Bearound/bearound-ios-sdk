@@ -56,8 +56,13 @@ public class Bearound: BeaconActionsDelegate {
         timer = nil
     }
     
+    public func startServices() {
+        self.scanner.startScanning()
+        self.tracker.startTracking()
+    }
+    
     @MainActor
-    @objc private func syncWithAPI() async {
+    @objc private func syncWithAPI() {
         let activeBeacons = beacons.filter { beacon in
             Date().timeIntervalSince(beacon.lastSeen) <= 5
         }
@@ -67,20 +72,20 @@ public class Bearound: BeaconActionsDelegate {
         }
         
         if !activeBeacons.isEmpty {
-            await sendBeacons(type: .enter, activeBeacons)
+            sendBeacons(type: .enter, activeBeacons)
         }
         
         if !exitBeacons.isEmpty {
-            await sendBeacons(type: .exit, exitBeacons)
+            sendBeacons(type: .exit, exitBeacons)
         }
         
         if !lostBeacons.isEmpty {
-            await sendBeacons(type: .lost, lostBeacons)
+            sendBeacons(type: .lost, lostBeacons)
         }
     }
     
     @MainActor
-    private func sendBeacons(type: RequestType, _ beacons: Array<Beacon>) async {
+    private func sendBeacons(type: RequestType, _ beacons: Array<Beacon>) {
         let deviceType = "iOS"
         let idfa = ASIdentifierManager.shared().advertisingIdentifier
         let appState = {
@@ -92,28 +97,27 @@ public class Bearound: BeaconActionsDelegate {
             }
         }()
         
-        Task {
-            do {
-                try await APIService().sendBeacons(
-                    PostData(
-                        deviceType: deviceType,
-                        idfa: idfa.uuidString,
-                        eventType: type.rawValue,
-                        appState: appState,
-                        beacons: beacons
-                    )
-                )
-                
-                debugger.printStatments(type: type)
-                
+        let service = APIService()
+        service.sendBeacons(
+            PostData(
+                deviceType: deviceType,
+                idfa: idfa.uuidString,
+                eventType: type.rawValue,
+                appState: appState,
+                beacons: beacons
+            )
+        ) { result in
+            switch result {
+            case .success(let data):
+                self.debugger.printStatments(type: type)
                 if type == .exit {
-                    removeBeacons(beacons)
+                    self.removeBeacons(beacons)
                 }
-            } catch {
-                if lostBeacons.count < 10 {
+            case .failure(let error):
+                if self.lostBeacons.count < 10 {
                     for beacon in beacons {
-                        if !lostBeacons.contains(beacon) {
-                            lostBeacons.append(beacon)
+                        if !self.lostBeacons.contains(beacon) {
+                            self.lostBeacons.append(beacon)
                         }
                     }
                 }
