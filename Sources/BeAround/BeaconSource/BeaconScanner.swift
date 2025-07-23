@@ -13,17 +13,15 @@ class BeaconScanner: NSObject, CBCentralManagerDelegate {
     //-------------------------------
     // MARK: - Initial config
     //-------------------------------
-    static let shared: BeaconScanner = BeaconScanner()
-    
-    //Accessable variables
-    var delegate: BeaconActionsDelegate?
     
     //Internal variables
     private var isScanning: Bool
     private var cbManager: CBCentralManager!
+    private var delegate: BeaconActionsDelegate
     
-    override init() {
+    init(delegate: BeaconActionsDelegate) {
         self.isScanning = false
+        self.delegate = delegate
         super.init()
         self.cbManager = CBCentralManager(delegate: self, queue: nil, options: [
             CBCentralManagerOptionRestoreIdentifierKey: "com.bearound.bluetoothCentral"
@@ -89,7 +87,7 @@ class BeaconScanner: NSObject, CBCentralManagerDelegate {
                 distanceMeters: distance,
                 lastSeen: Date()
             )
-            self.delegate?.updateBeaconList(beacon)
+            self.delegate.updateBeaconList(beacon)
         }
     }
     

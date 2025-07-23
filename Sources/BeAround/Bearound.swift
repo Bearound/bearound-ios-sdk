@@ -5,7 +5,9 @@
 //  Created by Arthur Sousa on 19/06/25.
 //
 
+#if canImport(UIKit)
 import UIKit
+#endif
 import AdSupport
 import CoreLocation
 
@@ -26,13 +28,19 @@ public class Bearound: BeaconActionsDelegate {
     private var lostBeacons: Array<Beacon>
     private var debugger: DebuggerHelper
     
+    private lazy var scanner: BeaconScanner = {
+        return BeaconScanner(delegate: self)
+    }()
+    
+    private lazy var tracker: BeaconTracker = {
+        return BeaconTracker(delegate: self)
+    }()
+    
     public init(clientToken: String, isDebugEnable: Bool) {
         self.beacons = []
         self.lostBeacons = []
         self.clientToken = clientToken
         self.debugger = DebuggerHelper(isDebugEnable)
-        BeaconScanner.shared.delegate = self
-        BeaconTracker.shared.delegate = self
         
         self.timer = Timer.scheduledTimer(
             timeInterval: 5.0,
@@ -48,7 +56,8 @@ public class Bearound: BeaconActionsDelegate {
         timer = nil
     }
     
-    @objc private func syncWithAPI() {
+    @MainActor
+    @objc private func syncWithAPI() async {
         let activeBeacons = beacons.filter { beacon in
             Date().timeIntervalSince(beacon.lastSeen) <= 5
         }
@@ -58,19 +67,20 @@ public class Bearound: BeaconActionsDelegate {
         }
         
         if !activeBeacons.isEmpty {
-            sendBeacons(type: .enter, activeBeacons)
+            await sendBeacons(type: .enter, activeBeacons)
         }
         
         if !exitBeacons.isEmpty {
-            sendBeacons(type: .exit, exitBeacons)
+            await sendBeacons(type: .exit, exitBeacons)
         }
         
         if !lostBeacons.isEmpty {
-            sendBeacons(type: .lost, lostBeacons)
+            await sendBeacons(type: .lost, lostBeacons)
         }
     }
     
-    private func sendBeacons(type: RequestType, _ beacons: Array<Beacon>) {
+    @MainActor
+    private func sendBeacons(type: RequestType, _ beacons: Array<Beacon>) async {
         let deviceType = "iOS"
         let idfa = ASIdentifierManager.shared().advertisingIdentifier
         let appState = {

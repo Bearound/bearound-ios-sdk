@@ -9,9 +9,7 @@ import Foundation
 
 class Session {
     
-    static let shared: Session = Session()
-    
-    private init() {
+    internal init() {
         let configuration = URLSessionConfiguration.default
         configuration.waitsForConnectivity = true
         configuration.timeoutIntervalForRequest = 10

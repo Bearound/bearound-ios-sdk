@@ -13,16 +13,14 @@ class BeaconTracker: NSObject, CLLocationManagerDelegate {
     //-------------------------------
     // MARK: - Initial config
     //-------------------------------
-    static let shared: BeaconTracker = BeaconTracker()
-    
-    //Accessable variables
-    var delegate: BeaconActionsDelegate?
     
     //Internal variables
-    private var locationManager: CLLocationManager
     private var beaconRegion: CLBeaconRegion
+    private var delegate: BeaconActionsDelegate
+    private var locationManager: CLLocationManager
     
-    override init() {
+    init(delegate: BeaconActionsDelegate) {
+        self.delegate = delegate
         self.locationManager = CLLocationManager()
         self.beaconRegion = CLBeaconRegion(uuid:  UUID(uuidString: "E25B8D3C-947A-452F-A13F-589CB706D2E5")!, identifier: "BeaconRegion")
         
@@ -69,7 +67,7 @@ class BeaconTracker: NSObject, CLLocationManagerDelegate {
                 distanceMeters: BeaconParser().getDistanceInMeters(rssi: Float(beacon.rssi)),
                 lastSeen: Date()
             )
-            self.delegate?.updateBeaconList(beacon)
+            self.delegate.updateBeaconList(beacon)
         }
     }
 }
