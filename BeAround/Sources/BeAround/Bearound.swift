@@ -9,6 +9,12 @@ import UIKit
 import AdSupport
 import CoreLocation
 
+enum RequestType: String {
+    case enter = "enter"
+    case exit = "exit"
+    case lost = "lost"
+}
+
 protocol BeaconActionsDelegate {
     func updateBeaconList(_ beacon: Beacon)
 }
@@ -17,16 +23,24 @@ public class Bearound: BeaconActionsDelegate {
     private var timer: Timer?
     private var clientToken: String
     private var beacons: Array<Beacon>
+    private var lostBeacons: Array<Beacon>
+    private var debugger: DebuggerHelper
     
-    public init(clientToken: String) {
+    public init(clientToken: String, isDebugEnable: Bool) {
         self.beacons = []
+        self.lostBeacons = []
         self.clientToken = clientToken
+        self.debugger = DebuggerHelper(isDebugEnable)
         BeaconScanner.shared.delegate = self
         BeaconTracker.shared.delegate = self
         
-        self.timer = Timer.scheduledTimer(withTimeInterval: 5.0, repeats: true) { _ in
-            self.syncWithAPI()
-        }
+        self.timer = Timer.scheduledTimer(
+            timeInterval: 5.0,
+            target: self,
+            selector: #selector(syncWithAPI),
+            userInfo: nil,
+            repeats: true
+        )
     }
     
     deinit {
@@ -34,7 +48,7 @@ public class Bearound: BeaconActionsDelegate {
         timer = nil
     }
     
-    private func syncWithAPI() {
+    @objc private func syncWithAPI() {
         let activeBeacons = beacons.filter { beacon in
             Date().timeIntervalSince(beacon.lastSeen) <= 5
         }
@@ -44,15 +58,19 @@ public class Bearound: BeaconActionsDelegate {
         }
         
         if !activeBeacons.isEmpty {
-            sendBeacons(isRemoving: false, activeBeacons)
+            sendBeacons(type: .enter, activeBeacons)
         }
         
         if !exitBeacons.isEmpty {
-            sendBeacons(isRemoving: true, exitBeacons)
+            sendBeacons(type: .exit, exitBeacons)
+        }
+        
+        if !lostBeacons.isEmpty {
+            sendBeacons(type: .lost, lostBeacons)
         }
     }
     
-    private func sendBeacons(isRemoving: Bool, _ beacons: Array<Beacon>) {
+    private func sendBeacons(type: RequestType, _ beacons: Array<Beacon>) {
         let deviceType = "iOS"
         let idfa = ASIdentifierManager.shared().advertisingIdentifier
         let appState = {
@@ -65,18 +83,30 @@ public class Bearound: BeaconActionsDelegate {
         }()
         
         Task {
-            try await APIService().sendBeacons(
-                PostData(
-                    deviceType: deviceType,
-                    idfa: idfa.uuidString,
-                    eventType: isRemoving ? "exit" : "enter",
-                    appState: appState,
-                    beacons: beacons
+            do {
+                try await APIService().sendBeacons(
+                    PostData(
+                        deviceType: deviceType,
+                        idfa: idfa.uuidString,
+                        eventType: type.rawValue,
+                        appState: appState,
+                        beacons: beacons
+                    )
                 )
-            )
-            
-            if isRemoving {
-                removeBeacons(beacons)
+                
+                debugger.printStatments(type: type)
+                
+                if type == .exit {
+                    removeBeacons(beacons)
+                }
+            } catch {
+                if lostBeacons.count < 10 {
+                    for beacon in beacons {
+                        if !lostBeacons.contains(beacon) {
+                            lostBeacons.append(beacon)
+                        }
+                    }
+                }
             }
         }
     }

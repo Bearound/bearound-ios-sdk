@@ -29,13 +29,6 @@ class APIService {
                   (200...299).contains(httpResponse.statusCode) else {
                 throw URLError(.badServerResponse)
             }
-            
-            if postData.eventType == "exit" {
-                print("Beacon removido e enviado à API")
-            } else {
-                print("Beacon registrado na API")
-            }
-            
         } catch {
             throw URLError(.unknown)
         }
