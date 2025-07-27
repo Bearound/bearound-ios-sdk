@@ -1,0 +1,25 @@
+name: Swift
+
+on:
+  push:
+    branches: [ develop ]
+    paths:
+      - Sources/**
+
+jobs:
+  build:
+
+    runs-on: macos-latest
+    
+    steps:
+    - name: Git checkout
+      uses: actions/checkout@v3
+      with:
+        fetch-depth: '0'
+    - name: git
+      run: |
+        git checkout package
+        git restore --source project -- Sources
+        git add .
+        git commit -m "${{ github.event.head_commit.message }}"
+        git push
