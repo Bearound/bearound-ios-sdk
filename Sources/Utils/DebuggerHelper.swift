@@ -17,12 +17,18 @@ class DebuggerHelper {
     func printStatments(type: RequestType) {
         if isDebuggerEnabled {
             if type == .enter {
-                print(Constants.API.beaconsSend)
+                defaultPrint(Constants.API.beaconsSend)
             } else if type == .exit {
-                print(Constants.API.beaconExit)
+                defaultPrint(Constants.API.beaconExit)
             } else if type == .lost {
-                print(Constants.API.saveLostBeacon)
+                defaultPrint(Constants.API.saveLostBeacon)
             }
         }
+    }
+    
+    func defaultPrint(_ items: Any..., separator: String = " ", terminator: String = "\n") {
+        let prefix = "[BeAroundSDK]:"
+        let message = items.map { "\($0)" }.joined(separator: separator)
+        Swift.print("\(prefix) \(message)", terminator: terminator)
     }
 }

@@ -35,6 +35,7 @@ class BeaconScanner: NSObject, CBCentralManagerDelegate {
     //-------------------------------
     // MARK: - Access Functions
     //-------------------------------
+    
     func startScanning() {
         self.isScanning = true
     }
@@ -46,6 +47,7 @@ class BeaconScanner: NSObject, CBCentralManagerDelegate {
     //-------------------------------
     // MARK: - Bluetooth Central Manager
     //-------------------------------
+    
     func getCBManagerState() -> CBManagerState {
         return cbManager.state
     }
