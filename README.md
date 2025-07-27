@@ -1,195 +1,123 @@
-# 🐻 Bearound SDKs Documentation
+# 🐻 BeAround SDKs Documentation
 
-Official SDKs for integrating Bearound's secure BLE beacon detection and indoor location technology.
+Official SDKs for integrating Bearound's secure BLE beacon detection and indoor location technology across Android, iOS, React Native, and Flutter.
 
----
+## 📱 beAround-ios-sdk
 
-## 📘 Documentação do Projeto de Beacon BLE
+Swift SDK for iOS — secure BLE beacon detection and indoor positioning by Bearound.
 
-### Visão Geral
+## 🧩 Features
 
-Este projeto implementa um sistema completo de beacon BLE usando o Adafruit nRF52840 Feather Express como transmissor (beacon) e um aplicativo iOS para detecção e sincronização com uma API.
-
-### Componentes do Sistema
-
-#### 1. Beacon Arduino (Adafruit nRF52840 Feather Express)
-
-O beacon é configurado para transmitir um sinal iBeacon compatível com dispositivos iOS, contendo:
-
-- UUID: `E25B8D3C-947A-452F-A13F-589CB706D2E5`
-- Major: `0x0001`
-- Minor: `0x0002`
-- RSSI calibrado a 1m: `-59 dBm`
-- Manufacturer ID: `0x004C` (Apple, para compatibilidade com iOS)
-
-#### 2. Aplicativo iOS
-
-O aplicativo iOS detecta o beacon configurado, notifica o usuário quando entra ou sai da região do beacon, e sincroniza o UUID do beacon e o IDFA do dispositivo com uma API.
-
-**Funcionalidades:**
-
-- Detecção de beacons usando `CoreLocation`
-- Monitoramento de entrada/saída da região do beacon
-- Notificações locais para eventos de entrada/saída
-- Obtenção do IDFA (Identifier for Advertisers) do dispositivo
-- Sincronização automática com API ao entrar na região
-- Sincronização manual com API através de botão na interface
-
-### Estrutura do Código
-
-#### Código Arduino
-
-O arquivo `adafruit_beacon.ino` contém o código para configurar o Adafruit nRF52840 como um beacon iBeacon. O código:
-
-- Configura o UUID, Major e Minor do beacon
-- Define a potência de transmissão e intervalo de advertising
-- Configura o pacote de advertising no formato iBeacon
-- Otimiza o consumo de energia desligando o LED e suspendendo o loop
-
-#### Código iOS
-
-O aplicativo iOS é composto por:
-
-1. **BeaconDetector.swift**: Classe principal que gerencia a detecção de beacons
-
-   - Implementa `CLLocationManagerDelegate` para monitorar beacons
-   - Gerencia o ciclo de vida do monitoramento de beacons
-   - Obtém o IDFA do dispositivo
-   - Implementa a sincronização com API
-
-2. **AppDelegate.swift**: Configura o aplicativo e gerencia notificações
-
-   - Inicializa o detector de beacons
-   - Configura as permissões de notificação
-   - Gerencia os callbacks de eventos de beacon
-   - Envia notificações locais
-
-3. **ViewController.swift**: Implementa a interface do usuário
-
-   - Exibe o status de monitoramento
-   - Mostra a proximidade do beacon
-   - Exibe informações do beacon (UUID) e do dispositivo (IDFA)
-   - Permite sincronização manual com a API
-
-4. **Main.storyboard**: Define o layout da interface do usuário
-
-### Requisitos
-
-#### Hardware
-
-- Adafruit nRF52840 Feather Express
-
-#### Software
-
-- Arduino IDE com suporte para Adafruit nRF52
-- Biblioteca Bluefruit para Arduino
-- Xcode para compilar o aplicativo iOS
-- iOS 13.0 ou superior no dispositivo de teste
-
-### Configuração e Uso
-
-#### Configuração do Beacon Arduino
-
-1. Instale o suporte para Adafruit nRF52 no Arduino IDE
-2. Abra o arquivo `adafruit_beacon.ino`
-3. Carregue o código no Adafruit nRF52840 Feather Express
-4. O beacon começará a transmitir automaticamente
-
-#### Configuração do Aplicativo iOS
-
-1. Abra o projeto no Xcode
-2. Configure o `Info.plist` com as permissões necessárias:
-   - `Privacy - Location Always and When In Use Usage Description`
-   - `Privacy - Location When In Use Usage Description`
-3. Compile e instale o aplicativo no dispositivo iOS
-4. Conceda as permissões solicitadas
-5. O aplicativo começará a monitorar o beacon automaticamente
-
-### Personalização
-
-#### Modificando o Beacon
-
-Para alterar as propriedades do beacon, edite as seguintes constantes no arquivo `adafruit_beacon.ino`:
-
-- `beaconUuid`: UUID do beacon
-- `BEACON_MAJOR`: Valor Major do beacon
-- `BEACON_MINOR`: Valor Minor do beacon
-- `BEACON_RSSI`: RSSI calibrado a 1m
-- `Bluefruit.setTxPower()`: Potência de transmissão
-
-#### Configurando a API
-
-Para configurar a sincronização com sua API, edite o método `syncWithAPI` na classe `BeaconDetector.swift`:
-
-- O método aceita agora um parâmetro opcional `eventType` que indica se o evento foi `enter` ou `exit`.
-
-- Os dados enviados agora incluem a força do sinal (`rssi`) quando disponível.
-
-- Substitua a URL placeholder por sua URL real
-- Ajuste o formato dos dados conforme necessário
-- Implemente autenticação se necessário
-
-### Notas Adicionais
-
-- O beacon é configurado para transmitir continuamente para maximizar a detecção
-- O aplicativo iOS está otimizado para economizar bateria monitorando regiões
-- A sincronização com API ocorre automaticamente ao entrar na região do beacon
-- O IDFA requer que o usuário não tenha limitado o rastreamento de anúncios nas configurações do iOS
+- Continuous region monitoring for beacons
+- Sends `enter` and `exit` events to a remote API
+- Captures distance, RSSI, UUID, major/minor, Advertising ID
+- Foreground service support for background execution
+- Sends telemetry data (if available)
+- Built-in debug logging with tag BeAroundSdk
 
 ---
 
-## 🍏 bearound-ios-sdk
+## ⚙️ Requirements
 
-**Swift SDK for iOS — secure beacon proximity events and indoor location.**
-
-### 📦 Installation
-
-**Via Swift Package Manager:**
-
-```swift
-.package(url: "https://github.com/bearound/bearound-ios-sdk.git", from: "1.0.0")
-```
-
-**Or via CocoaPods:**
-
-```ruby
-pod 'BearoundSDK'
-```
+- **Minimum iOS version**: 13 
+- **Location or Bluetooth** must be enabled on the device
 
 ### ⚙️ Required Permissions
 
-Add the following keys to `Info.plist`:
+Add the following to info.plist:
+```xml
+<key>NSLocationWhenInUseUsageDescription</key>
+<string>Precisamos da sua localização para mostrar conteúdos próximos.</string>
+<key>NSLocationAlwaysAndWhenInUseUsageDescription</key>
+<string>Precisamos da sua localização mesmo em segundo plano para enviar notificações relevantes.</string>
+<key>NSBluetoothAlwaysUsageDescription</key>
+<string>Este aplicativo precisa acessar o Bluetooth para se conectar a dispositivos próximos.</string>
+```
 
-- `NSBluetoothAlwaysUsageDescription`
-- `NSLocationWhenInUseUsageDescription`
+And in case you want to run it on background mode add the following:
+```xml
+<key>UIBackgroundModes</key>
+<array>
+   <string>fetch</string>
+   <string>location</string>
+   <string>processing</string>
+   <string>bluetooth-central</string>
+</array>
+```
+✅ Important: In case the user doesn't allow location neither bluetooth access, the SDK won't be able to find possible beacons. So for the SDK works properly the user must has allow at least one of the permissions.
 
-### 🚀 Features
+### 📦 Installation
 
-- Beacon scanning using CoreBluetooth + CoreLocation
-- Geofence-based proximity detection
-- AES-GCM encryption
-- iOS 12+ support, macOS Catalyst compatible
+So far the sdk only supports SPM installation, to move forward you must add the following URL to your package dependencies:
+https://github.com/Bearound/bearound-ios-sdk.git <br>
+*We recommend you to keep the sdk version updated always as possible, to find the newest versions, check for the latest tags on the sdk repository <br>
+In case your xcode is not configured with your github access, you must do it, since the repository is private. <br><br>
 
-### 🛠️ Usage
+Here are the steps visually:<br>
+- In order to add your your github account to xcode you need to have an AccessToken, generated on github. You should go to your github account settings page > Developer Settings > Personal Access Tokens > [Token classic]([https://exemplo.com](https://github.com/settings/tokens)). We recommend to enable all options, however the only write and read access are needed.
+<img width="1034" height="433" alt="Screenshot 2025-07-27 at 13 14 04" src="https://github.com/user-attachments/assets/ebf05708-e20f-4c2a-83c4-7665b65d3557" />
+
+- Add github account to xcode, first add your github account to xcode, open xcode preferences and goes to Accounts tab (Don't worry, you can have more than one synced at once)
+<img width="733" height="488" alt="Screenshot 2025-07-27 at 13 02 57" src="https://github.com/user-attachments/assets/657fb5eb-9c21-432b-97b2-dc80f5a85a72" />
+
+- Use your github token in order to connect your account to xcode
+<img width="736" height="489" alt="Screenshot 2025-07-27 at 13 18 06" src="https://github.com/user-attachments/assets/180ae951-e70b-4bac-b66e-8196483d4608" />
+
+- Add the package to your project
+<img width="1524" height="470" alt="Screenshot 2025-07-27 at 13 23 47" src="https://github.com/user-attachments/assets/0bc4d725-5b45-4e51-83a5-ee3ecf3189e6" />
+
+- Use the given URL and select the desired version
+<img width="967" height="542" alt="Screenshot 2025-07-27 at 13 25 22" src="https://github.com/user-attachments/assets/b1c3add3-0137-4264-9b29-4b1628221f04" />
+
+
+
+### Initialization
+Initialize the SDK inside your Application class after checking the required permissions:
 
 ```swift
-BeaconDetector.shared.startScanning { beacon in
-    print("Detected \(beacon.identifier) at \(beacon.distance)m")
-}
+import BeAround
+
+#Add this next line on wherever you want
+Bearound(clientToken: "", isDebugEnable: true).startServices()
 ```
+☝️ You must prompt the user for permissions before initializing the SDK — see example below.
+
+### 🔐 Runtime Permissions
+
+You need to manually request permissions from the user, especially:
+
+- CoreBlutooth (Ask for permission automatically)
+- CoreLocation
+```swift
+import CoreLocation
+
+#Add these next lines on wherever you want, just make sure the app is showing the alert
+let locationManager = CLLocationManager()
+locationManager.delegate = self
+locationManager.requestAlwaysAuthorization()
+```
+
+📌 Without these permissions, the SDK will not function properly and will not be able to detect beacons in the background.
+
+### ⚠️ After initializing it, it starts executing the service, you can follow this by activating the debug and looking at the Logs with the TAG: BeAroundSdk
+
+- The SDK automatically monitors beacons with the UUID
+- When entering or exiting beacon regions, it sends a JSON payload to the remote API.
+- Events include beacon identifiers, RSSI, distance, app state (foreground/background/inactive), Bluetooth details, and IDFA.
 
 ### 🔐 Security
 
-- End-to-end encrypted payloads
-- Minimal local processing
-- No analytics or tracking
+- AES-GCM encrypted payloads
+- Obfuscated beacon identifiers
+- Privacy-first architecture
 
 ### 🧪 Testing
 
-- Test with real BLE beacons or simulators
-- Enable Location & Bluetooth in Settings
-- Ensure `Info.plist` is configured properly
+- Use physical beacons or nRF Connect
+- Check logs
+- Ensure runtime permissions are granted
 
 ### 📄 License
 
 MIT © Bearound
+
