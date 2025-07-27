@@ -3,7 +3,7 @@ name: Update Main on Tag
 on:
   push:
     tags:
-      - '*' 
+      - '*'   # qualquer tag
 
 permissions:
   contents: write
@@ -13,18 +13,42 @@ jobs:
     runs-on: macos-latest
 
     steps:
-      - name: Checkout package
+      - name: Checkout code
         uses: actions/checkout@v3
         with:
           fetch-depth: 0
+          ref: ${{ github.ref }}
 
       - name: Configure Git
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
-      - name: Fetch all branches
-        run: git fetch --all
+      - name: Fetch branches
+        run: |
+          git fetch origin package:package
+          git fetch origin main:main
+
+      - name: Verify tag source
+        id: verify
+        run: |
+          # commit apontado pela tag
+          TAG_COMMIT=$(git rev-list -n 1 ${{ github.ref_name }})
+          # commit mais recente em package
+          PACKAGE_HEAD=$(git rev-parse package)
+
+          # verifica se o commit da tag está no histórico da branch package
+          if git merge-base --is-ancestor "$TAG_COMMIT" "$PACKAGE_HEAD"; then
+            echo "tag_from_package=true" >> $GITHUB_OUTPUT
+          else
+            echo "tag_from_package=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Stop if tag is not from package
+        if: steps.verify.outputs.tag_from_package != 'true'
+        run: |
+          echo "Tag não veio da branch package. Abortando."
+          exit 0
 
       - name: Switch to main
         run: git checkout main
