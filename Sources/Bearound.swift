@@ -36,7 +36,7 @@ public class Bearound: BeaconActionsDelegate {
         return BeaconTracker(delegate: self)
     }()
     
-    public init(clientToken: String, isDebugEnable: Bool) {
+    public init(clientToken: String = "", isDebugEnable: Bool) {
         self.beacons = []
         self.lostBeacons = []
         self.clientToken = clientToken
