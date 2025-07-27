@@ -6,20 +6,39 @@ on:
     paths:
       - Sources/**
 
+permissions:
+  contents: write
+
 jobs:
   build:
-
     runs-on: macos-latest
     
     steps:
-    - name: Git checkout
-      uses: actions/checkout@v3
-      with:
-        fetch-depth: '0'
-    - name: git
-      run: |
-        git checkout package
-        git restore --source develop -- Sources
-        git add .
-        git commit -m "${{ github.event.head_commit.message }}"
-        git push
+      - name: Checkout develop
+        uses: actions/checkout@v3
+        with:
+          fetch-depth: 0
+          ref: develop
+
+      - name: Configure Git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Fetch all branches
+        run: git fetch --all
+
+      - name: Switch to package branch
+        run: git checkout package
+
+      - name: Copy Sources from develop
+        run: git restore --source=develop -- Sources
+
+      - name: Commit changes
+        run: |
+          git add Sources
+          git commit -m "${{ github.event.head_commit.message }}" || echo "No changes to commit"
+
+      - name: Push to package
+        run: |
+          git push https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/Bearound/bearound-ios-sdk.git package
