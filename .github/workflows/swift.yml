@@ -19,7 +19,7 @@ jobs:
     - name: git
       run: |
         git checkout package
-        git restore --source project -- Sources
+        git restore --source develop -- Sources
         git add .
         git commit -m "${{ github.event.head_commit.message }}"
         git push
