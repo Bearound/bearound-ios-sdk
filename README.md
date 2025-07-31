@@ -32,6 +32,8 @@ Add the following to info.plist:
 <string>Precisamos da sua localização mesmo em segundo plano para enviar notificações relevantes.</string>
 <key>NSBluetoothAlwaysUsageDescription</key>
 <string>Este aplicativo precisa acessar o Bluetooth para se conectar a dispositivos próximos.</string>
+<key>NSUserTrackingUsageDescription</key>
+<string>Precisamos do seu consentimento para rastrear sua atividade e oferecer uma experiência personalizada.</string>
 ```
 
 And in case you want to run it on background mode add the following:

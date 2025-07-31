@@ -61,6 +61,13 @@ public class Bearound: BeaconActionsDelegate {
         self.tracker.startTracking()
     }
     
+    public func stopServices() {
+        self.scanner.stopScanning()
+        self.tracker.stopTracking()
+        timer?.invalidate()
+        timer = nil
+    }
+    
     @MainActor
     @objc private func syncWithAPI() {
         let activeBeacons = beacons.filter { beacon in
