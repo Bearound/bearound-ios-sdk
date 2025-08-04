@@ -21,12 +21,5 @@
 			</array>
 		</dict>
 	</dict>
-	<key>UIBackgroundModes</key>
-	<array>
-		<string>fetch</string>
-		<string>location</string>
-		<string>processing</string>
-		<string>bluetooth-central</string>
-	</array>
 </dict>
 </plist>

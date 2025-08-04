@@ -1,8 +1,8 @@
 //
 //  SceneDelegate.swift
-//  poc
+//  BeAround
 //
-//  Created by Celso Oliveira on 19/05/25.
+//  Created by Arthur Sousa on 04/08/25.
 //
 
 import UIKit

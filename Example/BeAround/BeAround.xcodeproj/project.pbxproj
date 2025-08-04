@@ -7,58 +7,58 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
-		45FC76622E3128AB003BD2FD /* BeAround in Frameworks */ = {isa = PBXBuildFile; productRef = 45FC76612E3128AB003BD2FD /* BeAround */; };
+		45923FC02E41650A00410391 /* BeAround in Frameworks */ = {isa = PBXBuildFile; productRef = 45923FBF2E41650A00410391 /* BeAround */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
-		580F31282DDBDAD100C1206E /* poc.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = poc.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		45923FA62E41649300410391 /* BeAround.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = BeAround.app; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
-		580F313A2DDBDAD300C1206E /* Exceptions for "poc" folder in "poc" target */ = {
+		45923FB82E41649500410391 /* Exceptions for "BeAround" folder in "BeAround" target */ = {
 			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
 			membershipExceptions = (
 				Info.plist,
 			);
-			target = 580F31272DDBDAD100C1206E /* poc */;
+			target = 45923FA52E41649300410391 /* BeAround */;
 		};
 /* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
-		580F312A2DDBDAD100C1206E /* poc */ = {
+		45923FA82E41649300410391 /* BeAround */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
 			exceptions = (
-				580F313A2DDBDAD300C1206E /* Exceptions for "poc" folder in "poc" target */,
+				45923FB82E41649500410391 /* Exceptions for "BeAround" folder in "BeAround" target */,
 			);
-			path = poc;
+			path = BeAround;
 			sourceTree = "<group>";
 		};
 /* End PBXFileSystemSynchronizedRootGroup section */
 
 /* Begin PBXFrameworksBuildPhase section */
-		580F31252DDBDAD100C1206E /* Frameworks */ = {
+		45923FA32E41649300410391 /* Frameworks */ = {
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				45FC76622E3128AB003BD2FD /* BeAround in Frameworks */,
+				45923FC02E41650A00410391 /* BeAround in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
-		580F311F2DDBDAD100C1206E = {
+		45923F9D2E41649300410391 = {
 			isa = PBXGroup;
 			children = (
-				580F312A2DDBDAD100C1206E /* poc */,
-				580F31292DDBDAD100C1206E /* Products */,
+				45923FA82E41649300410391 /* BeAround */,
+				45923FA72E41649300410391 /* Products */,
 			);
 			sourceTree = "<group>";
 		};
-		580F31292DDBDAD100C1206E /* Products */ = {
+		45923FA72E41649300410391 /* Products */ = {
 			isa = PBXGroup;
 			children = (
-				580F31282DDBDAD100C1206E /* poc.app */,
+				45923FA62E41649300410391 /* BeAround.app */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -66,69 +66,68 @@
 /* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
-		580F31272DDBDAD100C1206E /* poc */ = {
+		45923FA52E41649300410391 /* BeAround */ = {
 			isa = PBXNativeTarget;
-			buildConfigurationList = 580F313B2DDBDAD300C1206E /* Build configuration list for PBXNativeTarget "poc" */;
+			buildConfigurationList = 45923FB92E41649500410391 /* Build configuration list for PBXNativeTarget "BeAround" */;
 			buildPhases = (
-				580F31242DDBDAD100C1206E /* Sources */,
-				580F31252DDBDAD100C1206E /* Frameworks */,
-				580F31262DDBDAD100C1206E /* Resources */,
+				45923FA22E41649300410391 /* Sources */,
+				45923FA32E41649300410391 /* Frameworks */,
+				45923FA42E41649300410391 /* Resources */,
 			);
 			buildRules = (
 			);
 			dependencies = (
 			);
 			fileSystemSynchronizedGroups = (
-				580F312A2DDBDAD100C1206E /* poc */,
+				45923FA82E41649300410391 /* BeAround */,
 			);
-			name = poc;
+			name = BeAround;
 			packageProductDependencies = (
-				45FC76612E3128AB003BD2FD /* BeAround */,
+				45923FBF2E41650A00410391 /* BeAround */,
 			);
-			productName = poc;
-			productReference = 580F31282DDBDAD100C1206E /* poc.app */;
+			productName = BeAround;
+			productReference = 45923FA62E41649300410391 /* BeAround.app */;
 			productType = "com.apple.product-type.application";
 		};
 /* End PBXNativeTarget section */
 
 /* Begin PBXProject section */
-		580F31202DDBDAD100C1206E /* Project object */ = {
+		45923F9E2E41649300410391 /* Project object */ = {
 			isa = PBXProject;
 			attributes = {
 				BuildIndependentTargetsInParallel = 1;
-				LastSwiftUpdateCheck = 1630;
-				LastUpgradeCheck = 1630;
+				LastSwiftUpdateCheck = 1640;
+				LastUpgradeCheck = 1640;
 				TargetAttributes = {
-					580F31272DDBDAD100C1206E = {
-						CreatedOnToolsVersion = 16.3;
-						LastSwiftMigration = 1640;
+					45923FA52E41649300410391 = {
+						CreatedOnToolsVersion = 16.4;
 					};
 				};
 			};
-			buildConfigurationList = 580F31232DDBDAD100C1206E /* Build configuration list for PBXProject "poc" */;
+			buildConfigurationList = 45923FA12E41649300410391 /* Build configuration list for PBXProject "BeAround" */;
 			developmentRegion = en;
 			hasScannedForEncodings = 0;
 			knownRegions = (
 				en,
 				Base,
 			);
-			mainGroup = 580F311F2DDBDAD100C1206E;
+			mainGroup = 45923F9D2E41649300410391;
 			minimizedProjectReferenceProxies = 1;
 			packageReferences = (
-				45FC76602E3128AB003BD2FD /* XCRemoteSwiftPackageReference "bearound-ios-sdk" */,
+				45923FBE2E41650A00410391 /* XCRemoteSwiftPackageReference "bearound-ios-sdk" */,
 			);
 			preferredProjectObjectVersion = 77;
-			productRefGroup = 580F31292DDBDAD100C1206E /* Products */;
+			productRefGroup = 45923FA72E41649300410391 /* Products */;
 			projectDirPath = "";
 			projectRoot = "";
 			targets = (
-				580F31272DDBDAD100C1206E /* poc */,
+				45923FA52E41649300410391 /* BeAround */,
 			);
 		};
 /* End PBXProject section */
 
 /* Begin PBXResourcesBuildPhase section */
-		580F31262DDBDAD100C1206E /* Resources */ = {
+		45923FA42E41649300410391 /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -138,7 +137,7 @@
 /* End PBXResourcesBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
-		580F31242DDBDAD100C1206E /* Sources */ = {
+		45923FA22E41649300410391 /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -148,22 +147,16 @@
 /* End PBXSourcesBuildPhase section */
 
 /* Begin XCBuildConfiguration section */
-		580F313C2DDBDAD300C1206E /* Debug */ = {
+		45923FBA2E41649500410391 /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
-				CLANG_ENABLE_MODULES = YES;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = T7D6NQX3AU;
 				GENERATE_INFOPLIST_FILE = YES;
-				INFOPLIST_FILE = poc/Info.plist;
-				INFOPLIST_KEY_NSBluetoothAlwaysUsageDescription = "Este aplicativo usa o Bluetooth para detectar dispositivos próximos, mesmo em segundo plano.";
-				INFOPLIST_KEY_NSLocationAlwaysAndWhenInUseUsageDescription = "Este aplicativo precisa de acesso à sua localização para detectar beacons próximos.";
-				INFOPLIST_KEY_NSLocationAlwaysUsageDescription = "Este aplicativo precisa de acesso à sua localização para detectar beacons próximos mesmo em segundo plano.";
-				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "Este aplicativo precisa de acesso à sua localização para detectar beacons próximos.";
-				INFOPLIST_KEY_NSUserTrackingUsageDescription = "Este app usa seu identificador para oferecer anúncios mais relevantes.";
+				INFOPLIST_FILE = BeAround/Info.plist;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchStoryboardName = LaunchScreen;
 				INFOPLIST_KEY_UIMainStoryboardFile = Main;
@@ -177,28 +170,21 @@
 				PRODUCT_BUNDLE_IDENTIFIER = bearound.poc;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_EMIT_LOC_STRINGS = YES;
-				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
 				SWIFT_VERSION = 5.0;
 				TARGETED_DEVICE_FAMILY = "1,2";
 			};
 			name = Debug;
 		};
-		580F313D2DDBDAD300C1206E /* Release */ = {
+		45923FBB2E41649500410391 /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
-				CLANG_ENABLE_MODULES = YES;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = T7D6NQX3AU;
 				GENERATE_INFOPLIST_FILE = YES;
-				INFOPLIST_FILE = poc/Info.plist;
-				INFOPLIST_KEY_NSBluetoothAlwaysUsageDescription = "Este aplicativo usa o Bluetooth para detectar dispositivos próximos, mesmo em segundo plano.";
-				INFOPLIST_KEY_NSLocationAlwaysAndWhenInUseUsageDescription = "Este aplicativo precisa de acesso à sua localização para detectar beacons próximos.";
-				INFOPLIST_KEY_NSLocationAlwaysUsageDescription = "Este aplicativo precisa de acesso à sua localização para detectar beacons próximos mesmo em segundo plano.";
-				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "Este aplicativo precisa de acesso à sua localização para detectar beacons próximos.";
-				INFOPLIST_KEY_NSUserTrackingUsageDescription = "Este app usa seu identificador para oferecer anúncios mais relevantes.";
+				INFOPLIST_FILE = BeAround/Info.plist;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchStoryboardName = LaunchScreen;
 				INFOPLIST_KEY_UIMainStoryboardFile = Main;
@@ -217,7 +203,7 @@
 			};
 			name = Release;
 		};
-		580F313E2DDBDAD300C1206E /* Debug */ = {
+		45923FBC2E41649500410391 /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ALWAYS_SEARCH_USER_PATHS = NO;
@@ -252,7 +238,7 @@
 				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
 				COPY_PHASE_STRIP = NO;
 				DEBUG_INFORMATION_FORMAT = dwarf;
-				DEVELOPMENT_TEAM = 959FS3SWPA;
+				DEVELOPMENT_TEAM = T7D6NQX3AU;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
 				ENABLE_TESTABILITY = YES;
 				ENABLE_USER_SCRIPT_SANDBOXING = YES;
@@ -270,7 +256,7 @@
 				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
 				GCC_WARN_UNUSED_FUNCTION = YES;
 				GCC_WARN_UNUSED_VARIABLE = YES;
-				IPHONEOS_DEPLOYMENT_TARGET = 18.4;
+				IPHONEOS_DEPLOYMENT_TARGET = 18.5;
 				LOCALIZATION_PREFERS_STRING_CATALOGS = YES;
 				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
 				MTL_FAST_MATH = YES;
@@ -281,7 +267,7 @@
 			};
 			name = Debug;
 		};
-		580F313F2DDBDAD300C1206E /* Release */ = {
+		45923FBD2E41649500410391 /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ALWAYS_SEARCH_USER_PATHS = NO;
@@ -316,7 +302,7 @@
 				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
 				COPY_PHASE_STRIP = NO;
 				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
-				DEVELOPMENT_TEAM = 959FS3SWPA;
+				DEVELOPMENT_TEAM = T7D6NQX3AU;
 				ENABLE_NS_ASSERTIONS = NO;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
 				ENABLE_USER_SCRIPT_SANDBOXING = YES;
@@ -328,7 +314,7 @@
 				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
 				GCC_WARN_UNUSED_FUNCTION = YES;
 				GCC_WARN_UNUSED_VARIABLE = YES;
-				IPHONEOS_DEPLOYMENT_TARGET = 18.4;
+				IPHONEOS_DEPLOYMENT_TARGET = 18.5;
 				LOCALIZATION_PREFERS_STRING_CATALOGS = YES;
 				MTL_ENABLE_DEBUG_INFO = NO;
 				MTL_FAST_MATH = YES;
@@ -341,20 +327,20 @@
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
-		580F31232DDBDAD100C1206E /* Build configuration list for PBXProject "poc" */ = {
+		45923FA12E41649300410391 /* Build configuration list for PBXProject "BeAround" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
-				580F313E2DDBDAD300C1206E /* Debug */,
-				580F313F2DDBDAD300C1206E /* Release */,
+				45923FBC2E41649500410391 /* Debug */,
+				45923FBD2E41649500410391 /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
 		};
-		580F313B2DDBDAD300C1206E /* Build configuration list for PBXNativeTarget "poc" */ = {
+		45923FB92E41649500410391 /* Build configuration list for PBXNativeTarget "BeAround" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
-				580F313C2DDBDAD300C1206E /* Debug */,
-				580F313D2DDBDAD300C1206E /* Release */,
+				45923FBA2E41649500410391 /* Debug */,
+				45923FBB2E41649500410391 /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
@@ -362,23 +348,23 @@
 /* End XCConfigurationList section */
 
 /* Begin XCRemoteSwiftPackageReference section */
-		45FC76602E3128AB003BD2FD /* XCRemoteSwiftPackageReference "bearound-ios-sdk" */ = {
+		45923FBE2E41650A00410391 /* XCRemoteSwiftPackageReference "bearound-ios-sdk" */ = {
 			isa = XCRemoteSwiftPackageReference;
-			repositoryURL = "https://github.com/Bearound/bearound-ios-sdk.git";
+			repositoryURL = "https://github.com/Bearound/bearound-ios-sdk";
 			requirement = {
 				kind = exactVersion;
-				version = 1.0.3;
+				version = 1.0.6;
 			};
 		};
 /* End XCRemoteSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
-		45FC76612E3128AB003BD2FD /* BeAround */ = {
+		45923FBF2E41650A00410391 /* BeAround */ = {
 			isa = XCSwiftPackageProductDependency;
-			package = 45FC76602E3128AB003BD2FD /* XCRemoteSwiftPackageReference "bearound-ios-sdk" */;
+			package = 45923FBE2E41650A00410391 /* XCRemoteSwiftPackageReference "bearound-ios-sdk" */;
 			productName = BeAround;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};
-	rootObject = 580F31202DDBDAD100C1206E /* Project object */;
+	rootObject = 45923F9E2E41649300410391 /* Project object */;
 }
