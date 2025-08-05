@@ -49,10 +49,31 @@ class BeaconTracker: NSObject, CLLocationManagerDelegate {
     // MARK: - Core Location Manager
     //-------------------------------
     func locationManager(_ manager: CLLocationManager, didChangeAuthorization status: CLAuthorizationStatus) {
+        switch status {
+        case .notDetermined:
+            print("[BeAroundSDK]: Location permission not determied, app is missing location request")
+        case .restricted:
+            print("[BeAroundSDK]: Location permission restricted")
+        case .denied:
+            print("[BeAroundSDK]: Location permission denied")
+        case .authorizedAlways:
+            locationManager.allowsBackgroundLocationUpdates = true
+            locationManager.startUpdatingLocation()
+            startTracking()
+            print("[BeAroundSDK]: Location permission allowed for full time usage")
+        case .authorizedWhenInUse:
+            locationManager.allowsBackgroundLocationUpdates = true
+            locationManager.startUpdatingLocation()
+            startTracking()
+            print("[BeAroundSDK]: Location permission allowed for foreground research")
+        @unknown default:
+            print("[BeAroundSDK]: Something went wrong")
+        }
         if status == .authorizedAlways || status == .authorizedWhenInUse {
             locationManager.allowsBackgroundLocationUpdates = true
             locationManager.startUpdatingLocation()
             startTracking()
+            print("[BeAroundSDK]: Location permission allowed")
         }
     }
     
