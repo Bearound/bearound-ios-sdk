@@ -7,7 +7,7 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
-		45E718692E4166BE00F8B376 /* BeAround in Frameworks */ = {isa = PBXBuildFile; productRef = 45E718682E4166BE00F8B376 /* BeAround */; };
+		45AEAD302E428F4E00AA7378 /* BeAround in Frameworks */ = {isa = PBXBuildFile; productRef = 45AEAD2F2E428F4E00AA7378 /* BeAround */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -40,7 +40,7 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				45E718692E4166BE00F8B376 /* BeAround in Frameworks */,
+				45AEAD302E428F4E00AA7378 /* BeAround in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -83,7 +83,7 @@
 			);
 			name = BeAroundExample;
 			packageProductDependencies = (
-				45E718682E4166BE00F8B376 /* BeAround */,
+				45AEAD2F2E428F4E00AA7378 /* BeAround */,
 			);
 			productName = BeAroundExample;
 			productReference = 45E7184F2E41668900F8B376 /* BeAroundExample.app */;
@@ -114,7 +114,7 @@
 			mainGroup = 45E718462E41668900F8B376;
 			minimizedProjectReferenceProxies = 1;
 			packageReferences = (
-				45E718672E4166BE00F8B376 /* XCRemoteSwiftPackageReference "bearound-ios-sdk" */,
+				45AEAD2E2E428F4E00AA7378 /* XCRemoteSwiftPackageReference "bearound-ios-sdk" */,
 			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = 45E718502E41668900F8B376 /* Products */;
@@ -348,20 +348,20 @@
 /* End XCConfigurationList section */
 
 /* Begin XCRemoteSwiftPackageReference section */
-		45E718672E4166BE00F8B376 /* XCRemoteSwiftPackageReference "bearound-ios-sdk" */ = {
+		45AEAD2E2E428F4E00AA7378 /* XCRemoteSwiftPackageReference "bearound-ios-sdk" */ = {
 			isa = XCRemoteSwiftPackageReference;
 			repositoryURL = "https://github.com/Bearound/bearound-ios-sdk";
 			requirement = {
 				kind = exactVersion;
-				version = 1.0.6;
+				version = 1.0.7;
 			};
 		};
 /* End XCRemoteSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
-		45E718682E4166BE00F8B376 /* BeAround */ = {
+		45AEAD2F2E428F4E00AA7378 /* BeAround */ = {
 			isa = XCSwiftPackageProductDependency;
-			package = 45E718672E4166BE00F8B376 /* XCRemoteSwiftPackageReference "bearound-ios-sdk" */;
+			package = 45AEAD2E2E428F4E00AA7378 /* XCRemoteSwiftPackageReference "bearound-ios-sdk" */;
 			productName = BeAround;
 		};
 /* End XCSwiftPackageProductDependency section */
