@@ -21,5 +21,18 @@
 			</array>
 		</dict>
 	</dict>
+    <key>NSLocationWhenInUseUsageDescription</key>
+    <string>Precisamos da sua localização para mostrar conteúdos próximos.</string>
+    <key>NSLocationAlwaysAndWhenInUseUsageDescription</key>
+    <string>Precisamos da sua localização mesmo em segundo plano para enviar notificações relevantes.</string>
+    <key>NSBluetoothAlwaysUsageDescription</key>
+    <string>Este aplicativo precisa acessar o Bluetooth para se conectar a dispositivos próximos.</string>
+    <key>UIBackgroundModes</key>
+    <array>
+       <string>fetch</string>
+       <string>location</string>
+       <string>processing</string>
+       <string>bluetooth-central</string>
+    </array>
 </dict>
 </plist>

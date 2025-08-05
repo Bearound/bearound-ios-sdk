@@ -59,6 +59,7 @@ public class Bearound: BeaconActionsDelegate {
     public func startServices() {
         self.scanner.startScanning()
         self.tracker.startTracking()
+        self.debugger.defaultPrint("SDK initialization successful")
     }
     
     public func stopServices() {
@@ -79,10 +80,12 @@ public class Bearound: BeaconActionsDelegate {
         }
         
         if !activeBeacons.isEmpty {
+            print("[BeAroundSDK]: Beacons found: \(activeBeacons)")
             sendBeacons(type: .enter, activeBeacons)
         }
         
         if !exitBeacons.isEmpty {
+            print("[BeAroundSDK]: Beacons exit: \(exitBeacons)")
             sendBeacons(type: .exit, exitBeacons)
         }
         
@@ -115,12 +118,12 @@ public class Bearound: BeaconActionsDelegate {
             )
         ) { result in
             switch result {
-            case .success(let data):
+            case .success(_):
                 self.debugger.printStatments(type: type)
                 if type == .exit {
                     self.removeBeacons(beacons)
                 }
-            case .failure(let error):
+            case .failure(_):
                 if self.lostBeacons.count < 10 {
                     for beacon in beacons {
                         if !self.lostBeacons.contains(beacon) {
