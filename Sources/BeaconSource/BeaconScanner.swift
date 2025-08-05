@@ -62,12 +62,13 @@ class BeaconScanner: NSObject, CBCentralManagerDelegate {
                     CBCentralManagerScanOptionAllowDuplicatesKey: true
                 ]
             )
+            print("[BeAroundSDK]: Bluetooth permission allowed")
         case .unauthorized:
-            print("Permissão de Bluetooth negada")
+            print("[BeAroundSDK]: Bluetooth permission denied")
         case .poweredOff:
-            print("Bluetooth está desligado")
+            print("[BeAroundSDK]: Bluetooth is powered off")
         case .unsupported:
-            print("Dispositivo não suporta Bluetooth")
+            print("[BeAroundSDK]: Decice does not support Bluetooth")
         default:
             break
         }
