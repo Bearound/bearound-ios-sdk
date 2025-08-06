@@ -34,9 +34,11 @@ Add the following to info.plist:
 <string>Este aplicativo precisa acessar o Bluetooth para se conectar a dispositivos próximos.</string>
 <key>NSUserTrackingUsageDescription</key>
 <string>Precisamos do seu consentimento para rastrear sua atividade e oferecer uma experiência personalizada.</string>
+<key>NSUserTrackingUsageDescription</key>
+<string>Precisamos de sua permissão para rastrear sua atividade e oferecer uma experiência personalizada.</string>
 ```
 
-And in case you want to run it on background mode add the following:
+Also, in order to run it on background mode, you must add the following:
 ```xml
 <key>UIBackgroundModes</key>
 <array>
@@ -97,6 +99,33 @@ import CoreLocation
 let locationManager = CLLocationManager()
 locationManager.delegate = self
 locationManager.requestAlwaysAuthorization()
+```
+- AppTrackingTransparency
+```swift
+if #available(iOS 14, *) {
+    ATTrackingManager.requestTrackingAuthorization { status in
+        switch status {
+        case .authorized:
+            // User granted permission, you can now access IDFA and track
+            print("ATT Authorized")
+            // Example: Retrieve IDFA
+            let idfa = ASIdentifierManager.shared().advertisingIdentifier
+            print("IDFA: \(idfa.uuidString)")
+        case .denied:
+            // User denied permission, disable tracking functionalities
+            print("ATT Denied")
+        case .notDetermined:
+            // Status is not determined, prompt will be shown
+            print("ATT Not Determined")
+        case .restricted:
+            // Tracking is restricted by system settings (e.g., parental controls)
+            print("ATT Restricted")
+        @unknown default:
+            // Handle future cases
+            print("Unknown ATT Status")
+        }
+    }
+}
 ```
 
 📌 Without these permissions, the SDK will not function properly and will not be able to detect beacons in the background.

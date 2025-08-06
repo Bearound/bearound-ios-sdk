@@ -5,6 +5,7 @@ on:
     branches: [ develop ]
     paths:
       - Sources/**
+      - README.md
 
 permissions:
   contents: write
@@ -32,11 +33,11 @@ jobs:
         run: git checkout package
 
       - name: Copy Sources from develop
-        run: git restore --source=develop -- Sources
+        run: git restore --source=develop -- Sources README.md
 
       - name: Commit changes
         run: |
-          git add Sources
+          git add Sources README.md
           git commit -m "${{ github.event.head_commit.message }}" || echo "No changes to commit"
 
       - name: Push to package
