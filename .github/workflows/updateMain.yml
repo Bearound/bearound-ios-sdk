@@ -54,11 +54,11 @@ jobs:
         run: git checkout main
 
       - name: Copy Sources from package
-        run: git restore --source=package -- Sources
+        run: git restore --source=package -- Sources README.md
 
       - name: Commit changes
         run: |
-          git add Sources
+          git add Sources README.md
           git commit -m "Update Sources from package tag ${{ github.ref_name }}" || echo "No changes to commit"
 
       - name: Push to main
