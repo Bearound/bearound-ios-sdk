@@ -59,7 +59,7 @@ public class Bearound: BeaconActionsDelegate {
     public func startServices() {
         self.scanner.startScanning()
         self.tracker.startTracking()
-        self.debugger.defaultPrint("SDK initialization successful")
+        self.debugger.defaultPrint("SDK initialization successful on version: \(DesignSystemVersion.current)")
     }
     
     public func stopServices() {
@@ -111,6 +111,8 @@ public class Bearound: BeaconActionsDelegate {
         service.sendBeacons(
             PostData(
                 deviceType: deviceType,
+                clientToken: self.clientToken,
+                sdkVersion: DesignSystemVersion.current,
                 idfa: idfa.uuidString,
                 eventType: type.rawValue,
                 appState: appState,

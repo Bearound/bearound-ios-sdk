@@ -9,6 +9,8 @@ import Foundation
 
 struct PostData: Codable {
     let deviceType: String
+    let clientToken: String
+    let sdkVersion: String
     let idfa: String?
     let eventType: String
     let appState: String
