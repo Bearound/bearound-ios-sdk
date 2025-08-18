@@ -56,10 +56,19 @@ jobs:
       - name: Copy Sources from package
         run: git restore --source=package -- Sources README.md
 
+      - name: Update Version.swift
+        run: |
+          FILE=Sources/Utils/Version.swift
+          mkdir -p $(dirname "$FILE")
+
+          echo "public enum DesignSystemVersion {" > $FILE
+          echo "    public static let current = \"${{ github.ref_name }}\"" >> $FILE
+          echo "}" >> $FILE
+
       - name: Commit changes
         run: |
-          git add Sources README.md
-          git commit -m "Update Sources from package tag ${{ github.ref_name }}" || echo "No changes to commit"
+          git add Sources README.md Sources/Utils/Version.swift
+          git commit -m "Update Sources and Version.swift for tag ${{ github.ref_name }}" || echo "No changes to commit"
 
       - name: Push to main
         run: |
