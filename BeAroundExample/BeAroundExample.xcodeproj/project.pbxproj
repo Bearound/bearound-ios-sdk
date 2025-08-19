@@ -157,6 +157,9 @@
 				DEVELOPMENT_TEAM = T7D6NQX3AU;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = BeAroundExample/Info.plist;
+				INFOPLIST_KEY_NSBluetoothAlwaysUsageDescription = "Este aplicativo precisa acessar o Bluetooth para se conectar a dispositivos próximos.";
+				INFOPLIST_KEY_NSLocationAlwaysAndWhenInUseUsageDescription = "Precisamos da sua localização mesmo em segundo plano para enviar notificações relevantes.";
+				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "Precisamos da sua localização para mostrar conteúdos próximos.";
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchStoryboardName = LaunchScreen;
 				INFOPLIST_KEY_UIMainStoryboardFile = Main;
@@ -167,7 +170,7 @@
 					"@executable_path/Frameworks",
 				);
 				MARKETING_VERSION = 1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = bearound.poc.BeAroundExample;
+				PRODUCT_BUNDLE_IDENTIFIER = bearound.poc;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_EMIT_LOC_STRINGS = YES;
 				SWIFT_VERSION = 5.0;
@@ -185,6 +188,9 @@
 				DEVELOPMENT_TEAM = T7D6NQX3AU;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = BeAroundExample/Info.plist;
+				INFOPLIST_KEY_NSBluetoothAlwaysUsageDescription = "Este aplicativo precisa acessar o Bluetooth para se conectar a dispositivos próximos.";
+				INFOPLIST_KEY_NSLocationAlwaysAndWhenInUseUsageDescription = "Precisamos da sua localização mesmo em segundo plano para enviar notificações relevantes.";
+				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "Precisamos da sua localização para mostrar conteúdos próximos.";
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchStoryboardName = LaunchScreen;
 				INFOPLIST_KEY_UIMainStoryboardFile = Main;
@@ -195,7 +201,7 @@
 					"@executable_path/Frameworks",
 				);
 				MARKETING_VERSION = 1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = bearound.poc.BeAroundExample;
+				PRODUCT_BUNDLE_IDENTIFIER = bearound.poc;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_EMIT_LOC_STRINGS = YES;
 				SWIFT_VERSION = 5.0;
@@ -353,7 +359,7 @@
 			repositoryURL = "https://github.com/Bearound/bearound-ios-sdk";
 			requirement = {
 				kind = exactVersion;
-				version = 1.0.8;
+				version = 1.0.11;
 			};
 		};
 /* End XCRemoteSwiftPackageReference section */
