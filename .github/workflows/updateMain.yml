@@ -32,9 +32,12 @@ jobs:
       - name: Verify tag source
         id: verify
         run: |
+          # commit apontado pela tag
           TAG_COMMIT=$(git rev-list -n 1 ${{ github.ref_name }})
+          # commit mais recente em package
           PACKAGE_HEAD=$(git rev-parse package)
 
+          # verifica se o commit da tag está no histórico da branch package
           if git merge-base --is-ancestor "$TAG_COMMIT" "$PACKAGE_HEAD"; then
             echo "tag_from_package=true" >> $GITHUB_OUTPUT
           else
@@ -47,22 +50,6 @@ jobs:
           echo "Tag não veio da branch package. Abortando."
           exit 0
 
-      # 🔹 Atualiza o Version.swift na branch package
-      - name: Update Version.swift in package
-        run: |
-          VERSION=${{ github.ref_name }}
-          git checkout package
-          FILE=Sources/Utils/Version.swift
-
-          echo "public enum DesignSystemVersion {" > $FILE
-          echo "    public static let current = \"${VERSION}\"" >> $FILE
-          echo "}" >> $FILE
-
-          git add $FILE
-          git commit -m "chore: update Version.swift to ${VERSION}" || echo "No changes"
-          git push origin package
-
-      # 🔹 Só depois atualiza a main como já faz hoje
       - name: Switch to main
         run: git checkout main
 
