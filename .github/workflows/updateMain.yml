@@ -52,7 +52,7 @@ jobs:
         run: |
           VERSION=${{ github.ref_name }}
           git checkout package
-          FILE=Sources/DesignSystem/Internal/Version.swift
+          FILE=Sources/Utils/Version.swift
 
           echo "public enum DesignSystemVersion {" > $FILE
           echo "    public static let current = \"${VERSION}\"" >> $FILE
