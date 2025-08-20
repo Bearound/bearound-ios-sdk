@@ -15,7 +15,6 @@ public struct Beacon: Codable, Equatable {
     var rssi: Int
     var bluetoothName: String?
     var bluetoothAddress: String?
-    var distanceMeters: Float?
     var lastSeen: Date
     
     public static func ==(lhs: Beacon, rhs: Beacon) -> Bool {

@@ -17,6 +17,27 @@ enum RequestType: String {
     case lost = "lost"
 }
 
+public enum TimeIntervals: Double {
+    case five = 5.0
+    case ten = 10.0
+    case fifthteen = 15.0
+    case twenty = 20.0
+    case twentyFive = 25.0
+}
+
+public enum LostBeaconsStorage: Int {
+    case five = 5
+    case ten = 10
+    case fifthteen = 15
+    case twenty = 20
+    case twentyFive = 25
+    case thirty = 30
+    case thirtyFive = 35
+    case forty = 40
+    case fortyFive = 45
+    case fifty = 50
+}
+
 protocol BeaconActionsDelegate {
     func updateBeaconList(_ beacon: Beacon)
 }
@@ -27,6 +48,7 @@ public class Bearound: BeaconActionsDelegate {
     private var beacons: Array<Beacon>
     private var lostBeacons: Array<Beacon>
     private var debugger: DebuggerHelper
+    private var maximumLostBeaconsStorage: Int
     
     private lazy var scanner: BeaconScanner = {
         return BeaconScanner(delegate: self)
@@ -41,6 +63,7 @@ public class Bearound: BeaconActionsDelegate {
         self.lostBeacons = []
         self.clientToken = clientToken
         self.debugger = DebuggerHelper(isDebugEnable)
+        self.maximumLostBeaconsStorage = 10
         
         self.timer = Timer.scheduledTimer(
             timeInterval: 5.0,
@@ -65,8 +88,27 @@ public class Bearound: BeaconActionsDelegate {
     public func stopServices() {
         self.scanner.stopScanning()
         self.tracker.stopTracking()
+        self.stopTimer()
+    }
+    
+    private func stopTimer() {
         timer?.invalidate()
         timer = nil
+    }
+    
+    public func setUpdatingTime(_ seconds: TimeIntervals) {
+        self.stopTimer()
+        self.timer = Timer.scheduledTimer(
+            timeInterval: seconds.rawValue,
+            target: self,
+            selector: #selector(syncWithAPI),
+            userInfo: nil,
+            repeats: true
+        )
+    }
+    
+    public func setMaximumLostBeaconsStorage(_ count: LostBeaconsStorage) {
+        self.maximumLostBeaconsStorage = count.rawValue
     }
     
     @MainActor
@@ -126,7 +168,7 @@ public class Bearound: BeaconActionsDelegate {
                     self.removeBeacons(beacons)
                 }
             case .failure(_):
-                if self.lostBeacons.count < 10 {
+                if self.lostBeacons.count < self.maximumLostBeaconsStorage {
                     for beacon in beacons {
                         if !self.lostBeacons.contains(beacon) {
                             self.lostBeacons.append(beacon)

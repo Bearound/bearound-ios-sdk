@@ -79,7 +79,6 @@ class BeaconScanner: NSObject, CBCentralManagerDelegate {
             guard let major = BeaconParser().getMajor(name) else { return }
             guard let minor = BeaconParser().getMinor(name) else { return }
             let address = peripheral.identifier.uuidString 
-            let distance = BeaconParser().getDistanceInMeters(rssi: Float(truncating: RSSI))
             
             let beacon = Beacon(
                 major: major,
@@ -87,7 +86,6 @@ class BeaconScanner: NSObject, CBCentralManagerDelegate {
                 rssi: Int(truncating: RSSI),
                 bluetoothName: name,
                 bluetoothAddress: address,
-                distanceMeters: distance,
                 lastSeen: Date()
             )
             self.delegate.updateBeaconList(beacon)

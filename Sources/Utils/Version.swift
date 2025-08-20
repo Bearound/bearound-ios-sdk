@@ -8,5 +8,5 @@
 import Foundation
 
 public enum DesignSystemVersion {
-    public static let current = "1.0.7"
+    public static let current = "1.0.12"
 }

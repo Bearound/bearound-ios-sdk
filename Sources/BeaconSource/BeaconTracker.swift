@@ -85,7 +85,6 @@ class BeaconTracker: NSObject, CLLocationManagerDelegate {
                 rssi: beacon.rssi,
                 bluetoothName: nil,
                 bluetoothAddress: nil,
-                distanceMeters: BeaconParser().getDistanceInMeters(rssi: Float(beacon.rssi)),
                 lastSeen: Date()
             )
             self.delegate.updateBeaconList(beacon)
