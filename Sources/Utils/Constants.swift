@@ -17,5 +17,6 @@ struct Constants {
         static let beaconsSend = "Beacons saved in API"
         static let beaconExit = "Beacons exit and sent to API"
         static let saveLostBeacon = "Lost beacons saved in API"
+        static let errorOnRequest = "Error on request"
     }
 }

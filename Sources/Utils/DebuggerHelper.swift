@@ -16,12 +16,15 @@ class DebuggerHelper {
     
     func printStatments(type: RequestType) {
         if isDebuggerEnabled {
-            if type == .enter {
+            switch type {
+            case .enter:
                 defaultPrint(Constants.API.beaconsSend)
-            } else if type == .exit {
+            case .exit:
                 defaultPrint(Constants.API.beaconExit)
-            } else if type == .lost {
+            case .lost:
                 defaultPrint(Constants.API.saveLostBeacon)
+            case .error:
+                defaultPrint(Constants.API.errorOnRequest)
             }
         }
     }
