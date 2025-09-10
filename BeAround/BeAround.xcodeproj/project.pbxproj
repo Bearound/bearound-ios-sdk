@@ -7,37 +7,19 @@
 	objects = {
 
 /* Begin PBXFileReference section */
-		45E23E7A2E368F0000D3B2E5 /* BeAround.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = BeAround.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		4578DB722E719A93009D46A3 /* BeAround.framework */ = {isa = PBXFileReference; explicitFileType = wrapper.framework; includeInIndex = 0; path = BeAround.framework; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
-/* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
-		45E23E8C2E368F0100D3B2E5 /* Exceptions for "BeAround" folder in "BeAround" target */ = {
-			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
-			membershipExceptions = (
-				Info.plist,
-			);
-			target = 45E23E792E368F0000D3B2E5 /* BeAround */;
-		};
-/* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
-
 /* Begin PBXFileSystemSynchronizedRootGroup section */
-		45E23E7C2E368F0000D3B2E5 /* BeAround */ = {
+		4578DB742E719A93009D46A3 /* BeAround */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
-			exceptions = (
-				45E23E8C2E368F0100D3B2E5 /* Exceptions for "BeAround" folder in "BeAround" target */,
-			);
 			path = BeAround;
-			sourceTree = "<group>";
-		};
-		45E23EA22E368F3F00D3B2E5 /* Sources */ = {
-			isa = PBXFileSystemSynchronizedRootGroup;
-			path = Sources;
 			sourceTree = "<group>";
 		};
 /* End PBXFileSystemSynchronizedRootGroup section */
 
 /* Begin PBXFrameworksBuildPhase section */
-		45E23E772E368F0000D3B2E5 /* Frameworks */ = {
+		4578DB6F2E719A93009D46A3 /* Frameworks */ = {
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -47,85 +29,94 @@
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
-		45E23E712E368F0000D3B2E5 = {
+		4578DB682E719A93009D46A3 = {
 			isa = PBXGroup;
 			children = (
-				45E23EA22E368F3F00D3B2E5 /* Sources */,
-				45E23E7C2E368F0000D3B2E5 /* BeAround */,
-				45E23E7B2E368F0000D3B2E5 /* Products */,
+				4578DB742E719A93009D46A3 /* BeAround */,
+				4578DB732E719A93009D46A3 /* Products */,
 			);
 			sourceTree = "<group>";
 		};
-		45E23E7B2E368F0000D3B2E5 /* Products */ = {
+		4578DB732E719A93009D46A3 /* Products */ = {
 			isa = PBXGroup;
 			children = (
-				45E23E7A2E368F0000D3B2E5 /* BeAround.app */,
+				4578DB722E719A93009D46A3 /* BeAround.framework */,
 			);
 			name = Products;
 			sourceTree = "<group>";
 		};
 /* End PBXGroup section */
 
+/* Begin PBXHeadersBuildPhase section */
+		4578DB6D2E719A93009D46A3 /* Headers */ = {
+			isa = PBXHeadersBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXHeadersBuildPhase section */
+
 /* Begin PBXNativeTarget section */
-		45E23E792E368F0000D3B2E5 /* BeAround */ = {
+		4578DB712E719A93009D46A3 /* BeAround */ = {
 			isa = PBXNativeTarget;
-			buildConfigurationList = 45E23E8D2E368F0100D3B2E5 /* Build configuration list for PBXNativeTarget "BeAround" */;
+			buildConfigurationList = 4578DB7B2E719A93009D46A3 /* Build configuration list for PBXNativeTarget "BeAround" */;
 			buildPhases = (
-				45E23E762E368F0000D3B2E5 /* Sources */,
-				45E23E772E368F0000D3B2E5 /* Frameworks */,
-				45E23E782E368F0000D3B2E5 /* Resources */,
+				4578DB6D2E719A93009D46A3 /* Headers */,
+				4578DB6E2E719A93009D46A3 /* Sources */,
+				4578DB6F2E719A93009D46A3 /* Frameworks */,
+				4578DB702E719A93009D46A3 /* Resources */,
 			);
 			buildRules = (
 			);
 			dependencies = (
 			);
 			fileSystemSynchronizedGroups = (
-				45E23E7C2E368F0000D3B2E5 /* BeAround */,
-				45E23EA22E368F3F00D3B2E5 /* Sources */,
+				4578DB742E719A93009D46A3 /* BeAround */,
 			);
 			name = BeAround;
 			packageProductDependencies = (
 			);
 			productName = BeAround;
-			productReference = 45E23E7A2E368F0000D3B2E5 /* BeAround.app */;
-			productType = "com.apple.product-type.application";
+			productReference = 4578DB722E719A93009D46A3 /* BeAround.framework */;
+			productType = "com.apple.product-type.framework";
 		};
 /* End PBXNativeTarget section */
 
 /* Begin PBXProject section */
-		45E23E722E368F0000D3B2E5 /* Project object */ = {
+		4578DB692E719A93009D46A3 /* Project object */ = {
 			isa = PBXProject;
 			attributes = {
 				BuildIndependentTargetsInParallel = 1;
 				LastSwiftUpdateCheck = 1640;
 				LastUpgradeCheck = 1640;
 				TargetAttributes = {
-					45E23E792E368F0000D3B2E5 = {
+					4578DB712E719A93009D46A3 = {
 						CreatedOnToolsVersion = 16.4;
 					};
 				};
 			};
-			buildConfigurationList = 45E23E752E368F0000D3B2E5 /* Build configuration list for PBXProject "BeAround" */;
+			buildConfigurationList = 4578DB6C2E719A93009D46A3 /* Build configuration list for PBXProject "BeAround" */;
 			developmentRegion = en;
 			hasScannedForEncodings = 0;
 			knownRegions = (
 				en,
 				Base,
 			);
-			mainGroup = 45E23E712E368F0000D3B2E5;
+			mainGroup = 4578DB682E719A93009D46A3;
 			minimizedProjectReferenceProxies = 1;
 			preferredProjectObjectVersion = 77;
-			productRefGroup = 45E23E7B2E368F0000D3B2E5 /* Products */;
+			productRefGroup = 4578DB732E719A93009D46A3 /* Products */;
 			projectDirPath = "";
 			projectRoot = "";
 			targets = (
-				45E23E792E368F0000D3B2E5 /* BeAround */,
+				4578DB712E719A93009D46A3 /* BeAround */,
 			);
 		};
 /* End PBXProject section */
 
 /* Begin PBXResourcesBuildPhase section */
-		45E23E782E368F0000D3B2E5 /* Resources */ = {
+		4578DB702E719A93009D46A3 /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -135,7 +126,7 @@
 /* End PBXResourcesBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
-		45E23E762E368F0000D3B2E5 /* Sources */ = {
+		4578DB6E2E719A93009D46A3 /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -145,63 +136,7 @@
 /* End PBXSourcesBuildPhase section */
 
 /* Begin XCBuildConfiguration section */
-		45E23E8E2E368F0100D3B2E5 /* Debug */ = {
-			isa = XCBuildConfiguration;
-			buildSettings = {
-				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
-				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
-				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 1;
-				DEVELOPMENT_TEAM = T7D6NQX3AU;
-				GENERATE_INFOPLIST_FILE = YES;
-				INFOPLIST_FILE = BeAround/Info.plist;
-				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
-				INFOPLIST_KEY_UILaunchStoryboardName = LaunchScreen;
-				INFOPLIST_KEY_UIMainStoryboardFile = Main;
-				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
-				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
-				LD_RUNPATH_SEARCH_PATHS = (
-					"$(inherited)",
-					"@executable_path/Frameworks",
-				);
-				MARKETING_VERSION = 1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = com.beaconDetector.BeAround;
-				PRODUCT_NAME = "$(TARGET_NAME)";
-				SWIFT_EMIT_LOC_STRINGS = YES;
-				SWIFT_VERSION = 5.0;
-				TARGETED_DEVICE_FAMILY = "1,2";
-			};
-			name = Debug;
-		};
-		45E23E8F2E368F0100D3B2E5 /* Release */ = {
-			isa = XCBuildConfiguration;
-			buildSettings = {
-				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
-				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
-				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 1;
-				DEVELOPMENT_TEAM = T7D6NQX3AU;
-				GENERATE_INFOPLIST_FILE = YES;
-				INFOPLIST_FILE = BeAround/Info.plist;
-				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
-				INFOPLIST_KEY_UILaunchStoryboardName = LaunchScreen;
-				INFOPLIST_KEY_UIMainStoryboardFile = Main;
-				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
-				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
-				LD_RUNPATH_SEARCH_PATHS = (
-					"$(inherited)",
-					"@executable_path/Frameworks",
-				);
-				MARKETING_VERSION = 1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = com.beaconDetector.BeAround;
-				PRODUCT_NAME = "$(TARGET_NAME)";
-				SWIFT_EMIT_LOC_STRINGS = YES;
-				SWIFT_VERSION = 5.0;
-				TARGETED_DEVICE_FAMILY = "1,2";
-			};
-			name = Release;
-		};
-		45E23E902E368F0100D3B2E5 /* Debug */ = {
+		4578DB792E719A93009D46A3 /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ALWAYS_SEARCH_USER_PATHS = NO;
@@ -235,6 +170,7 @@
 				CLANG_WARN_UNREACHABLE_CODE = YES;
 				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
 				COPY_PHASE_STRIP = NO;
+				CURRENT_PROJECT_VERSION = 1;
 				DEBUG_INFORMATION_FORMAT = dwarf;
 				DEVELOPMENT_TEAM = T7D6NQX3AU;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
@@ -262,10 +198,12 @@
 				SDKROOT = iphoneos;
 				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "DEBUG $(inherited)";
 				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+				VERSIONING_SYSTEM = "apple-generic";
+				VERSION_INFO_PREFIX = "";
 			};
 			name = Debug;
 		};
-		45E23E912E368F0100D3B2E5 /* Release */ = {
+		4578DB7A2E719A93009D46A3 /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ALWAYS_SEARCH_USER_PATHS = NO;
@@ -299,6 +237,7 @@
 				CLANG_WARN_UNREACHABLE_CODE = YES;
 				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
 				COPY_PHASE_STRIP = NO;
+				CURRENT_PROJECT_VERSION = 1;
 				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
 				DEVELOPMENT_TEAM = T7D6NQX3AU;
 				ENABLE_NS_ASSERTIONS = NO;
@@ -319,31 +258,99 @@
 				SDKROOT = iphoneos;
 				SWIFT_COMPILATION_MODE = wholemodule;
 				VALIDATE_PRODUCT = YES;
+				VERSIONING_SYSTEM = "apple-generic";
+				VERSION_INFO_PREFIX = "";
+			};
+			name = Release;
+		};
+		4578DB7C2E719A93009D46A3 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUILD_LIBRARY_FOR_DISTRIBUTION = YES;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = T7D6NQX3AU;
+				DYLIB_COMPATIBILITY_VERSION = 1;
+				DYLIB_CURRENT_VERSION = 1;
+				DYLIB_INSTALL_NAME_BASE = "@rpath";
+				ENABLE_MODULE_VERIFIER = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_NSHumanReadableCopyright = "";
+				INSTALL_PATH = "$(LOCAL_LIBRARY_DIR)/Frameworks";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				MODULE_VERIFIER_SUPPORTED_LANGUAGES = "objective-c objective-c++";
+				MODULE_VERIFIER_SUPPORTED_LANGUAGE_STANDARDS = "gnu17 gnu++20";
+				PRODUCT_BUNDLE_IDENTIFIER = io.bearound.BeAround;
+				PRODUCT_NAME = "$(TARGET_NAME:c99extidentifier)";
+				SKIP_INSTALL = YES;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_INSTALL_MODULE = YES;
+				SWIFT_INSTALL_OBJC_HEADER = NO;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
+		4578DB7D2E719A93009D46A3 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUILD_LIBRARY_FOR_DISTRIBUTION = YES;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = T7D6NQX3AU;
+				DYLIB_COMPATIBILITY_VERSION = 1;
+				DYLIB_CURRENT_VERSION = 1;
+				DYLIB_INSTALL_NAME_BASE = "@rpath";
+				ENABLE_MODULE_VERIFIER = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_NSHumanReadableCopyright = "";
+				INSTALL_PATH = "$(LOCAL_LIBRARY_DIR)/Frameworks";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				MODULE_VERIFIER_SUPPORTED_LANGUAGES = "objective-c objective-c++";
+				MODULE_VERIFIER_SUPPORTED_LANGUAGE_STANDARDS = "gnu17 gnu++20";
+				PRODUCT_BUNDLE_IDENTIFIER = io.bearound.BeAround;
+				PRODUCT_NAME = "$(TARGET_NAME:c99extidentifier)";
+				SKIP_INSTALL = YES;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_INSTALL_MODULE = YES;
+				SWIFT_INSTALL_OBJC_HEADER = NO;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
 			};
 			name = Release;
 		};
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
-		45E23E752E368F0000D3B2E5 /* Build configuration list for PBXProject "BeAround" */ = {
+		4578DB6C2E719A93009D46A3 /* Build configuration list for PBXProject "BeAround" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
-				45E23E902E368F0100D3B2E5 /* Debug */,
-				45E23E912E368F0100D3B2E5 /* Release */,
+				4578DB792E719A93009D46A3 /* Debug */,
+				4578DB7A2E719A93009D46A3 /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
 		};
-		45E23E8D2E368F0100D3B2E5 /* Build configuration list for PBXNativeTarget "BeAround" */ = {
+		4578DB7B2E719A93009D46A3 /* Build configuration list for PBXNativeTarget "BeAround" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
-				45E23E8E2E368F0100D3B2E5 /* Debug */,
-				45E23E8F2E368F0100D3B2E5 /* Release */,
+				4578DB7C2E719A93009D46A3 /* Debug */,
+				4578DB7D2E719A93009D46A3 /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
 		};
 /* End XCConfigurationList section */
 	};
-	rootObject = 45E23E722E368F0000D3B2E5 /* Project object */;
+	rootObject = 4578DB692E719A93009D46A3 /* Project object */;
 }
