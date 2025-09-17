@@ -12,7 +12,7 @@ class APIService {
     func sendBeacons(_ postData: PostData, completion: @escaping (Result<RequestModel, RequestModel>) -> Void) {
         var requestModel = RequestModel(requestBody: postData)
         
-        guard let url = URL(string: "https://api.bearound.io/ingest") else {
+        guard let url = URL(string: "https://ingest.bearound.io/ingest") else {
             requestModel.error = NSError(domain: "InvalidURL", code: 404, userInfo: nil)
             completion(.failure(requestModel))
             return
