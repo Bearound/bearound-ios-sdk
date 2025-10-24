@@ -8,12 +8,15 @@ Swift SDK for iOS — secure BLE beacon detection and indoor positioning by Bear
 
 ## 🧩 Features
 
-- Continuous region monitoring for beacons
-- Sends `enter` and `exit` events to a remote API
-- Captures distance, RSSI, UUID, major/minor, Advertising ID
-- Foreground service support for background execution
-- Sends telemetry data (if available)
-- Built-in debug logging with tag BeAroundSdk
+- **Continuous Beacon Detection**: Monitors BLE beacons in real-time using CoreLocation and CoreBluetooth
+- **Event Listeners**: Three types of listeners for beacons, sync status, and region tracking
+- **Automatic API Synchronization**: Sends beacon data every 5 seconds to remote API
+- **Event Types**: Tracks `enter`, `exit`, and `lost` beacon events
+- **Rich Beacon Data**: Captures distance, RSSI, UUID, major/minor, and IDFA
+- **Background Support**: Continues monitoring beacons when app is in background
+- **Active/Inactive Beacon Filtering**: Distinguishes between recently seen and lost beacons
+- **Retry Logic**: Automatically retries failed API calls (up to 10 beacons)
+- **Built-in Debug Logging**: Optional debug mode for troubleshooting
 
 ---
 
@@ -52,39 +55,144 @@ Also, in order to run it on background mode, you must add the following:
 
 ### 📦 Installation
 
-So far the sdk only supports SPM installation, to move forward you must add the following URL to your package dependencies:
-https://github.com/Bearound/bearound-ios-sdk.git <br>
-*We recommend you to keep the sdk version updated always as possible, to find the newest versions, check for the latest tags on the sdk repository <br>
-In case your xcode is not configured with your github access, you must do it, since the repository is private. <br><br>
+The SDK is available via CocoaPods. Add the following line to your `Podfile`:
 
-Here are the steps visually:<br>
-- In order to add your your github account to xcode you need to have an AccessToken, generated on github. You should go to your github account settings page > Developer Settings > Personal Access Tokens > [Token classic]([https://exemplo.com](https://github.com/settings/tokens)). We recommend to enable all options, however the only write and read access are needed.
-<img width="1034" height="433" alt="Screenshot 2025-07-27 at 13 14 04" src="https://github.com/user-attachments/assets/ebf05708-e20f-4c2a-83c4-7665b65d3557" />
+```ruby
+pod 'BearoundSDK'
+```
 
-- Add github account to xcode, first add your github account to xcode, open xcode preferences and goes to Accounts tab (Don't worry, you can have more than one synced at once)
-<img width="733" height="488" alt="Screenshot 2025-07-27 at 13 02 57" src="https://github.com/user-attachments/assets/657fb5eb-9c21-432b-97b2-dc80f5a85a72" />
+Then run:
+```bash
+pod install
+```
 
-- Use your github token in order to connect your account to xcode
-<img width="736" height="489" alt="Screenshot 2025-07-27 at 13 18 06" src="https://github.com/user-attachments/assets/180ae951-e70b-4bac-b66e-8196483d4608" />
+For more information and the latest version, visit: https://cocoapods.org/pods/BearoundSDK
 
-- Add the package to your project
-<img width="1524" height="470" alt="Screenshot 2025-07-27 at 13 23 47" src="https://github.com/user-attachments/assets/0bc4d725-5b45-4e51-83a5-ee3ecf3189e6" />
-
-- Use the given URL and select the desired version
-<img width="967" height="542" alt="Screenshot 2025-07-27 at 13 25 22" src="https://github.com/user-attachments/assets/b1c3add3-0137-4264-9b29-4b1628221f04" />
+*We recommend keeping the SDK version updated. Check the [releases page](https://github.com/Bearound/bearound-ios-sdk/tags) for the latest versions.
 
 
 
-### Initialization
-Initialize the SDK inside your Application class after checking the required permissions:
+### 🚀 Usage
+
+#### Initialization
+
+Initialize the SDK after checking the required permissions:
 
 ```swift
-import BeAround
+import BearoundSDK
 
-#Add this next line on wherever you want
-Bearound(clientToken: "", isDebugEnable: true).startServices()
+// Initialize the SDK
+let bearound = Bearound(clientToken: "YOUR_CLIENT_TOKEN", isDebugEnable: true)
+
+// Start beacon detection services
+bearound.startServices()
 ```
+
+#### Stop Services
+
+To stop beacon detection and API synchronization:
+
+```swift
+bearound.stopServices()
+```
+
 ☝️ You must prompt the user for permissions before initializing the SDK — see example below.
+
+---
+
+## 📡 Event Listeners
+
+The SDK provides three types of listeners to monitor different aspects of beacon detection:
+
+### BeaconListener
+
+Receives callbacks when beacons are detected, lost, or exit the range:
+
+```swift
+class MyBeaconListener: BeaconListener {
+    func onBeaconsDetected(_ beacons: [Beacon], eventType: String) {
+        print("Beacons detected - Event: \(eventType), Count: \(beacons.count)")
+        // eventType can be: "enter", "exit", or "failed"
+    }
+}
+
+// Register the listener
+let beaconListener = MyBeaconListener()
+bearound.addBeaconListener(beaconListener)
+
+// Remove when no longer needed
+bearound.removeBeaconListener(beaconListener)
+```
+
+### SyncListener
+
+Monitors API synchronization status for beacon events:
+
+```swift
+class MySyncListener: SyncListener {
+    func onSyncSuccess(eventType: String, beaconCount: Int, message: String) {
+        print("Sync successful - Type: \(eventType), Beacons: \(beaconCount)")
+    }
+
+    func onSyncError(eventType: String, beaconCount: Int, errorCode: Int?, errorMessage: String) {
+        print("Sync failed - Error: \(errorMessage)")
+    }
+}
+
+// Register the listener
+let syncListener = MySyncListener()
+bearound.addSyncListener(syncListener)
+
+// Remove when no longer needed
+bearound.removeSyncListener(syncListener)
+```
+
+### RegionListener
+
+Tracks when the device enters or exits beacon regions:
+
+```swift
+class MyRegionListener: RegionListener {
+    func onRegionEnter(regionName: String) {
+        print("Entered region: \(regionName)")
+    }
+
+    func onRegionExit(regionName: String) {
+        print("Exited region: \(regionName)")
+    }
+}
+
+// Register the listener
+let regionListener = MyRegionListener()
+bearound.addRegionListener(regionListener)
+
+// Remove when no longer needed
+bearound.removeRegionListener(regionListener)
+```
+
+---
+
+## 📊 Getting Beacon Data
+
+### Get Active Beacons
+
+Returns only beacons detected within the last 5 seconds:
+
+```swift
+let activeBeacons = bearound.getActiveBeacons()
+print("Active beacons: \(activeBeacons.count)")
+```
+
+### Get All Beacons
+
+Returns all detected beacons (including recently lost ones):
+
+```swift
+let allBeacons = bearound.getAllBeacons()
+print("Total beacons: \(allBeacons.count)")
+```
+
+---
 
 ### 🔐 Runtime Permissions
 
