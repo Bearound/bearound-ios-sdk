@@ -1,0 +1,32 @@
+# Xcode
+*.xcscmblueprint
+*.xccheckout
+xcuserdata/
+*.xcuserstate
+.DS_Store
+
+# Build artifacts
+build/
+DerivedData/
+
+# XCFramework outputs
+*.xcframework
+*.xcframework.zip
+
+# Swift Package Manager
+.build/
+
+# CocoaPods
+Pods/
+
+# Carthage
+Carthage/Build/
+
+# Fastlane
+fastlane/report.xml
+fastlane/Preview.html
+fastlane/screenshots/
+fastlane/test_output
+
+# Misc
+*.log

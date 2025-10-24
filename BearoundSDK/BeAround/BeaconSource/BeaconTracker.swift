@@ -1,0 +1,87 @@
+//
+//  BeaconTracker.swift
+//  beaconDetector
+//
+//  Created by Arthur Sousa on 19/06/25.
+//
+
+import Foundation
+import CoreLocation
+
+class BeaconTracker: NSObject, CLLocationManagerDelegate {
+    
+    //-------------------------------
+    // MARK: - Initial config
+    //-------------------------------
+    
+    //Internal variables
+    private var beaconRegion: CLBeaconRegion
+    private var delegate: BeaconActionsDelegate
+    private var locationManager: CLLocationManager
+    
+    init(delegate: BeaconActionsDelegate) {
+        self.delegate = delegate
+        self.locationManager = CLLocationManager()
+        self.beaconRegion = CLBeaconRegion(uuid:  UUID(uuidString: "E25B8D3C-947A-452F-A13F-589CB706D2E5")!, identifier: "BeaconRegion")
+        
+        super.init()
+        self.locationManager.delegate = self
+        self.beaconRegion.notifyEntryStateOnDisplay = true
+        self.beaconRegion.notifyOnEntry = true
+        self.beaconRegion.notifyOnExit = true
+    }
+    
+    //-------------------------------
+    // MARK: - Access Functions
+    //-------------------------------
+    func startTracking() {
+        locationManager.startMonitoring(for: beaconRegion)
+        locationManager.startRangingBeacons(satisfying: beaconRegion.beaconIdentityConstraint)
+    }
+    
+    func stopTracking() {
+        locationManager.stopMonitoring(for: beaconRegion)
+        locationManager.stopRangingBeacons(satisfying: beaconRegion.beaconIdentityConstraint)
+    }
+    
+    
+    //-------------------------------
+    // MARK: - Core Location Manager
+    //-------------------------------
+    func locationManager(_ manager: CLLocationManager, didChangeAuthorization status: CLAuthorizationStatus) {
+        if status == .authorizedAlways || status == .authorizedWhenInUse {
+            locationManager.allowsBackgroundLocationUpdates = true
+            locationManager.startUpdatingLocation()
+            startTracking()
+        }
+    }
+    
+    func locationManager(_ manager: CLLocationManager, didRangeBeacons beacons: [CLBeacon], in region: CLBeaconRegion) {
+        for beacon in beacons {
+            let beacon = Beacon(
+                major: String(describing: beacon.major),
+                minor: String(describing: beacon.minor),
+                rssi: beacon.rssi,
+                bluetoothName: nil,
+                bluetoothAddress: nil,
+                distanceMeters: BeaconParser().getDistanceInMeters(rssi: Float(beacon.rssi)),
+                lastSeen: Date()
+            )
+            self.delegate.updateBeaconList(beacon)
+        }
+    }
+    
+    func locationManager(_ manager: CLLocationManager, didEnterRegion region: CLRegion) {
+        if let beaconRegion = region as? CLBeaconRegion {
+            // Start ranging when entering region
+            locationManager.startRangingBeacons(satisfying: beaconRegion.beaconIdentityConstraint)
+        }
+    }
+    
+    func locationManager(_ manager: CLLocationManager, didExitRegion region: CLRegion) {
+        if let beaconRegion = region as? CLBeaconRegion {
+            // Stop ranging when exiting region
+            locationManager.stopRangingBeacons(satisfying: beaconRegion.beaconIdentityConstraint)
+        }
+    }
+}
