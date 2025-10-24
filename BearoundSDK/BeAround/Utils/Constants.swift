@@ -10,12 +10,12 @@ import Foundation
 struct Constants {
     
     struct Logs {
-        static let tag = "BEAroundSDK"
+        static let tag = "BeAroundSDK"
     }
     
     struct API {
-        static let beaconsSend = "Beacon registrado na API"
-        static let beaconExit = "Beacon removido e enviado à API"
-        static let saveLostBeacon = "Beacons perdidos salvos na API"
+        static let beaconsSend = "Beacons saved in API"
+        static let beaconExit = "Beacons exit and sent to API"
+        static let saveLostBeacon = "Lost beacons saved in API"
     }
 }

@@ -9,6 +9,8 @@ import Foundation
 
 struct PostData: Codable {
     let deviceType: String
+    let clientToken: String
+    let sdkVersion: String
     let idfa: String?
     let eventType: String
     let appState: String
@@ -19,7 +21,7 @@ class APIService {
     
     func sendBeacons(_ postData: PostData, completion: @escaping (Result<Data, Error>) -> Void) {
         
-        guard let url = URL(string: "https://api.bearound.io/ingest") else {
+        guard let url = URL(string: "https://ingest.bearound.io/ingest") else {
             completion(.failure(NSError(domain: "InvalidURL", code: 0, userInfo: nil)))
             return
         }

@@ -67,3 +67,4 @@ O `BearoundSDK.xcframework` gerado pode ser usado em projetos iOS:
 - **Configuração**: Release
 - **Tamanho aproximado**: ~580KB
 
+

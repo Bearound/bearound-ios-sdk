@@ -87,6 +87,7 @@ public class Bearound: BeaconActionsDelegate {
         regionListeners.removeAll()
     }
     
+    
     // MARK: - Public Listener Management Methods
     
     /// Add a beacon detection listener
@@ -134,6 +135,14 @@ public class Bearound: BeaconActionsDelegate {
     public func startServices() {
         self.scanner.startScanning()
         self.tracker.startTracking()
+        self.debugger.defaultPrint("SDK initialization successful on version: \(DesignSystemVersion.current)")
+    }
+    
+    public func stopServices() {
+        self.scanner.stopScanning()
+        self.tracker.stopTracking()
+        timer?.invalidate()
+        timer = nil
     }
     
     @MainActor
@@ -148,11 +157,13 @@ public class Bearound: BeaconActionsDelegate {
         
         // Notify listeners about detected beacons
         if !activeBeacons.isEmpty {
+            print("[BeAroundSDK]: Beacons found: \(activeBeacons)")
             notifyBeaconListeners(activeBeacons, eventType: "enter")
             sendBeacons(type: .enter, activeBeacons)
         }
         
         if !exitBeacons.isEmpty {
+            print("[BeAroundSDK]: Beacons exit: \(exitBeacons)")
             notifyBeaconListeners(exitBeacons, eventType: "exit")
             sendBeacons(type: .exit, exitBeacons)
         }
@@ -183,6 +194,8 @@ public class Bearound: BeaconActionsDelegate {
         service.sendBeacons(
             PostData(
                 deviceType: deviceType,
+                clientToken: self.clientToken,
+                sdkVersion: DesignSystemVersion.current,
                 idfa: idfa.uuidString,
                 eventType: type.rawValue,
                 appState: appState,
@@ -192,7 +205,7 @@ public class Bearound: BeaconActionsDelegate {
             guard let self = self else { return }
             
             switch result {
-            case .success:
+            case .success(_):
                 self.debugger.printStatments(type: type)
                 
                 // Notify sync listeners of success

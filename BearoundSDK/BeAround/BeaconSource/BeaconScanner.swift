@@ -62,12 +62,13 @@ class BeaconScanner: NSObject, CBCentralManagerDelegate {
                     CBCentralManagerScanOptionAllowDuplicatesKey: true
                 ]
             )
+            print("[BeAroundSDK]: Bluetooth permission allowed")
         case .unauthorized:
-            print("Permissão de Bluetooth negada")
+            print("[BeAroundSDK]: Bluetooth permission denied")
         case .poweredOff:
-            print("Bluetooth está desligado")
+            print("[BeAroundSDK]: Bluetooth is powered off")
         case .unsupported:
-            print("Dispositivo não suporta Bluetooth")
+            print("[BeAroundSDK]: Decice does not support Bluetooth")
         default:
             break
         }
@@ -77,7 +78,7 @@ class BeaconScanner: NSObject, CBCentralManagerDelegate {
         if let name = peripheral.name, name.contains("BeA:") {
             guard let major = BeaconParser().getMajor(name) else { return }
             guard let minor = BeaconParser().getMinor(name) else { return }
-            let address = peripheral.identifier.uuidString 
+            let address = peripheral.identifier.uuidString
             let distance = BeaconParser().getDistanceInMeters(rssi: Float(truncating: RSSI))
             
             let beacon = Beacon(
