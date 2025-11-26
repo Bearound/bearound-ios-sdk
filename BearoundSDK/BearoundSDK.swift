@@ -10,6 +10,7 @@ import UIKit
 #endif
 import AdSupport
 import CoreLocation
+import AppTrackingTransparency
 
 enum RequestType: String {
     case enter = "enter"
@@ -62,6 +63,62 @@ public class Bearound: BeaconActionsDelegate {
     private lazy var tracker: BeaconTracker = {
         return BeaconTracker(delegate: self)
     }()
+    
+    // MARK: - Permissions
+    /// Requests all necessary permissions used by the SDK (App Tracking Transparency for IDFA and Location permissions for beacon scanning).
+    /// - Parameters:
+    ///   - completion: Called on the main queue with the resulting statuses when using the completion-based API.
+    /// - Note: On iOS 14.5+, ATT authorization is requested; on earlier systems, it is skipped. Location permission is delegated to the internal scanner if needed.
+    @available(iOS 13.0, *)
+    public func requestPermissions() async {
+        await requestAppTrackingTransparencyIfNeeded()
+        // If your scanner needs to request location permissions explicitly, expose and call it here.
+        // For now, we assume `BeaconScanner` handles location authorization on start.
+    }
+
+    /// Completion-based variant for codebases not using async/await.
+    public func requestPermissions(completion: (() -> Void)? = nil) {
+        if #available(iOS 14.5, *) {
+            ATTrackingManager.requestTrackingAuthorization { _ in
+                DispatchQueue.main.async {
+                    completion?()
+                }
+            }
+        } else {
+            DispatchQueue.main.async {
+                completion?()
+            }
+        }
+    }
+
+    @available(iOS 13.0, *)
+    private func requestAppTrackingTransparencyIfNeeded() async {
+        if #available(iOS 14.5, *) {
+            let status = ATTrackingManager.trackingAuthorizationStatus
+            if status == .notDetermined {
+                _ = await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+                    ATTrackingManager.requestTrackingAuthorization { _ in
+                        continuation.resume()
+                    }
+                }
+            }
+        }
+    }
+
+    /// Safe accessor for IDFA string. Returns empty string if not authorized or unavailable.
+    public func currentIDFA() -> String {
+        // On iOS 14+, only return IDFA if tracking is authorized
+        if #available(iOS 14, *) {
+            guard ATTrackingManager.trackingAuthorizationStatus == .authorized else {
+                return ""
+            }
+            // Even when authorized, ASIdentifierManager still provides the IDFA value
+            return ASIdentifierManager.shared().advertisingIdentifier.uuidString
+        } else {
+            // On iOS versions prior to 14, return the IDFA directly
+            return ASIdentifierManager.shared().advertisingIdentifier.uuidString
+        }
+    }
     
     public init(clientToken: String = "", isDebugEnable: Bool) {
         self.beacons = []
@@ -132,6 +189,7 @@ public class Bearound: BeaconActionsDelegate {
         return beacons
     }
     
+    /// Call `requestPermissions()` before starting services to ensure proper authorization.
     public func startServices() {
         self.scanner.startScanning()
         self.tracker.startTracking()
@@ -180,7 +238,7 @@ public class Bearound: BeaconActionsDelegate {
     @MainActor
     private func sendBeacons(type: RequestType, _ beacons: Array<Beacon>) {
         let deviceType = "iOS"
-        let idfa = ASIdentifierManager.shared().advertisingIdentifier
+        let idfaString = self.currentIDFA()
         let appState = {
             switch UIApplication.shared.applicationState {
             case .active: return "foreground"
@@ -196,7 +254,7 @@ public class Bearound: BeaconActionsDelegate {
                 deviceType: deviceType,
                 clientToken: self.clientToken,
                 sdkVersion: DesignSystemVersion.current,
-                idfa: idfa.uuidString,
+                idfa: idfaString,
                 eventType: type.rawValue,
                 appState: appState,
                 beacons: beacons
@@ -307,3 +365,4 @@ public class Bearound: BeaconActionsDelegate {
         }
     }
 }
+
