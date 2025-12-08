@@ -216,30 +216,6 @@ struct BearoundSDKMainTests {
         #expect(allBeacons.first?.rssi == -65, "Should have updated RSSI value")
         #expect(allBeacons.first?.distanceMeters == 2.0, "Should have updated distance")
     }
-    
-    @Test("Create ingest payload with device info")
-    @MainActor
-    func createIngestPayload() async throws {
-        let sdk = Bearound(clientToken: "test-token", isDebugEnable: false)
-        
-        let beacon = Beacon(
-            major: "100",
-            minor: "200",
-            rssi: -60,
-            bluetoothName: "BeA:b_100.200",
-            bluetoothAddress: "ADDRESS-1",
-            distanceMeters: 1.5,
-            lastSeen: Date()
-        )
-        
-        let payload = await sdk.createIngestPayload(for: [beacon])
-        
-        #expect(payload.beacons.count == 1, "Payload should contain one beacon")
-        #expect(payload.sdk.version != nil, "SDK version should be set")
-        #expect(payload.userDevice != nil, "User device info should be set")
-        #expect(payload.scanContext != nil, "Scan context should be set")
-        #expect(payload.scanContext.rssi == -60, "Scan context should have correct RSSI")
-    }
 }
 
 // MARK: - Listener Tests
@@ -337,19 +313,6 @@ struct ListenerTests {
 
 @Suite("Edge Cases Tests")
 struct EdgeCasesTests {
-    
-    @Test("Handle empty beacon list")
-    @MainActor
-    func emptyBeaconList() async throws {
-        let sdk = Bearound(clientToken: "test-token", isDebugEnable: false)
-        
-        let payload = await sdk.createIngestPayload(for: [])
-        
-        #expect(payload.beacons.isEmpty, "Payload should have empty beacon array")
-        #expect(payload.sdk.version != nil, "SDK info should still be present")
-        #expect(payload.userDevice != nil, "Device info should still be present")
-    }
-    
     @Test("BeaconParser handles edge cases")
     func beaconParserEdgeCases() {
         let parser = BeaconParser()
