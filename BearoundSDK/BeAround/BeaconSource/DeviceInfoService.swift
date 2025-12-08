@@ -2,7 +2,7 @@
 //  DeviceInfoService.swift
 //  beaconDetector
 //
-//  Created by Arthur Sousa on 08/12/25.
+//  Created by Felipe Costa Araujo on 08/12/25.
 //
 
 #if canImport(UIKit)
@@ -133,6 +133,7 @@ public class DeviceInfoService {
     private var pathMonitor: NWPathMonitor?
     private var currentNetworkType: String = "none"
     private var currentConnectionExpensive: Bool = false
+    private var bluetoothStateProvider: (() -> CBManagerState)?
     
     private init() {
         self.appStartTime = Date()
@@ -153,8 +154,13 @@ public class DeviceInfoService {
         self.isColdStart = false
     }
     
+    /// Define o provider para obter o estado do Bluetooth
+    public func setBluetoothStateProvider(_ provider: @escaping () -> CBManagerState) {
+        self.bluetoothStateProvider = provider
+    }
+    
     /// Coleta todas as informações do SDK
-    public func getSDKInfo(version: String = "1.4.0") -> SDKInfo {
+    public func getSDKInfo(version: String = BeAroundSDKConfig.version) -> SDKInfo {
         return SDKInfo(
             version: version,
             platform: "ios",
@@ -283,10 +289,24 @@ public class DeviceInfoService {
     }
     
     private func getBluetoothState() -> String {
-        // Note: Para obter o estado real do Bluetooth, você precisa manter uma referência
-        // a um CBCentralManager. Por enquanto, retornamos "unknown"
-        // Recomenda-se integrar isso com seu BeaconScanner que já usa CoreBluetooth
-        return "unknown"
+        guard let provider = bluetoothStateProvider else {
+            return "unknown"
+        }
+        
+        let state = provider()
+        
+        switch state {
+        case .poweredOn:
+            return "on"
+        case .poweredOff:
+            return "off"
+        case .unauthorized:
+            return "unauthorized"
+        case .unsupported, .resetting, .unknown:
+            return "unknown"
+        @unknown default:
+            return "unknown"
+        }
     }
     
     private func getLocationPermission() -> String {

@@ -6,11 +6,31 @@
 	objectVersion = 77;
 	objects = {
 
+/* Begin PBXBuildFile section */
+		7CB172482EE7467500B13B4F /* BearoundSDK.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 7CBA19FF2E34385F004D997E /* BearoundSDK.framework */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXContainerItemProxy section */
+		7CB172492EE7467500B13B4F /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 7CBA19F62E34385F004D997E /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 7CBA19FE2E34385F004D997E;
+			remoteInfo = BearoundSDK;
+		};
+/* End PBXContainerItemProxy section */
+
 /* Begin PBXFileReference section */
+		7CB172442EE7467400B13B4F /* BearoundSDKTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = BearoundSDKTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		7CBA19FF2E34385F004D997E /* BearoundSDK.framework */ = {isa = PBXFileReference; explicitFileType = wrapper.framework; includeInIndex = 0; path = BearoundSDK.framework; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
+		7CB172452EE7467400B13B4F /* BearoundSDKTests */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = BearoundSDKTests;
+			sourceTree = "<group>";
+		};
 		7CBA1A012E34385F004D997E /* BearoundSDK */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
 			path = BearoundSDK;
@@ -19,6 +39,14 @@
 /* End PBXFileSystemSynchronizedRootGroup section */
 
 /* Begin PBXFrameworksBuildPhase section */
+		7CB172412EE7467400B13B4F /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				7CB172482EE7467500B13B4F /* BearoundSDK.framework in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		7CBA19FC2E34385F004D997E /* Frameworks */ = {
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
@@ -33,6 +61,7 @@
 			isa = PBXGroup;
 			children = (
 				7CBA1A012E34385F004D997E /* BearoundSDK */,
+				7CB172452EE7467400B13B4F /* BearoundSDKTests */,
 				7CBA1A002E34385F004D997E /* Products */,
 			);
 			sourceTree = "<group>";
@@ -41,6 +70,7 @@
 			isa = PBXGroup;
 			children = (
 				7CBA19FF2E34385F004D997E /* BearoundSDK.framework */,
+				7CB172442EE7467400B13B4F /* BearoundSDKTests.xctest */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -58,6 +88,29 @@
 /* End PBXHeadersBuildPhase section */
 
 /* Begin PBXNativeTarget section */
+		7CB172432EE7467400B13B4F /* BearoundSDKTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 7CB1724B2EE7467500B13B4F /* Build configuration list for PBXNativeTarget "BearoundSDKTests" */;
+			buildPhases = (
+				7CB172402EE7467400B13B4F /* Sources */,
+				7CB172412EE7467400B13B4F /* Frameworks */,
+				7CB172422EE7467400B13B4F /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				7CB1724A2EE7467500B13B4F /* PBXTargetDependency */,
+			);
+			fileSystemSynchronizedGroups = (
+				7CB172452EE7467400B13B4F /* BearoundSDKTests */,
+			);
+			name = BearoundSDKTests;
+			packageProductDependencies = (
+			);
+			productName = BearoundSDKTests;
+			productReference = 7CB172442EE7467400B13B4F /* BearoundSDKTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
 		7CBA19FE2E34385F004D997E /* BearoundSDK */ = {
 			isa = PBXNativeTarget;
 			buildConfigurationList = 7CBA1A082E34385F004D997E /* Build configuration list for PBXNativeTarget "BearoundSDK" */;
@@ -88,9 +141,12 @@
 			isa = PBXProject;
 			attributes = {
 				BuildIndependentTargetsInParallel = 1;
-				LastSwiftUpdateCheck = 1640;
+				LastSwiftUpdateCheck = 2610;
 				LastUpgradeCheck = 1640;
 				TargetAttributes = {
+					7CB172432EE7467400B13B4F = {
+						CreatedOnToolsVersion = 26.1.1;
+					};
 					7CBA19FE2E34385F004D997E = {
 						CreatedOnToolsVersion = 16.4;
 					};
@@ -111,11 +167,19 @@
 			projectRoot = "";
 			targets = (
 				7CBA19FE2E34385F004D997E /* BearoundSDK */,
+				7CB172432EE7467400B13B4F /* BearoundSDKTests */,
 			);
 		};
 /* End PBXProject section */
 
 /* Begin PBXResourcesBuildPhase section */
+		7CB172422EE7467400B13B4F /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		7CBA19FD2E34385F004D997E /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
@@ -126,6 +190,13 @@
 /* End PBXResourcesBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
+		7CB172402EE7467400B13B4F /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		7CBA19FB2E34385F004D997E /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
@@ -135,7 +206,55 @@
 		};
 /* End PBXSourcesBuildPhase section */
 
+/* Begin PBXTargetDependency section */
+		7CB1724A2EE7467500B13B4F /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 7CBA19FE2E34385F004D997E /* BearoundSDK */;
+			targetProxy = 7CB172492EE7467500B13B4F /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
+
 /* Begin XCBuildConfiguration section */
+		7CB1724C2EE7467500B13B4F /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = 2F225FWN5Q;
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 26.1;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = ios.BearoundSDKTests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				STRING_CATALOG_GENERATE_SYMBOLS = NO;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
+		7CB1724D2EE7467500B13B4F /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = 2F225FWN5Q;
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 26.1;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = ios.BearoundSDKTests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				STRING_CATALOG_GENERATE_SYMBOLS = NO;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Release;
+		};
 		7CBA1A062E34385F004D997E /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
@@ -332,6 +451,15 @@
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
+		7CB1724B2EE7467500B13B4F /* Build configuration list for PBXNativeTarget "BearoundSDKTests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				7CB1724C2EE7467500B13B4F /* Debug */,
+				7CB1724D2EE7467500B13B4F /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
 		7CBA19F92E34385F004D997E /* Build configuration list for PBXProject "BearoundSDK" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (

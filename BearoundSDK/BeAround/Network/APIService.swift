@@ -7,19 +7,12 @@
 
 import Foundation
 
-struct PostData: Codable {
-    let deviceType: String
-    let clientToken: String
-    let sdkVersion: String
-    let idfa: String?
-    let eventType: String
-    let appState: String
-    let beacons: Array<Beacon>
-}
+// MARK: - API Service
 
 class APIService {
     
-    func sendBeacons(_ postData: PostData, completion: @escaping (Result<Data, Error>) -> Void) {
+    /// Envia beacons usando o formato de IngestPayload
+    func sendIngestPayload(_ payload: IngestPayload, completion: @escaping (Result<Data, Error>) -> Void) {
         
         guard let url = URL(string: "https://ingest.bearound.io/ingest") else {
             completion(.failure(NSError(domain: "InvalidURL", code: 0, userInfo: nil)))
@@ -31,14 +24,26 @@ class APIService {
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         
         do {
-            let jsonData = try JSONEncoder().encode(postData)
+            let encoder = JSONEncoder()
+            encoder.keyEncodingStrategy = .useDefaultKeys
+            let jsonData = try encoder.encode(payload)
             request.httpBody = jsonData
+            
+            // Para debug, imprimir o JSON
+            if let jsonString = String(data: jsonData, encoding: .utf8) {
+                print("[BeAroundSDK]: Sending ingest payload: \(jsonString)")
+            }
         } catch {
             completion(.failure(error))
             return
         }
         
         let task = URLSession.shared.dataTask(with: request) { data, response, error in
+            
+            if let error = error {
+                completion(.failure(error))
+                return
+            }
             
             guard let data = data else {
                 completion(.failure(NSError(domain: "NoData", code: 0, userInfo: nil)))

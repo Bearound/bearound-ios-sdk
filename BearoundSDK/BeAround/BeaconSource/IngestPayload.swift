@@ -2,7 +2,7 @@
 //  IngestPayload.swift
 //  beaconDetector
 //
-//  Created by Arthur Sousa on 08/12/25.
+//  Created by Felipe Costa Araujo on 08/12/25.
 //
 
 import Foundation

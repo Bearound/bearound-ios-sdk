@@ -2,7 +2,7 @@
 
 All notable changes to the BeAroundSDK for iOS.
 
-## [1.4.0] - 2025-12-08
+## [1.2.0] - 2025-12-08
 
 ### Added
 - **DeviceInfoService**: Novo serviço singleton para coleta abrangente de informações do dispositivo
@@ -65,7 +65,7 @@ Se você estava usando a API legada, atualize seu código da seguinte forma:
 let postData = PostData(
     deviceType: "iOS",
     clientToken: token,
-    sdkVersion: "1.3.0",
+    sdkVersion: "1.1.0",
     idfa: idfa,
     eventType: "enter",
     appState: "foreground",
@@ -98,7 +98,7 @@ let payload = await sdk.createIngestPayload(for: beacons)
 let service = DeviceInfoService.shared
 
 // Obter informações do SDK
-let sdkInfo = service.getSDKInfo(version: "1.4.0")
+let sdkInfo = service.getSDKInfo(version: "1.2.0")
 
 // Obter informações do dispositivo (async)
 let deviceInfo = await service.getUserDeviceInfo()
@@ -129,7 +129,7 @@ O novo formato enviado ao endpoint `/ingest`:
     }
   ],
   "sdk": {
-    "version": "1.4.0",
+    "version": "1.2.0",
     "platform": "ios",
     "appId": "com.example.app",
     "build": 210
@@ -192,9 +192,3 @@ Se você precisa migrar de versões anteriores, você **DEVE** atualizar seu có
 - Network
 - CoreTelephony
 - UserNotifications
-
----
-
-## [1.3.0 e anteriores]
-
-Versões anteriores usavam o formato legado `PostData`. Consulte a documentação antiga se precisar de referência.

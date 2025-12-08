@@ -134,6 +134,11 @@ public class Bearound: BeaconActionsDelegate {
             userInfo: nil,
             repeats: true
         )
+        
+        // Mark warm start after the first initialization
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
+            DeviceInfoService.shared.markWarmStart()
+        }
     }
     
     deinit {
@@ -189,11 +194,75 @@ public class Bearound: BeaconActionsDelegate {
         return beacons
     }
     
+    /// Creates a complete ingest payload with device info and scan context
+    /// - Parameters:
+    ///   - beacons: Array of beacons to include in the payload
+    ///   - sdkVersion: SDK version (defaults to current version)
+    /// - Returns: IngestPayload ready to be sent to the API
+    public func createIngestPayload(
+        for beacons: [Beacon],
+        sdkVersion: String = BeAroundSDKConfig.version
+    ) async -> IngestPayload {
+        // Get SDK info
+        let sdkInfo = DeviceInfoService.shared.getSDKInfo(version: sdkVersion)
+        
+        // Get device info
+        let deviceInfo = await DeviceInfoService.shared.getUserDeviceInfo()
+        
+        // Convert beacons to beacon payloads
+        let beaconPayloads = beacons.map { beacon in
+            beacon.toBeaconPayload()
+        }
+        
+        // Create scan context from the first beacon (or use default values)
+        let scanContext: ScanContext
+        if let firstBeacon = beacons.first {
+            scanContext = DeviceInfoService.shared.createScanContext(
+                rssi: firstBeacon.rssi,
+                txPower: -59, // Default txPower, pode ser customizado
+                approxDistanceMeters: firstBeacon.distanceMeters
+            )
+        } else {
+            // Default scan context if no beacons
+            scanContext = DeviceInfoService.shared.createScanContext(
+                rssi: 0,
+                txPower: nil,
+                approxDistanceMeters: nil
+            )
+        }
+        
+        return IngestPayload(
+            beacons: beaconPayloads,
+            sdk: sdkInfo,
+            userDevice: deviceInfo,
+            scanContext: scanContext
+        )
+    }
+    
+    /// Sends beacons using the new ingest payload format
+    public func sendBeaconsWithFullInfo(
+        _ beacons: [Beacon],
+        completion: @escaping (Result<Data, Error>) -> Void
+    ) async {
+        let payload = await createIngestPayload(for: beacons)
+        
+        let service = APIService()
+        service.sendIngestPayload(payload) { result in
+            completion(result)
+        }
+    }
+    
     /// Call `requestPermissions()` before starting services to ensure proper authorization.
     public func startServices() {
         self.scanner.startScanning()
         self.tracker.startTracking()
-        self.debugger.defaultPrint("SDK initialization successful on version: \(DesignSystemVersion.current)")
+        
+        // Configure Bluetooth state provider
+        DeviceInfoService.shared.setBluetoothStateProvider { [weak self] in
+            return self?.scanner.getCBManagerState() ?? .unknown
+        }
+        
+        self.debugger.defaultPrint("SDK initialization successful on version: \(BeAroundSDKConfig.version)")
     }
     
     public func stopServices() {
@@ -203,63 +272,45 @@ public class Bearound: BeaconActionsDelegate {
         timer = nil
     }
     
-    @MainActor
     @objc private func syncWithAPI() {
-        let activeBeacons = beacons.filter { beacon in
-            Date().timeIntervalSince(beacon.lastSeen) <= 5
+        Task { @MainActor in
+            let activeBeacons = beacons.filter { beacon in
+                Date().timeIntervalSince(beacon.lastSeen) <= 5
+            }
+            
+            let exitBeacons = beacons.filter { beacon in
+                Date().timeIntervalSince(beacon.lastSeen) >= 5
+            }
+            
+            // Notify listeners about detected beacons
+            if !activeBeacons.isEmpty {
+                print("[BeAroundSDK]: Beacons found: \(activeBeacons)")
+                notifyBeaconListeners(activeBeacons, eventType: "enter")
+                await sendBeacons(type: .enter, activeBeacons)
+            }
+            
+            if !exitBeacons.isEmpty {
+                print("[BeAroundSDK]: Beacons exit: \(exitBeacons)")
+                notifyBeaconListeners(exitBeacons, eventType: "exit")
+                await sendBeacons(type: .exit, exitBeacons)
+            }
+            
+            if !lostBeacons.isEmpty {
+                notifyBeaconListeners(lostBeacons, eventType: "failed")
+                await sendBeacons(type: .lost, lostBeacons)
+            }
+            
+            // Handle region state changes
+            handleRegionStateChanges(activeBeacons: activeBeacons)
         }
-        
-        let exitBeacons = beacons.filter { beacon in
-            Date().timeIntervalSince(beacon.lastSeen) >= 5
-        }
-        
-        // Notify listeners about detected beacons
-        if !activeBeacons.isEmpty {
-            print("[BeAroundSDK]: Beacons found: \(activeBeacons)")
-            notifyBeaconListeners(activeBeacons, eventType: "enter")
-            sendBeacons(type: .enter, activeBeacons)
-        }
-        
-        if !exitBeacons.isEmpty {
-            print("[BeAroundSDK]: Beacons exit: \(exitBeacons)")
-            notifyBeaconListeners(exitBeacons, eventType: "exit")
-            sendBeacons(type: .exit, exitBeacons)
-        }
-        
-        if !lostBeacons.isEmpty {
-            notifyBeaconListeners(lostBeacons, eventType: "failed")
-            sendBeacons(type: .lost, lostBeacons)
-        }
-        
-        // Handle region state changes
-        handleRegionStateChanges(activeBeacons: activeBeacons)
     }
     
-    @MainActor
-    private func sendBeacons(type: RequestType, _ beacons: Array<Beacon>) {
-        let deviceType = "iOS"
-        let idfaString = self.currentIDFA()
-        let appState = {
-            switch UIApplication.shared.applicationState {
-            case .active: return "foreground"
-            case .background: return "background"
-            case .inactive: return "inactive"
-            @unknown default: return "unknown"
-            }
-        }()
+    private func sendBeacons(type: RequestType, _ beacons: Array<Beacon>) async {
+        // Create the ingest payload with full device info
+        let payload = await createIngestPayload(for: beacons)
         
         let service = APIService()
-        service.sendBeacons(
-            PostData(
-                deviceType: deviceType,
-                clientToken: self.clientToken,
-                sdkVersion: DesignSystemVersion.current,
-                idfa: idfaString,
-                eventType: type.rawValue,
-                appState: appState,
-                beacons: beacons
-            )
-        ) { [weak self] result in
+        service.sendIngestPayload(payload) { [weak self] result in
             guard let self = self else { return }
             
             switch result {
