@@ -90,7 +90,9 @@ class BeaconScanner: NSObject, CBCentralManagerDelegate {
                 distanceMeters: distance,
                 lastSeen: Date()
             )
-            self.delegate.updateBeaconList(beacon)
+            Task { @MainActor in
+                self.delegate.updateBeaconList(beacon)
+            }
         }
     }
     

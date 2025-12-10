@@ -5,6 +5,75 @@ All notable changes to BearoundSDK for iOS will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.1] - 2025-12-10
+
+### Added
+- `clientToken` field now included in `IngestPayload` for proper authentication
+- Beacon-specific telemetry data in `BeaconPayload`:
+  - `rssi`: Signal strength for each beacon
+  - `approxDistanceMeters`: Distance estimation per beacon
+  - `txPower`: Transmission power per beacon
+- `Sendable` conformance to `Beacon` struct for Swift concurrency safety
+
+### Changed
+- **IngestPayload structure improvement**:
+  - Moved `clientToken` from scan context to root level of payload
+  - Moved beacon-specific metrics (`rssi`, `approxDistanceMeters`, `txPower`) from `ScanContext` to individual `BeaconPayload` items
+  - `ScanContext` now contains only session-level data (`scanSessionId`, `detectedAt`)
+- **Swift concurrency improvements**:
+  - `BeaconActionsDelegate` protocol marked with `@MainActor` for thread safety
+  - `Bearound` class marked with `@MainActor`
+  - `BeaconScanner` and `BeaconTracker` now dispatch delegate calls to main actor using `Task { @MainActor in }`
+  - Removed unnecessary `DispatchQueue.main.async` calls, relying on `@MainActor` isolation
+- **DeviceInfoService**:
+  - `createScanContext()` simplified - no longer requires beacon-specific parameters
+- **Version bump**: Updated to 1.2.1 in `BeAroundSDKConfig.version`
+
+### Fixed
+- Thread safety issues with beacon delegate calls now properly isolated to main actor
+- Concurrency warnings when updating beacon lists from background threads
+- Data structure inconsistency where beacon metrics were shared across all beacons instead of per-beacon
+
+### Technical Details
+
+#### New Payload Structure (v1.2.1):
+```json
+{
+  "clientToken": "your-client-token-here",
+  "beacons": [
+    {
+      "uuid": "E25B8D3C-947A-452F-A13F-589CB706D2E5",
+      "name": "B:1.0_1000.2000_100_0_20",
+      "rssi": -63,
+      "approxDistanceMeters": 1.8,
+      "txPower": -59
+    },
+    {
+      "uuid": "E25B8D3C-947A-452F-A13F-589CB706D2E5",
+      "name": "B:1.0_2000.3000_95_0_22",
+      "rssi": -78,
+      "approxDistanceMeters": 5.2,
+      "txPower": -59
+    }
+  ],
+  "sdk": { ... },
+  "userDevice": { ... },
+  "scanContext": {
+    "scanSessionId": "scan_98DF10",
+    "detectedAt": 1735940400000
+  }
+}
+```
+
+**Key improvements over 1.2.0:**
+- Each beacon now has its own signal strength and distance data
+- Authentication token moved to root level for better API design
+- Session context simplified to only session-level data
+
+### Migration from 1.2.0
+
+No breaking changes for public API consumers. The changes are internal to payload structure and concurrency handling. If you're upgrading from 1.2.0, no code changes are required.
+
 ## [1.2.0] - 2025-12-08
 
 ### Added
