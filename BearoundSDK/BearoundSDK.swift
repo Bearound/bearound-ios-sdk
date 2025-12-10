@@ -39,10 +39,12 @@ public protocol RegionListener: AnyObject {
 
 // MARK: - Internal Delegate Protocol
 
+@MainActor
 protocol BeaconActionsDelegate {
     func updateBeaconList(_ beacon: Beacon)
 }
 
+@MainActor
 public class Bearound: BeaconActionsDelegate {
     private var timer: Timer?
     private var clientToken: String
@@ -80,14 +82,10 @@ public class Bearound: BeaconActionsDelegate {
     public func requestPermissions(completion: (() -> Void)? = nil) {
         if #available(iOS 14.5, *) {
             ATTrackingManager.requestTrackingAuthorization { _ in
-                DispatchQueue.main.async {
-                    completion?()
-                }
-            }
-        } else {
-            DispatchQueue.main.async {
                 completion?()
             }
+        } else {
+            completion?()
         }
     }
 
@@ -214,24 +212,11 @@ public class Bearound: BeaconActionsDelegate {
             beacon.toBeaconPayload()
         }
         
-        // Create scan context from the first beacon (or use default values)
-        let scanContext: ScanContext
-        if let firstBeacon = beacons.first {
-            scanContext = DeviceInfoService.shared.createScanContext(
-                rssi: firstBeacon.rssi,
-                txPower: -59, // Default txPower, pode ser customizado
-                approxDistanceMeters: firstBeacon.distanceMeters
-            )
-        } else {
-            // Default scan context if no beacons
-            scanContext = DeviceInfoService.shared.createScanContext(
-                rssi: 0,
-                txPower: nil,
-                approxDistanceMeters: nil
-            )
-        }
+        // Create scan context
+        let scanContext = DeviceInfoService.shared.createScanContext()
         
         return IngestPayload(
+            clientToken: self.clientToken,
             beacons: beaconPayloads,
             sdk: sdkInfo,
             userDevice: deviceInfo,
@@ -318,16 +303,14 @@ public class Bearound: BeaconActionsDelegate {
                 self.debugger.printStatments(type: type)
                 
                 // Notify sync listeners of success
-                DispatchQueue.main.async {
-                    self.notifySyncListeners(
-                        success: true,
-                        eventType: type.rawValue,
-                        beaconCount: beacons.count,
-                        message: "Successfully synced \(beacons.count) beacons",
-                        errorCode: nil,
-                        errorMessage: nil
-                    )
-                }
+                self.notifySyncListeners(
+                    success: true,
+                    eventType: type.rawValue,
+                    beaconCount: beacons.count,
+                    message: "Successfully synced \(beacons.count) beacons",
+                    errorCode: nil,
+                    errorMessage: nil
+                )
                 
                 if type == .exit {
                     self.removeBeacons(beacons)
@@ -335,16 +318,14 @@ public class Bearound: BeaconActionsDelegate {
                 
             case .failure(let error):
                 // Notify sync listeners of error
-                DispatchQueue.main.async {
-                    self.notifySyncListeners(
-                        success: false,
-                        eventType: type.rawValue,
-                        beaconCount: beacons.count,
-                        message: nil,
-                        errorCode: (error as NSError?)?.code,
-                        errorMessage: error.localizedDescription
-                    )
-                }
+                self.notifySyncListeners(
+                    success: false,
+                    eventType: type.rawValue,
+                    beaconCount: beacons.count,
+                    message: nil,
+                    errorCode: (error as NSError?)?.code,
+                    errorMessage: error.localizedDescription
+                )
                 
                 if self.lostBeacons.count < 10 {
                     for beacon in beacons {
@@ -374,10 +355,8 @@ public class Bearound: BeaconActionsDelegate {
     // MARK: - Private Helper Methods
     
     private func notifyBeaconListeners(_ beacons: [Beacon], eventType: String) {
-        DispatchQueue.global(qos: .background).async {
-            for listener in self.beaconListeners {
-                listener.onBeaconsDetected(beacons, eventType: eventType)
-            }
+        for listener in self.beaconListeners {
+            listener.onBeaconsDetected(beacons, eventType: eventType)
         }
     }
     
@@ -392,13 +371,11 @@ public class Bearound: BeaconActionsDelegate {
     }
     
     private func notifyRegionListeners(entered: Bool, regionName: String) {
-        DispatchQueue.global(qos: .background).async {
-            for listener in self.regionListeners {
-                if entered {
-                    listener.onRegionEnter(regionName: regionName)
-                } else {
-                    listener.onRegionExit(regionName: regionName)
-                }
+        for listener in self.regionListeners {
+            if entered {
+                listener.onRegionEnter(regionName: regionName)
+            } else {
+                listener.onRegionExit(regionName: regionName)
             }
         }
     }

@@ -104,16 +104,10 @@ public struct UserDeviceInfo: Codable {
 
 /// Representa o contexto do scan de beacon
 public struct ScanContext: Codable {
-    let rssi: Int
-    let txPower: Int?
-    let approxDistanceMeters: Float?
     let scanSessionId: String
     let detectedAt: Int64
     
     enum CodingKeys: String, CodingKey {
-        case rssi
-        case txPower
-        case approxDistanceMeters
         case scanSessionId
         case detectedAt
     }
@@ -214,11 +208,8 @@ public class DeviceInfoService {
     }
     
     /// Cria um contexto de scan para um beacon específico
-    public func createScanContext(rssi: Int, txPower: Int?, approxDistanceMeters: Float?) -> ScanContext {
+    public func createScanContext() -> ScanContext {
         return ScanContext(
-            rssi: rssi,
-            txPower: txPower,
-            approxDistanceMeters: approxDistanceMeters,
             scanSessionId: scanSessionId,
             detectedAt: getCurrentTimestamp()
         )

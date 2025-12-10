@@ -1,0 +1,140 @@
+name: iOS SDK Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to release (e.g., 1.2.0)'
+        required: true
+        type: string
+
+env:
+  PROJECT: BearoundSDK.xcodeproj
+  SCHEME: BearoundSDK
+  DESTINATION: 'platform=iOS Simulator,name=iPhone 15 Pro'
+  DERIVED_DATA: DerivedData
+
+jobs:
+  pre_release_validation:
+    name: Pre-Release Validation
+    runs-on: macos-latest
+    timeout-minutes: 45
+
+    outputs:
+      version: ${{ steps.get_version.outputs.version }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Use Xcode LTS
+        uses: maxim-lobanov/setup-xcode@v1
+
+      - name: Resolve release version
+        id: get_version
+        run: |
+          if [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" ]]; then
+            echo "version=${{ github.event.inputs.version }}" >> $GITHUB_OUTPUT
+          else
+            echo "version=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Verify podspec version matches release
+        run: |
+          VERSION=${{ steps.get_version.outputs.version }}
+          SPEC_VERSION=$(grep -E "spec.version\\s*=" BearoundSDK.podspec | head -1 | sed 's/.*"\\(.*\\)".*/\\1/')
+
+          echo "Version from tag/dispatch: $VERSION"
+          echo "Version from podspec: $SPEC_VERSION"
+
+          if [ "$VERSION" != "$SPEC_VERSION" ]; then
+            echo "❌ Version mismatch between tag ($VERSION) and podspec ($SPEC_VERSION)"
+            exit 1
+          fi
+
+      - name: Verify changelog entry
+        run: |
+          VERSION=${{ steps.get_version.outputs.version }}
+          if [ ! -f CHANGELOG.md ]; then
+            echo "❌ CHANGELOG.md not found"
+            exit 1
+          fi
+          if ! grep -q "## \\[${VERSION}\\]" CHANGELOG.md; then
+            echo "❌ Version ${VERSION} not documented in CHANGELOG.md"
+            exit 1
+          fi
+          echo "✅ Changelog contains entry for ${VERSION}"
+
+      - name: Run unit tests
+        run: |
+          set -o pipefail
+          xcodebuild \
+            -project "$PROJECT" \
+            -scheme "$SCHEME" \
+            -destination "$DESTINATION" \
+            -sdk iphonesimulator \
+            -configuration Debug \
+            -derivedDataPath "$DERIVED_DATA" \
+            clean test
+
+      - name: Lint podspec
+        run: |
+          pod lib lint BearoundSDK.podspec \
+            --allow-warnings \
+            --platforms=ios \
+            --skip-import-validation
+
+      - name: Build XCFramework
+        run: |
+          chmod +x build_framework.sh
+          ./build_framework.sh
+
+      - name: Upload XCFramework artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: BearoundSDK-xcframework-${{ steps.get_version.outputs.version }}
+          path: build/BearoundSDK.xcframework
+
+  publish_to_cocoapods:
+    name: Publish to CocoaPods
+    runs-on: macos-latest
+    needs: [pre_release_validation]
+    timeout-minutes: 25
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Use Xcode LTS
+        uses: maxim-lobanov/setup-xcode@v1
+
+      - name: Push to trunk
+        env:
+          COCOAPODS_TRUNK_TOKEN: ${{ secrets.COCOAPODS_TRUNK_TOKEN }}
+        run: |
+          if [ -z "$COCOAPODS_TRUNK_TOKEN" ]; then
+            echo "❌ Missing COCOAPODS_TRUNK_TOKEN secret"
+            exit 1
+          fi
+
+          pod trunk push BearoundSDK.podspec \
+            --allow-warnings \
+            --skip-import-validation \
+            --synchronous
+
+  release_success:
+    name: Release Success
+    runs-on: ubuntu-latest
+    needs: [pre_release_validation, publish_to_cocoapods]
+    if: always() && needs.publish_to_cocoapods.result == 'success'
+
+    steps:
+      - name: Release completed successfully
+        run: |
+          echo "🎉 Release v${{ needs.pre_release_validation.outputs.version }} completed successfully!"
+          echo "🚀 CocoaPods: Published"

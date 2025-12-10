@@ -8,7 +8,7 @@
 import Foundation
 import CoreBluetooth
 
-public struct Beacon: Codable, Equatable {
+public struct Beacon: Codable, Equatable, Sendable {
     var uuid = UUID(uuidString: "E25B8D3C-947A-452F-A13F-589CB706D2E5")!
     var major: String
     var minor: String

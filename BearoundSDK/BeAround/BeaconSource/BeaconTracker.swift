@@ -88,7 +88,9 @@ class BeaconTracker: NSObject, CLLocationManagerDelegate {
                 distanceMeters: BeaconParser().getDistanceInMeters(rssi: Float(beacon.rssi)),
                 lastSeen: Date()
             )
-            self.delegate.updateBeaconList(beacon)
+            Task { @MainActor in
+                self.delegate.updateBeaconList(beacon)
+            }
         }
     }
 }
