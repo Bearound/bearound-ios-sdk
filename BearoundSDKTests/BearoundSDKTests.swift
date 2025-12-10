@@ -132,6 +132,7 @@ struct BeaconParserTests {
 struct BearoundSDKMainTests {
     
     @Test("SDK initialization")
+    @MainActor
     func sdkInitialization() async throws {
         let sdk = Bearound(clientToken: "test-token", isDebugEnable: true)
         
@@ -144,6 +145,7 @@ struct BearoundSDKMainTests {
     }
     
     @Test("Get active beacons filters by time")
+    @MainActor
     func getActiveBeaconsFiltering() async throws {
         let sdk = Bearound(clientToken: "test-token", isDebugEnable: false)
         
@@ -181,6 +183,7 @@ struct BearoundSDKMainTests {
     }
     
     @Test("Update beacon list replaces existing beacon")
+    @MainActor
     func updateBeaconList() async throws {
         let sdk = Bearound(clientToken: "test-token", isDebugEnable: false)
         
@@ -275,6 +278,7 @@ struct ListenerTests {
     }
     
     @Test("Add and remove beacon listener")
+    @MainActor
     func beaconListenerManagement() async throws {
         let sdk = Bearound(clientToken: "test-token", isDebugEnable: false)
         let listener = MockBeaconListener()
@@ -287,6 +291,7 @@ struct ListenerTests {
     }
     
     @Test("Add and remove sync listener")
+    @MainActor
     func syncListenerManagement() async throws {
         let sdk = Bearound(clientToken: "test-token", isDebugEnable: false)
         let listener = MockSyncListener()
@@ -298,6 +303,7 @@ struct ListenerTests {
     }
     
     @Test("Add and remove region listener")
+    @MainActor
     func regionListenerManagement() async throws {
         let sdk = Bearound(clientToken: "test-token", isDebugEnable: false)
         let listener = MockRegionListener()
@@ -353,6 +359,7 @@ struct EdgeCasesTests {
     }
     
     @Test("SDK handles multiple beacons with same major/minor")
+    @MainActor
     func duplicateBeacons() async throws {
         let sdk = Bearound(clientToken: "test-token", isDebugEnable: false)
         
@@ -391,6 +398,7 @@ struct EdgeCasesTests {
 struct IDFATests {
     
     @Test("IDFA retrieval")
+    @MainActor
     func idfaRetrieval() async throws {
         let sdk = Bearound(clientToken: "test-token", isDebugEnable: false)
         
