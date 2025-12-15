@@ -9,22 +9,28 @@ import Foundation
 
 class BeaconParser {
     
+    /// Extrai o valor de major do nome do beacon
+    /// Formato esperado: "B:FIRMWARE_MAJOR.MINOR_BATTERY_MOVEMENTS_TEMPERATURE"
+    /// Exemplo: "B:1.0_0.14_100_0_20" → major = "0"
     func getMajor(_ name: String) -> String? {
-        if let regex = try? NSRegularExpression(pattern: #"b_(\d+)\.(\d+)"#) {
+        if let regex = try? NSRegularExpression(pattern: #"B:(\d+\.\d+)_(\d+)\.(\d+)"#) {
             let range = NSRange(name.startIndex..<name.endIndex, in: name)
             if let match = regex.firstMatch(in: name, range: range),
-               let majorRange = Range(match.range(at: 1), in: name) {
+               let majorRange = Range(match.range(at: 2), in: name) {
                 return String(name[majorRange])
             }
         }
         return nil
     }
     
+    /// Extrai o valor de minor do nome do beacon
+    /// Formato esperado: "B:FIRMWARE_MAJOR.MINOR_BATTERY_MOVEMENTS_TEMPERATURE"
+    /// Exemplo: "B:1.0_0.14_100_0_20" → minor = "14"
     func getMinor(_ name: String) -> String? {
-        if let regex = try? NSRegularExpression(pattern: #"b_(\d+)\.(\d+)"#) {
+        if let regex = try? NSRegularExpression(pattern: #"B:(\d+\.\d+)_(\d+)\.(\d+)"#) {
             let range = NSRange(name.startIndex..<name.endIndex, in: name)
             if let match = regex.firstMatch(in: name, range: range),
-               let minorRange = Range(match.range(at: 2), in: name) {
+               let minorRange = Range(match.range(at: 3), in: name) {
                 return String(name[minorRange])
             }
         }

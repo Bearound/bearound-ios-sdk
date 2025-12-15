@@ -47,8 +47,8 @@ public struct IngestPayload: Codable {
 
 extension Beacon {
     /// Converte um Beacon para BeaconPayload
-    /// O formato do name é: "B:FIRMWARE_MAJOR.MINOR_BATTERY_MOVEMENTS_TEMPERATURE"
-    /// Por exemplo: "B:1.0_1000.2000_85_123_22"
+    /// Formato esperado do bluetoothName: "B:FIRMWARE_MAJOR.MINOR_BATTERY_MOVEMENTS_TEMPERATURE"
+    /// Por exemplo: "B:1.0_0.14_100_0_20"
     func toBeaconPayload(
         firmware: String = "1.0",
         battery: Int = 100,
@@ -56,7 +56,14 @@ extension Beacon {
         temperature: Int = 20,
         txPower: Int? = nil
     ) -> BeaconPayload {
-        let name = "B:\(firmware)_\(major).\(minor)_\(battery)_\(movements)_\(temperature)"
+        // Usa o nome puro do beacon da firmware quando disponível,
+        // caso contrário constrói o nome com os parâmetros fornecidos
+        let name: String
+        if let bluetoothName = self.bluetoothName, !bluetoothName.isEmpty {
+            name = bluetoothName
+        } else {
+            name = "B:\(firmware)_\(major).\(minor)_\(battery)_\(movements)_\(temperature)"
+        }
         
         return BeaconPayload(
             uuid: uuid.uuidString,

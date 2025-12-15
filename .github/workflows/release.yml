@@ -47,7 +47,7 @@ jobs:
       - name: Verify podspec version matches release
         run: |
           VERSION=${{ steps.get_version.outputs.version }}
-          SPEC_VERSION=$(grep -E "spec.version\\s*=" BearoundSDK.podspec | head -1 | sed 's/.*"\\(.*\\)".*/\\1/')
+          SPEC_VERSION=$(grep -E 'spec\.version\s*=' BearoundSDK.podspec | head -1 | sed -E 's/.*"([0-9]+\.[0-9]+\.[0-9]+)".*/\1/')
 
           echo "Version from tag/dispatch: $VERSION"
           echo "Version from podspec: $SPEC_VERSION"
@@ -56,6 +56,7 @@ jobs:
             echo "❌ Version mismatch between tag ($VERSION) and podspec ($SPEC_VERSION)"
             exit 1
           fi
+          echo "✅ Version matches: $VERSION"
 
       - name: Verify changelog entry
         run: |
@@ -69,6 +70,49 @@ jobs:
             exit 1
           fi
           echo "✅ Changelog contains entry for ${VERSION}"
+
+      - name: Extract changelog for version
+        id: extract_changelog
+        run: |
+          VERSION=${{ steps.get_version.outputs.version }}
+
+          # Extract changelog section for this version using Python
+          python3 << 'PYTHON_SCRIPT' > release_notes.md
+          import sys
+          import re
+
+          version = "${{ steps.get_version.outputs.version }}"
+
+          with open('CHANGELOG.md', 'r') as f:
+              content = f.read()
+
+          # Find the section for this version
+          pattern = rf'## \[{re.escape(version)}\][^\n]*\n(.*?)(?=\n## \[|\Z)'
+          match = re.search(pattern, content, re.DOTALL)
+
+          if match:
+              notes = match.group(1).strip()
+              print(notes)
+          else:
+              print(f"Release notes for version {version}")
+          PYTHON_SCRIPT
+
+          # Display for debugging
+          echo "📝 Release notes extracted:"
+          cat release_notes.md
+
+          # Save to output for GitHub Actions
+          {
+            echo 'notes<<EOF'
+            cat release_notes.md
+            echo EOF
+          } >> $GITHUB_OUTPUT
+
+      - name: Upload release notes artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-notes-${{ steps.get_version.outputs.version }}
+          path: release_notes.md
 
       - name: Run unit tests
         run: |
@@ -127,14 +171,53 @@ jobs:
             --skip-import-validation \
             --synchronous
 
+  create_github_release:
+    name: Create GitHub Release
+    runs-on: ubuntu-latest
+    needs: [pre_release_validation, publish_to_cocoapods]
+    if: needs.publish_to_cocoapods.result == 'success'
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download release notes
+        uses: actions/download-artifact@v4
+        with:
+          name: release-notes-${{ needs.pre_release_validation.outputs.version }}
+
+      - name: Download XCFramework
+        uses: actions/download-artifact@v4
+        with:
+          name: BearoundSDK-xcframework-${{ needs.pre_release_validation.outputs.version }}
+          path: BearoundSDK.xcframework
+
+      - name: Create XCFramework zip
+        run: |
+          zip -r BearoundSDK-${{ needs.pre_release_validation.outputs.version }}.xcframework.zip BearoundSDK.xcframework
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ needs.pre_release_validation.outputs.version }}
+          name: BearoundSDK v${{ needs.pre_release_validation.outputs.version }}
+          body_path: release_notes.md
+          files: |
+            BearoundSDK-${{ needs.pre_release_validation.outputs.version }}.xcframework.zip
+          draft: false
+          prerelease: false
+
   release_success:
     name: Release Success
     runs-on: ubuntu-latest
-    needs: [pre_release_validation, publish_to_cocoapods]
-    if: always() && needs.publish_to_cocoapods.result == 'success'
+    needs: [pre_release_validation, publish_to_cocoapods, create_github_release]
+    if: always() && needs.publish_to_cocoapods.result == 'success' && needs.create_github_release.result == 'success'
 
     steps:
       - name: Release completed successfully
         run: |
           echo "🎉 Release v${{ needs.pre_release_validation.outputs.version }} completed successfully!"
           echo "🚀 CocoaPods: Published"
+          echo "📦 GitHub Release: Created"

@@ -75,7 +75,7 @@ class BeaconScanner: NSObject, CBCentralManagerDelegate {
     }
     
     func centralManager(_ central: CBCentralManager, didDiscover peripheral: CBPeripheral, advertisementData: [String : Any], rssi RSSI: NSNumber) {
-        if let name = peripheral.name, name.contains("BeA:") {
+        if let name = peripheral.name, name.hasPrefix("B:") {
             guard let major = BeaconParser().getMajor(name) else { return }
             guard let minor = BeaconParser().getMinor(name) else { return }
             let address = peripheral.identifier.uuidString
