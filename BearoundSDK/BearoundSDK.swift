@@ -207,8 +207,8 @@ public class Bearound: BeaconActionsDelegate {
         // Get device info
         let deviceInfo = await DeviceInfoService.shared.getUserDeviceInfo()
         
-        // Convert beacons to beacon payloads
-        let beaconPayloads = beacons.map { beacon in
+        // Convert beacons to beacon payloads (filter out invalid beacons)
+        let beaconPayloads = beacons.compactMap { beacon in
             beacon.toBeaconPayload()
         }
         
@@ -340,7 +340,25 @@ public class Bearound: BeaconActionsDelegate {
     
     func updateBeaconList(_ beacon: Beacon) {
         if let index = beacons.firstIndex(of: beacon) {
-            beacons[index] = beacon
+            var existing = beacons[index]
+            
+            // SEMPRE atualizar: RSSI, distance, lastSeen
+            existing.rssi = beacon.rssi
+            existing.lastSeen = beacon.lastSeen
+            if let newDistance = beacon.distanceMeters {
+                existing.distanceMeters = newDistance
+            }
+            
+            // SÓ atualizar se novo beacon tem dados MELHORES (não-nil)
+            if let newName = beacon.bluetoothName, !newName.isEmpty {
+                existing.bluetoothName = newName
+            }
+            
+            if let newAddress = beacon.bluetoothAddress, !newAddress.isEmpty {
+                existing.bluetoothAddress = newAddress
+            }
+            
+            beacons[index] = existing
         } else {
             beacons.append(beacon)
         }

@@ -79,7 +79,13 @@ class BeaconTracker: NSObject, CLLocationManagerDelegate {
     
     func locationManager(_ manager: CLLocationManager, didRangeBeacons beacons: [CLBeacon], in region: CLBeaconRegion) {
         for beacon in beacons {
-            let beacon = Beacon(
+            // Validar RSSI (deve estar entre -120 e -1 dBm)
+            guard beacon.rssi != 0 && beacon.rssi >= -120 && beacon.rssi <= -1 else {
+                print("[BeAroundSDK]: Rejected iBeacon (major: \(beacon.major), minor: \(beacon.minor)) - Invalid RSSI: \(beacon.rssi)")
+                continue
+            }
+            
+            let beaconObj = Beacon(
                 major: String(describing: beacon.major),
                 minor: String(describing: beacon.minor),
                 rssi: beacon.rssi,
@@ -89,7 +95,7 @@ class BeaconTracker: NSObject, CLLocationManagerDelegate {
                 lastSeen: Date()
             )
             Task { @MainActor in
-                self.delegate.updateBeaconList(beacon)
+                self.delegate.updateBeaconList(beaconObj)
             }
         }
     }

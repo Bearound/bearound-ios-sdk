@@ -75,24 +75,43 @@ class BeaconScanner: NSObject, CBCentralManagerDelegate {
     }
     
     func centralManager(_ central: CBCentralManager, didDiscover peripheral: CBPeripheral, advertisementData: [String : Any], rssi RSSI: NSNumber) {
-        if let name = peripheral.name, name.hasPrefix("B:") {
-            guard let major = BeaconParser().getMajor(name) else { return }
-            guard let minor = BeaconParser().getMinor(name) else { return }
-            let address = peripheral.identifier.uuidString
-            let distance = BeaconParser().getDistanceInMeters(rssi: Float(truncating: RSSI))
-            
-            let beacon = Beacon(
-                major: major,
-                minor: minor,
-                rssi: Int(truncating: RSSI),
-                bluetoothName: name,
-                bluetoothAddress: address,
-                distanceMeters: distance,
-                lastSeen: Date()
-            )
-            Task { @MainActor in
-                self.delegate.updateBeaconList(beacon)
-            }
+        // 1️⃣ Validar nome
+        guard let name = peripheral.name, name.hasPrefix("B:") else { return }
+        
+        // 2️⃣ Validar RSSI (deve estar entre -120 e -1 dBm)
+        let rssiValue = Int(truncating: RSSI)
+        guard rssiValue != 0 && rssiValue >= -120 && rssiValue <= -1 else {
+            print("[BeAroundSDK]: Rejected beacon '\(name)' - Invalid RSSI: \(rssiValue)")
+            return
+        }
+        
+        // 3️⃣ Validar parsing de major
+        guard let major = BeaconParser().getMajor(name) else {
+            print("[BeAroundSDK]: Rejected beacon '\(name)' - Failed to parse major")
+            return
+        }
+        
+        // 4️⃣ Validar parsing de minor
+        guard let minor = BeaconParser().getMinor(name) else {
+            print("[BeAroundSDK]: Rejected beacon '\(name)' - Failed to parse minor")
+            return
+        }
+        
+        let address = peripheral.identifier.uuidString
+        let distance = BeaconParser().getDistanceInMeters(rssi: Float(rssiValue))
+        
+        let beacon = Beacon(
+            major: major,
+            minor: minor,
+            rssi: rssiValue,
+            bluetoothName: name,
+            bluetoothAddress: address,
+            distanceMeters: distance,
+            lastSeen: Date()
+        )
+        
+        Task { @MainActor in
+            self.delegate.updateBeaconList(beacon)
         }
     }
     
