@@ -6,6 +6,8 @@ Swift SDK for iOS — secure BLE beacon detection and indoor positioning by Bear
 
 BearoundSDK provides secure BLE beacon detection and indoor location technology for iOS applications. The SDK offers continuous region monitoring, automatic event handling, and secure data transmission with built-in encryption and privacy features.
 
+**Current Version:** 1.3.0
+
 ## Topics
 
 ### Features
@@ -65,21 +67,34 @@ For background mode support, add:
 
 #### Initialization
 
-Initialize the SDK after checking required permissions:
+The SDK uses a singleton pattern and must be configured before use:
 
 ```swift
 import BeAround
 
-let sdk = Bearound(clientToken: "your_client_token", isDebugEnable: true)
+// Configure the SDK (call this once, typically in your AppDelegate or App struct)
+Bearound.configure(clientToken: "your_client_token", isDebugEnable: true)
 
 // Request permissions using async/await (iOS 13+)
-await sdk.requestPermissions()
+await Bearound.shared.requestPermissions()
 
 // Start services
-sdk.startServices()
+Bearound.shared.startServices()
 ```
 
-**Note**: Prompt the user for permissions before initializing the SDK.
+**Important Notes:**
+- The SDK **must** be configured using `Bearound.configure()` before accessing `Bearound.shared`
+- `configure()` can only be called once. Subsequent calls will return the existing instance with a warning.
+- Always prompt the user for permissions before initializing the SDK.
+
+#### Resetting the SDK (Testing Only)
+
+For testing purposes, you can reset the SDK instance:
+
+```swift
+// ⚠️ Use with caution - stops all services and clears the instance
+Bearound.reset()
+```
 
 #### Runtime Permissions
 
@@ -104,8 +119,9 @@ if #available(iOS 14, *) {
         switch status {
         case .authorized:
             print("ATT Authorized")
-            let idfa = ASIdentifierManager.shared().advertisingIdentifier
-            print("IDFA: \(idfa.uuidString)")
+            // Use the SDK's safe accessor for IDFA
+            let idfa = Bearound.shared.currentIDFA()
+            print("IDFA: \(idfa)")
         case .denied:
             print("ATT Denied")
         case .notDetermined:
@@ -116,6 +132,17 @@ if #available(iOS 14, *) {
             print("Unknown ATT Status")
         }
     }
+}
+```
+
+**Using the SDK's IDFA Accessor:**
+```swift
+// Safe accessor - returns empty string if not authorized
+let idfa = Bearound.shared.currentIDFA()
+if !idfa.isEmpty {
+    print("IDFA available: \(idfa)")
+} else {
+    print("IDFA not available or not authorized")
 }
 ```
 
@@ -161,11 +188,14 @@ The SDK now collects comprehensive device information automatically, including:
 To send beacons with full device telemetry:
 
 ```swift
-// Get currently active beacons
-let activeBeacons = sdk.getActiveBeacons()
+// Get currently active beacons (last seen within 5 seconds)
+let activeBeacons = Bearound.shared.getActiveBeacons()
+
+// Get all beacons (including recently lost ones)
+let allBeacons = Bearound.shared.getAllBeacons()
 
 // Send with full device info
-await sdk.sendBeaconsWithFullInfo(activeBeacons) { result in
+await Bearound.shared.sendBeaconsWithFullInfo(activeBeacons) { result in
     switch result {
     case .success(let data):
         print("Beacons sent successfully with full telemetry")
@@ -175,16 +205,28 @@ await sdk.sendBeaconsWithFullInfo(activeBeacons) { result in
 }
 ```
 
+### Checking Scanning Status
+
+You can check if the SDK is currently scanning:
+
+```swift
+if Bearound.shared.isCurrentlyScanning() {
+    print("SDK is actively scanning for beacons")
+} else {
+    print("SDK is not scanning")
+}
+```
+
 ### Manually Creating Ingest Payloads
 
 You can also create payloads manually for custom processing:
 
 ```swift
 // Create a complete ingest payload
-let payload = await sdk.createIngestPayload(for: activeBeacons)
+let payload = await Bearound.shared.createIngestPayload(for: activeBeacons)
 
 // The payload includes:
-// - beacons: Array of beacon data
+// - beacons: Array of beacon data (uuid, name, rssi, approxDistanceMeters, txPower)
 // - sdk: SDK information
 // - userDevice: Complete device telemetry
 // - scanContext: Scan session details
@@ -205,7 +247,10 @@ class MyBeaconHandler: BeaconListener {
 }
 
 let handler = MyBeaconHandler()
-sdk.addBeaconListener(handler)
+Bearound.shared.addBeaconListener(handler)
+
+// Remove when no longer needed
+Bearound.shared.removeBeaconListener(handler)
 ```
 
 #### SyncListener
@@ -221,7 +266,10 @@ class MySyncHandler: SyncListener {
 }
 
 let syncHandler = MySyncHandler()
-sdk.addSyncListener(syncHandler)
+Bearound.shared.addSyncListener(syncHandler)
+
+// Remove when no longer needed
+Bearound.shared.removeSyncListener(syncHandler)
 ```
 
 #### RegionListener
@@ -237,7 +285,10 @@ class MyRegionHandler: RegionListener {
 }
 
 let regionHandler = MyRegionHandler()
-sdk.addRegionListener(regionHandler)
+Bearound.shared.addRegionListener(regionHandler)
+
+// Remove when no longer needed
+Bearound.shared.removeRegionListener(regionHandler)
 ```
 
 ### Security Features
@@ -299,7 +350,7 @@ The SDK version is centrally managed in `Constants.swift`:
 
 ```swift
 // ✅ CORRECT: Always use BeAroundSDKConfig.version
-let version = BeAroundSDKConfig.version // "1.2.0"
+let version = BeAroundSDKConfig.version // "1.3.0"
 
 // ✅ SDK name and log tag are also available
 let sdkName = BeAroundSDKConfig.name // "BeAroundSDK"
@@ -324,11 +375,14 @@ The enhanced ingest payload follows this structure:
   "beacons": [
     {
       "uuid": "E25B8D3C-947A-452F-A13F-589CB706D2E5",
-      "name": "B:FIRMWARE_MAJOR.MINOR_BATTERY_MOVEMENTS_TEMPERATURE"
+      "name": "B:FIRMWARE_MAJOR.MINOR_BATTERY_MOVEMENTS_TEMPERATURE",
+      "rssi": -63,
+      "approxDistanceMeters": 1.8,
+      "txPower": -59
     }
   ],
   "sdk": {
-    "version": "1.2.0",
+    "version": "1.3.0",
     "platform": "ios",
     "appId": "com.shop.app",
     "build": 210
@@ -370,6 +424,8 @@ The enhanced ingest payload follows this structure:
   }
 }
 ```
+
+**Note:** Only beacons with valid Bluetooth names starting with `"B:"` will be included in the payload. Beacons without proper names are automatically filtered out.
 
 ### License
 

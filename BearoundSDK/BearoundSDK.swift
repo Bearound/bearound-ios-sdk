@@ -46,12 +46,32 @@ protocol BeaconActionsDelegate {
 
 @MainActor
 public class Bearound: BeaconActionsDelegate {
+    
+    // MARK: - Singleton
+    private static var _shared: Bearound?
+    private static let lock = NSLock()
+    
+    /// Shared instance of the SDK. Must be configured before use.
+    public static var shared: Bearound {
+        get {
+            lock.lock()
+            defer { lock.unlock() }
+            
+            guard let instance = _shared else {
+                fatalError("Bearound SDK must be configured before use. Call Bearound.configure(clientToken:isDebugEnable:) first.")
+            }
+            return instance
+        }
+    }
+    
+    // MARK: - Properties
     private var timer: Timer?
     private var clientToken: String
     private var beacons: Array<Beacon>
     private var lostBeacons: Array<Beacon>
     private var debugger: DebuggerHelper
     private var currentRegionState: String?
+    private var isScanning: Bool = false
     
     // MARK: - Listener Collections
     private var beaconListeners: [BeaconListener] = []
@@ -59,12 +79,45 @@ public class Bearound: BeaconActionsDelegate {
     private var regionListeners: [RegionListener] = []
     
     private lazy var scanner: BeaconScanner = {
-        return BeaconScanner(delegate: self)
+        return BeaconScanner(delegate: self, debugger: self.debugger)
     }()
     
     private lazy var tracker: BeaconTracker = {
-        return BeaconTracker(delegate: self)
+        return BeaconTracker(delegate: self, debugger: self.debugger)
     }()
+    
+    // MARK: - Configuration
+    
+    /// Configures the SDK with the required client token. Must be called before using the SDK.
+    /// - Parameters:
+    ///   - clientToken: Your API client token
+    ///   - isDebugEnable: Enable debug logging
+    /// - Returns: The configured SDK instance
+    /// - Note: This method can only be called once. Subsequent calls will return the existing instance.
+    @discardableResult
+    public static func configure(clientToken: String, isDebugEnable: Bool) -> Bearound {
+        lock.lock()
+        defer { lock.unlock() }
+        
+        if let existing = _shared {
+            // Use Swift.print for warning since debugger not available yet
+            Swift.print("[BeAroundSDK] Warning: SDK already configured. Returning existing instance.")
+            return existing
+        }
+        
+        let instance = Bearound(clientToken: clientToken, isDebugEnable: isDebugEnable)
+        _shared = instance
+        return instance
+    }
+    
+    /// Resets the SDK instance. Use with caution - typically only needed for testing.
+    public static func reset() {
+        lock.lock()
+        defer { lock.unlock() }
+        
+        _shared?.stopServices()
+        _shared = nil
+    }
     
     // MARK: - Permissions
     /// Requests all necessary permissions used by the SDK (App Tracking Transparency for IDFA and Location permissions for beacon scanning).
@@ -118,7 +171,9 @@ public class Bearound: BeaconActionsDelegate {
         }
     }
     
-    public init(clientToken: String = "", isDebugEnable: Bool) {
+    // MARK: - Initialization
+    
+    internal init(clientToken: String, isDebugEnable: Bool) {
         self.beacons = []
         self.lostBeacons = []
         self.clientToken = clientToken
@@ -207,8 +262,8 @@ public class Bearound: BeaconActionsDelegate {
         // Get device info
         let deviceInfo = await DeviceInfoService.shared.getUserDeviceInfo()
         
-        // Convert beacons to beacon payloads
-        let beaconPayloads = beacons.map { beacon in
+        // Convert beacons to beacon payloads (filter out invalid beacons)
+        let beaconPayloads = beacons.compactMap { beacon in
             beacon.toBeaconPayload()
         }
         
@@ -231,7 +286,7 @@ public class Bearound: BeaconActionsDelegate {
     ) async {
         let payload = await createIngestPayload(for: beacons)
         
-        let service = APIService()
+        let service = APIService(debugger: self.debugger)
         service.sendIngestPayload(payload) { result in
             completion(result)
         }
@@ -239,6 +294,25 @@ public class Bearound: BeaconActionsDelegate {
     
     /// Call `requestPermissions()` before starting services to ensure proper authorization.
     public func startServices() {
+        guard !isScanning else {
+            debugger.defaultPrint("Warning: Services already running. Ignoring startServices() call.")
+            return
+        }
+        
+        isScanning = true
+        
+        // Recreate timer if it was invalidated
+        if timer == nil {
+            timer = Timer.scheduledTimer(
+                timeInterval: 5.0,
+                target: self,
+                selector: #selector(syncWithAPI),
+                userInfo: nil,
+                repeats: true
+            )
+            debugger.defaultPrint("Timer recreated for beacon sync")
+        }
+        
         self.scanner.startScanning()
         self.tracker.startTracking()
         
@@ -247,14 +321,29 @@ public class Bearound: BeaconActionsDelegate {
             return self?.scanner.getCBManagerState() ?? .unknown
         }
         
-        self.debugger.defaultPrint("SDK initialization successful on version: \(BeAroundSDKConfig.version)")
+        self.debugger.defaultPrint("SDK services started on version: \(BeAroundSDKConfig.version)")
     }
     
     public func stopServices() {
+        guard isScanning else {
+            debugger.defaultPrint("Warning: Services not running. Ignoring stopServices() call.")
+            return
+        }
+        
+        isScanning = false
         self.scanner.stopScanning()
         self.tracker.stopTracking()
+        
+        // Invalidate timer but keep it ready to be recreated
         timer?.invalidate()
         timer = nil
+        
+        debugger.defaultPrint("SDK services stopped")
+    }
+    
+    /// Check if scanning is currently active
+    public func isCurrentlyScanning() -> Bool {
+        return isScanning
     }
     
     @objc private func syncWithAPI() {
@@ -269,13 +358,13 @@ public class Bearound: BeaconActionsDelegate {
             
             // Notify listeners about detected beacons
             if !activeBeacons.isEmpty {
-                print("[BeAroundSDK]: Beacons found: \(activeBeacons)")
+                debugger.defaultPrint("Beacons found: \(activeBeacons)")
                 notifyBeaconListeners(activeBeacons, eventType: "enter")
                 await sendBeacons(type: .enter, activeBeacons)
             }
             
             if !exitBeacons.isEmpty {
-                print("[BeAroundSDK]: Beacons exit: \(exitBeacons)")
+                debugger.defaultPrint("Beacons exit: \(exitBeacons)")
                 notifyBeaconListeners(exitBeacons, eventType: "exit")
                 await sendBeacons(type: .exit, exitBeacons)
             }
@@ -294,7 +383,7 @@ public class Bearound: BeaconActionsDelegate {
         // Create the ingest payload with full device info
         let payload = await createIngestPayload(for: beacons)
         
-        let service = APIService()
+        let service = APIService(debugger: self.debugger)
         service.sendIngestPayload(payload) { [weak self] result in
             guard let self = self else { return }
             
@@ -317,7 +406,6 @@ public class Bearound: BeaconActionsDelegate {
                 }
                 
             case .failure(let error):
-                // Notify sync listeners of error
                 self.notifySyncListeners(
                     success: false,
                     eventType: type.rawValue,
@@ -340,7 +428,24 @@ public class Bearound: BeaconActionsDelegate {
     
     func updateBeaconList(_ beacon: Beacon) {
         if let index = beacons.firstIndex(of: beacon) {
-            beacons[index] = beacon
+            var existing = beacons[index]
+            
+            existing.rssi = beacon.rssi
+            existing.lastSeen = beacon.lastSeen
+            
+            if let newDistance = beacon.distanceMeters {
+                existing.distanceMeters = newDistance
+            }
+            
+            if let newName = beacon.bluetoothName, !newName.isEmpty {
+                existing.bluetoothName = newName
+            }
+            
+            if let newAddress = beacon.bluetoothAddress, !newAddress.isEmpty {
+                existing.bluetoothAddress = newAddress
+            }
+            
+            beacons[index] = existing
         } else {
             beacons.append(beacon)
         }

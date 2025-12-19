@@ -21,7 +21,7 @@ struct BeaconTests {
             major: "100",
             minor: "200",
             rssi: -60,
-            bluetoothName: "BeA:b_100.200",
+            bluetoothName: "B:1.62_100.200_31_118_28",
             bluetoothAddress: "ADDRESS-1",
             distanceMeters: 1.5,
             lastSeen: Date()
@@ -31,7 +31,7 @@ struct BeaconTests {
             major: "100",
             minor: "200",
             rssi: -65,
-            bluetoothName: "BeA:b_100.200",
+            bluetoothName: "B:1.62_100.200_31_118_28",
             bluetoothAddress: "ADDRESS-2",
             distanceMeters: 2.0,
             lastSeen: Date()
@@ -41,7 +41,7 @@ struct BeaconTests {
             major: "100",
             minor: "201",
             rssi: -60,
-            bluetoothName: "BeA:b_100.201",
+            bluetoothName: "B:1.62_100.201_31_118_28",
             bluetoothAddress: "ADDRESS-3",
             distanceMeters: 1.5,
             lastSeen: Date()
@@ -77,30 +77,30 @@ struct BeaconParserTests {
     
     @Test("Parse major from beacon name")
     func parseMajor() {
-        let name1 = "BeA:b_100.200"
+        let name1 = "B:1.62_100.200_31_118_28"
         let major1 = parser.getMajor(name1)
         #expect(major1 == "100", "Should extract major value correctly")
         
-        let name2 = "BeA:b_5.10"
+        let name2 = "B:1.62_5.10_31_118_28"
         let major2 = parser.getMajor(name2)
         #expect(major2 == "5", "Should extract single digit major")
         
-        let invalidName = "BeA:invalid"
+        let invalidName = "B:invalid"
         let major3 = parser.getMajor(invalidName)
         #expect(major3 == nil, "Should return nil for invalid format")
     }
     
     @Test("Parse minor from beacon name")
     func parseMinor() {
-        let name1 = "BeA:b_100.200"
+        let name1 = "B:1.62_100.200_31_118_28"
         let minor1 = parser.getMinor(name1)
         #expect(minor1 == "200", "Should extract minor value correctly")
         
-        let name2 = "BeA:b_5.10"
+        let name2 = "B:1.62_5.10_31_118_28"
         let minor2 = parser.getMinor(name2)
         #expect(minor2 == "10", "Should extract two digit minor")
         
-        let invalidName = "BeA:invalid"
+        let invalidName = "B:invalid"
         let minor3 = parser.getMinor(invalidName)
         #expect(minor3 == nil, "Should return nil for invalid format")
     }
@@ -154,7 +154,7 @@ struct BearoundSDKMainTests {
             major: "100",
             minor: "200",
             rssi: -60,
-            bluetoothName: "BeA:b_100.200",
+            bluetoothName: "B:1.62_100.200_31_118_28",
             bluetoothAddress: "ADDRESS-1",
             distanceMeters: 1.5,
             lastSeen: Date()
@@ -165,7 +165,7 @@ struct BearoundSDKMainTests {
             major: "101",
             minor: "201",
             rssi: -65,
-            bluetoothName: "BeA:b_101.201",
+            bluetoothName: "B:1.62_101.201_31_118_28",
             bluetoothAddress: "ADDRESS-2",
             distanceMeters: 2.0,
             lastSeen: Date().addingTimeInterval(-10)
@@ -191,7 +191,7 @@ struct BearoundSDKMainTests {
             major: "100",
             minor: "200",
             rssi: -60,
-            bluetoothName: "BeA:b_100.200",
+            bluetoothName: "B:1.62_100.200_31_118_28",
             bluetoothAddress: "ADDRESS-1",
             distanceMeters: 1.5,
             lastSeen: Date()
@@ -206,7 +206,7 @@ struct BearoundSDKMainTests {
             major: "100",
             minor: "200",
             rssi: -65,
-            bluetoothName: "BeA:b_100.200",
+            bluetoothName: "B:1.62_100.200_31_118_28",
             bluetoothAddress: "ADDRESS-1",
             distanceMeters: 2.0,
             lastSeen: Date()
@@ -328,11 +328,11 @@ struct EdgeCasesTests {
         #expect(parser.getMinor("") == nil, "Should handle empty string")
         
         // Invalid formats
-        #expect(parser.getMajor("BeA:") == nil, "Should handle incomplete beacon name")
-        #expect(parser.getMinor("BeA:") == nil, "Should handle incomplete beacon name")
+        #expect(parser.getMajor("B:") == nil, "Should handle incomplete beacon name")
+        #expect(parser.getMinor("B:") == nil, "Should handle incomplete beacon name")
         
         // Very large numbers
-        let largeName = "BeA:b_999999.888888"
+        let largeName = "B:1.62_999999.888888_31_118_28"
         #expect(parser.getMajor(largeName) == "999999", "Should handle large numbers")
         #expect(parser.getMinor(largeName) == "888888", "Should handle large numbers")
     }
@@ -367,7 +367,7 @@ struct EdgeCasesTests {
             major: "100",
             minor: "200",
             rssi: -60,
-            bluetoothName: "BeA:b_100.200",
+            bluetoothName: "B:1.62_100.200_31_118_28",
             bluetoothAddress: "ADDRESS-1",
             distanceMeters: 1.5,
             lastSeen: Date()
@@ -377,7 +377,7 @@ struct EdgeCasesTests {
             major: "100",
             minor: "200",
             rssi: -70,
-            bluetoothName: "BeA:b_100.200",
+            bluetoothName: "B:1.62_100.200_31_118_28",
             bluetoothAddress: "ADDRESS-2",
             distanceMeters: 3.0,
             lastSeen: Date()

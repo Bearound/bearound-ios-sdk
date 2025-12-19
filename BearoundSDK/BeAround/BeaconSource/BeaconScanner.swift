@@ -18,10 +18,12 @@ class BeaconScanner: NSObject, CBCentralManagerDelegate {
     private var isScanning: Bool
     private var cbManager: CBCentralManager!
     private var delegate: BeaconActionsDelegate
+    private var debugger: DebuggerHelper
     
-    init(delegate: BeaconActionsDelegate) {
+    init(delegate: BeaconActionsDelegate, debugger: DebuggerHelper) {
         self.isScanning = false
         self.delegate = delegate
+        self.debugger = debugger
         super.init()
         self.cbManager = CBCentralManager(delegate: self, queue: nil, options: [
             CBCentralManagerOptionRestoreIdentifierKey: "com.bearound.bluetoothCentral"
@@ -62,37 +64,52 @@ class BeaconScanner: NSObject, CBCentralManagerDelegate {
                     CBCentralManagerScanOptionAllowDuplicatesKey: true
                 ]
             )
-            print("[BeAroundSDK]: Bluetooth permission allowed")
+            debugger.defaultPrint("Bluetooth permission allowed")
         case .unauthorized:
-            print("[BeAroundSDK]: Bluetooth permission denied")
+            debugger.defaultPrint("Bluetooth permission denied")
         case .poweredOff:
-            print("[BeAroundSDK]: Bluetooth is powered off")
+            debugger.defaultPrint("Bluetooth is powered off")
         case .unsupported:
-            print("[BeAroundSDK]: Decice does not support Bluetooth")
+            debugger.defaultPrint("Device does not support Bluetooth")
         default:
             break
         }
     }
     
     func centralManager(_ central: CBCentralManager, didDiscover peripheral: CBPeripheral, advertisementData: [String : Any], rssi RSSI: NSNumber) {
-        if let name = peripheral.name, name.contains("BeA:") {
-            guard let major = BeaconParser().getMajor(name) else { return }
-            guard let minor = BeaconParser().getMinor(name) else { return }
-            let address = peripheral.identifier.uuidString
-            let distance = BeaconParser().getDistanceInMeters(rssi: Float(truncating: RSSI))
-            
-            let beacon = Beacon(
-                major: major,
-                minor: minor,
-                rssi: Int(truncating: RSSI),
-                bluetoothName: name,
-                bluetoothAddress: address,
-                distanceMeters: distance,
-                lastSeen: Date()
-            )
-            Task { @MainActor in
-                self.delegate.updateBeaconList(beacon)
-            }
+        guard let name = peripheral.name, name.hasPrefix("B:") else { return }
+        
+        let rssiValue = Int(truncating: RSSI)
+        guard rssiValue != 0 && rssiValue >= -120 && rssiValue <= -1 else {
+            debugger.defaultPrint("Rejected beacon '\(name)' - Invalid RSSI: \(rssiValue)")
+            return
+        }
+        
+        guard let major = BeaconParser().getMajor(name) else {
+            debugger.defaultPrint("Rejected beacon '\(name)' - Failed to parse major")
+            return
+        }
+        
+        guard let minor = BeaconParser().getMinor(name) else {
+            debugger.defaultPrint("Rejected beacon '\(name)' - Failed to parse minor")
+            return
+        }
+        
+        let address = peripheral.identifier.uuidString
+        let distance = BeaconParser().getDistanceInMeters(rssi: Float(rssiValue))
+        
+        let beacon = Beacon(
+            major: major,
+            minor: minor,
+            rssi: rssiValue,
+            bluetoothName: name,
+            bluetoothAddress: address,
+            distanceMeters: distance,
+            lastSeen: Date()
+        )
+        
+        Task { @MainActor in
+            self.delegate.updateBeaconList(beacon)
         }
     }
     

@@ -47,20 +47,18 @@ public struct IngestPayload: Codable {
 
 extension Beacon {
     /// Converte um Beacon para BeaconPayload
-    /// O formato do name é: "B:FIRMWARE_MAJOR.MINOR_BATTERY_MOVEMENTS_TEMPERATURE"
-    /// Por exemplo: "B:1.0_1000.2000_85_123_22"
-    func toBeaconPayload(
-        firmware: String = "1.0",
-        battery: Int = 100,
-        movements: Int = 0,
-        temperature: Int = 20,
-        txPower: Int? = nil
-    ) -> BeaconPayload {
-        let name = "B:\(firmware)_\(major).\(minor)_\(battery)_\(movements)_\(temperature)"
+    /// Retorna nil se o beacon não tiver um nome válido do formato "B:..."
+    /// Isso garante que apenas beacons reais sejam enviados ao servidor
+    func toBeaconPayload(txPower: Int? = nil) -> BeaconPayload? {
+        guard let bluetoothName = self.bluetoothName,
+              !bluetoothName.isEmpty,
+              bluetoothName.hasPrefix("B:") else {
+            return nil
+        }
         
         return BeaconPayload(
             uuid: uuid.uuidString,
-            name: name,
+            name: bluetoothName,
             rssi: rssi,
             approxDistanceMeters: distanceMeters,
             txPower: txPower
