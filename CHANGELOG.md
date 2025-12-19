@@ -17,7 +17,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - CI workflow simplified to run only unit tests and pod lint validation
 - Release workflow optimized to match CI pattern
 - Updated test scheme configuration to `BearoundSDKTests` for proper test execution
-- Updated simulator target to iPhone 16 Pro for better compatibility
+- Updated simulator target to use generic "Any iOS Simulator Device" for better GitHub Actions compatibility
 
 ### Infrastructure
 - Improved GitHub Actions workflows for faster CI/CD execution
