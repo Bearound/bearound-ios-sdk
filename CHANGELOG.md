@@ -5,6 +5,25 @@ All notable changes to BearoundSDK for iOS will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.3.0] - 2025-12-19
+
+### Fixed
+- Beacon name search and parsing logic improvements
+- RSSI state management and debug print enhancements
+- Unit tests stability and reliability
+- CI/CD pipeline configuration for proper test execution
+
+### Changed
+- CI workflow simplified to run only unit tests and pod lint validation
+- Release workflow optimized to match CI pattern
+- Updated test scheme configuration to `BearoundSDKTests` for proper test execution
+- Updated simulator target to iPhone 16 Pro for better compatibility
+
+### Infrastructure
+- Improved GitHub Actions workflows for faster CI/CD execution
+- Fixed scheme configuration for test action support
+- Enhanced release automation with CocoaPods publishing
+
 ## [1.2.1] - 2025-12-10
 
 ### Added
