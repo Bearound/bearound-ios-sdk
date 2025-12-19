@@ -50,11 +50,9 @@ extension Beacon {
     /// Retorna nil se o beacon não tiver um nome válido do formato "B:..."
     /// Isso garante que apenas beacons reais sejam enviados ao servidor
     func toBeaconPayload(txPower: Int? = nil) -> BeaconPayload? {
-        // Validar que temos um nome real do beacon
         guard let bluetoothName = self.bluetoothName,
               !bluetoothName.isEmpty,
               bluetoothName.hasPrefix("B:") else {
-            print("[BeAroundSDK]: Beacon with major=\(major), minor=\(minor) has no valid bluetoothName - skipping payload")
             return nil
         }
         

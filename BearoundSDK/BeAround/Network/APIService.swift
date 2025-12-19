@@ -11,6 +11,12 @@ import Foundation
 
 class APIService {
     
+    private var debugger: DebuggerHelper?
+    
+    init(debugger: DebuggerHelper? = nil) {
+        self.debugger = debugger
+    }
+    
     /// Envia beacons usando o formato de IngestPayload
     func sendIngestPayload(_ payload: IngestPayload, completion: @escaping (Result<Data, Error>) -> Void) {
         
@@ -29,9 +35,8 @@ class APIService {
             let jsonData = try encoder.encode(payload)
             request.httpBody = jsonData
             
-            // Para debug, imprimir o JSON
             if let jsonString = String(data: jsonData, encoding: .utf8) {
-                print("[BeAroundSDK]: Sending ingest payload: \(jsonString)")
+                debugger?.defaultPrint("Sending ingest payload: \(jsonString)")
             }
         } catch {
             completion(.failure(error))

@@ -27,6 +27,7 @@ class DebuggerHelper {
     }
     
     func defaultPrint(_ items: Any..., separator: String = " ", terminator: String = "\n") {
+        guard isDebuggerEnabled else { return }
         let prefix = "[BeAroundSDK]:"
         let message = items.map { "\($0)" }.joined(separator: separator)
         Swift.print("\(prefix) \(message)", terminator: terminator)

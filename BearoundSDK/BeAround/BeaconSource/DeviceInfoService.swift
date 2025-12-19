@@ -177,23 +177,23 @@ public class DeviceInfoService {
             model: getDeviceModel(),
             os: "ios",
             osVersion: getOSVersion(),
-            sdkInt: nil, // iOS não usa sdkInt (apenas Android)
+            sdkInt: nil,
             timestamp: getCurrentTimestamp(),
             timezone: getTimezone(),
             batteryLevel: getBatteryLevel(),
             isCharging: isDeviceCharging(),
-            powerSaveMode: nil, // iOS não tem power save mode (usa lowPowerMode)
+            powerSaveMode: nil,
             lowPowerMode: isLowPowerModeEnabled(),
             bluetoothState: getBluetoothState(),
             locationPermission: getLocationPermission(),
             locationAccuracy: getLocationAccuracy(),
             notificationsPermission: notificationStatus,
             networkType: currentNetworkType,
-            wifiSSID: nil, // Requer entitlement especial, retorna nil por padrão
-            wifiBSSID: nil, // Requer entitlement especial, retorna nil por padrão
+            wifiSSID: nil,
+            wifiBSSID: nil,
             cellularGeneration: getCellularGeneration(),
-            isRoaming: isRoaming(),
-            connectionMetered: nil, // iOS não expõe essa informação diretamente
+            isRoaming: nil,
+            connectionMetered: nil,
             connectionExpensive: currentConnectionExpensive,
             ramTotalMb: getTotalRAM(),
             ramAvailableMb: getAvailableRAM(),
@@ -436,23 +436,6 @@ public class DeviceInfoService {
                 }
             }
             return "unknown"
-        }
-    }
-    
-    private func isRoaming() -> Bool? {
-        let networkInfo = CTTelephonyNetworkInfo()
-        
-        if #available(iOS 13.0, *) {
-            // Para iOS 13+, verifica o primeiro carrier disponível
-            guard let carrier = networkInfo.serviceSubscriberCellularProviders?.values.first else {
-                return nil
-            }
-            // Note: A propriedade para verificar roaming não está diretamente disponível
-            // Esta é uma limitação do iOS
-            return nil
-        } else {
-            // Para iOS 12 e anteriores
-            return nil
         }
     }
     
