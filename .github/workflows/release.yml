@@ -13,8 +13,8 @@ on:
 
 env:
   PROJECT: BearoundSDK.xcodeproj
-  SCHEME: BearoundSDK
-  DESTINATION: 'platform=iOS Simulator,name=iPhone 15 Pro'
+  SCHEME: BearoundSDKTests
+  DESTINATION: 'platform=iOS Simulator,name=iPhone 16 Pro'
   DERIVED_DATA: DerivedData
 
 jobs:
@@ -133,17 +133,6 @@ jobs:
             --platforms=ios \
             --skip-import-validation
 
-      - name: Build XCFramework
-        run: |
-          chmod +x build_framework.sh
-          ./build_framework.sh
-
-      - name: Upload XCFramework artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: BearoundSDK-xcframework-${{ steps.get_version.outputs.version }}
-          path: build/BearoundSDK.xcframework
-
   publish_to_cocoapods:
     name: Publish to CocoaPods
     runs-on: macos-latest
@@ -188,24 +177,12 @@ jobs:
         with:
           name: release-notes-${{ needs.pre_release_validation.outputs.version }}
 
-      - name: Download XCFramework
-        uses: actions/download-artifact@v4
-        with:
-          name: BearoundSDK-xcframework-${{ needs.pre_release_validation.outputs.version }}
-          path: BearoundSDK.xcframework
-
-      - name: Create XCFramework zip
-        run: |
-          zip -r BearoundSDK-${{ needs.pre_release_validation.outputs.version }}.xcframework.zip BearoundSDK.xcframework
-
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: v${{ needs.pre_release_validation.outputs.version }}
           name: BearoundSDK v${{ needs.pre_release_validation.outputs.version }}
           body_path: release_notes.md
-          files: |
-            BearoundSDK-${{ needs.pre_release_validation.outputs.version }}.xcframework.zip
           draft: false
           prerelease: false
 
