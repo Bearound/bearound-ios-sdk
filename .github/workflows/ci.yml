@@ -9,7 +9,7 @@ on:
 
 env:
   PROJECT: BearoundSDK.xcodeproj
-  SCHEME: BearoundSDK
+  SCHEME: BearoundSDKTests
   DESTINATION: 'platform=iOS Simulator,name=iPhone 15 Pro'
   DERIVED_DATA: DerivedData
 
