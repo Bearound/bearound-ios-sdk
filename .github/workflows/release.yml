@@ -14,7 +14,7 @@ on:
 env:
   PROJECT: BearoundSDK.xcodeproj
   SCHEME: BearoundSDKTests
-  DESTINATION: 'platform=iOS Simulator,name=iPhone 16 Pro'
+  DESTINATION: 'platform=iOS Simulator,name=Any iOS Simulator Device'
   DERIVED_DATA: DerivedData
 
 jobs:
