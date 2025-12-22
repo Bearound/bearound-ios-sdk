@@ -9,7 +9,7 @@ import Foundation
 
 // MARK: - Sync Interval
 
-/// Intervalos de sincronização predefinidos para envio de beacons à API
+/// Predefined synchronization intervals for sending beacons to the API
 public enum SyncInterval: TimeInterval, CaseIterable {
     case time5 = 5.0
     case time10 = 10.0
@@ -24,12 +24,12 @@ public enum SyncInterval: TimeInterval, CaseIterable {
     case time55 = 55.0
     case time60 = 60.0
     
-    /// Valor em segundos do intervalo
+    /// Interval value in seconds
     public var seconds: TimeInterval {
         return self.rawValue
     }
     
-    /// Descrição amigável do intervalo
+    /// Human-readable description of the interval
     public var description: String {
         return "\(Int(rawValue))s"
     }
@@ -37,7 +37,7 @@ public enum SyncInterval: TimeInterval, CaseIterable {
 
 // MARK: - Backup Size
 
-/// Tamanho máximo do backup de beacons perdidos
+/// Maximum size for the lost beacons backup
 public enum BackupSize: Int, CaseIterable {
     case size5 = 5
     case size10 = 10
@@ -50,12 +50,12 @@ public enum BackupSize: Int, CaseIterable {
     case size45 = 45
     case size50 = 50
     
-    /// Quantidade máxima de beacons no backup
+    /// Maximum number of beacons in backup
     public var count: Int {
         return self.rawValue
     }
     
-    /// Descrição amigável do tamanho
+    /// Human-readable description of the size
     public var description: String {
         return "\(rawValue) beacons"
     }
