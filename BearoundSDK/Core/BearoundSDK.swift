@@ -18,32 +18,6 @@ enum RequestType: String {
     case lost = "lost"
 }
 
-// MARK: - Public Listener Protocols
-
-/// Protocol for receiving beacon detection callbacks
-public protocol BeaconListener: AnyObject {
-    func onBeaconsDetected(_ beacons: [Beacon], eventType: String)
-}
-
-/// Protocol for monitoring API synchronization status
-public protocol SyncListener: AnyObject {
-    func onSyncSuccess(eventType: String, beaconCount: Int, message: String)
-    func onSyncError(eventType: String, beaconCount: Int, errorCode: Int?, errorMessage: String)
-}
-
-/// Protocol for tracking beacon region entry/exit
-public protocol RegionListener: AnyObject {
-    func onRegionEnter(regionName: String)
-    func onRegionExit(regionName: String)
-}
-
-// MARK: - Internal Delegate Protocol
-
-@MainActor
-protocol BeaconActionsDelegate {
-    func updateBeaconList(_ beacon: Beacon)
-}
-
 @MainActor
 public class Bearound: BeaconActionsDelegate {
     
@@ -72,6 +46,9 @@ public class Bearound: BeaconActionsDelegate {
     private var debugger: DebuggerHelper
     private var currentRegionState: String?
     private var isScanning: Bool = false
+    
+    private var syncInterval: SyncInterval = .time20
+    private var backupSize: BackupSize = .size40
     
     // MARK: - Listener Collections
     private var beaconListeners: [BeaconListener] = []
@@ -171,6 +148,67 @@ public class Bearound: BeaconActionsDelegate {
         }
     }
     
+    // MARK: - SDK Configuration Methods
+    
+    /// Configura o intervalo de sincronização com a API
+    /// - Parameter interval: Intervalo predefinido (5-60 segundos)
+    public func setSyncInterval(_ interval: SyncInterval) {
+        guard interval != syncInterval else {
+            debugger.defaultPrint("Sync interval already set to \(interval.description)")
+            return
+        }
+        
+        syncInterval = interval
+        debugger.defaultPrint("Sync interval changed to \(interval.description)")
+        
+        if isScanning {
+            recreateTimer()
+        }
+    }
+    
+    /// Obtém o intervalo atual de sincronização
+    /// - Returns: Intervalo de sincronização configurado
+    public func getSyncInterval() -> SyncInterval {
+        return syncInterval
+    }
+    
+    /// Configura o tamanho máximo do backup de beacons perdidos
+    /// - Parameter size: Tamanho predefinido (5-50 beacons)
+    public func setBackupSize(_ size: BackupSize) {
+        backupSize = size
+        debugger.defaultPrint("Backup size set to \(size.description)")
+        
+        if lostBeacons.count > size.count {
+            let overflow = lostBeacons.count - size.count
+            lostBeacons.removeFirst(overflow)
+            debugger.defaultPrint("Trimmed \(overflow) beacons from backup to fit new size")
+        }
+    }
+    
+    /// Obtém o tamanho configurado do backup
+    /// - Returns: Tamanho máximo do backup
+    public func getBackupSize() -> BackupSize {
+        return backupSize
+    }
+    
+    /// Obtém o número atual de beacons no backup
+    /// - Returns: Quantidade de beacons aguardando reenvio
+    public func getLostBeaconsCount() -> Int {
+        return lostBeacons.count
+    }
+    
+    private func recreateTimer() {
+        timer?.invalidate()
+        timer = Timer.scheduledTimer(
+            timeInterval: syncInterval.seconds,
+            target: self,
+            selector: #selector(syncWithAPI),
+            userInfo: nil,
+            repeats: true
+        )
+        debugger.defaultPrint("Timer recreated with interval: \(syncInterval.seconds)s")
+    }
+    
     // MARK: - Initialization
     
     internal init(clientToken: String, isDebugEnable: Bool) {
@@ -181,14 +219,13 @@ public class Bearound: BeaconActionsDelegate {
         self.currentRegionState = nil
         
         self.timer = Timer.scheduledTimer(
-            timeInterval: 5.0,
+            timeInterval: syncInterval.seconds,
             target: self,
             selector: #selector(syncWithAPI),
             userInfo: nil,
             repeats: true
         )
         
-        // Mark warm start after the first initialization
         DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
             DeviceInfoService.shared.markWarmStart()
         }
@@ -301,22 +338,21 @@ public class Bearound: BeaconActionsDelegate {
         
         isScanning = true
         
-        // Recreate timer if it was invalidated
         if timer == nil {
             timer = Timer.scheduledTimer(
-                timeInterval: 5.0,
+                timeInterval: syncInterval.seconds,
                 target: self,
                 selector: #selector(syncWithAPI),
                 userInfo: nil,
                 repeats: true
             )
-            debugger.defaultPrint("Timer recreated for beacon sync")
+            debugger.defaultPrint("Timer created with interval: \(syncInterval.seconds)s")
         }
         
         self.scanner.startScanning()
-        self.tracker.startTracking()
         
-        // Configure Bluetooth state provider
+        debugger.defaultPrint("⚠️ BeaconTracker DISABLED (temporary test)")
+        
         DeviceInfoService.shared.setBluetoothStateProvider { [weak self] in
             return self?.scanner.getCBManagerState() ?? .unknown
         }
@@ -332,9 +368,9 @@ public class Bearound: BeaconActionsDelegate {
         
         isScanning = false
         self.scanner.stopScanning()
-        self.tracker.stopTracking()
         
-        // Invalidate timer but keep it ready to be recreated
+        debugger.defaultPrint("⚠️ BeaconTracker DISABLED (temporary test)")
+        
         timer?.invalidate()
         timer = nil
         
@@ -380,8 +416,14 @@ public class Bearound: BeaconActionsDelegate {
     }
     
     private func sendBeacons(type: RequestType, _ beacons: Array<Beacon>) async {
-        // Create the ingest payload with full device info
-        let payload = await createIngestPayload(for: beacons)
+        let validBeacons = filterValidBeacons(beacons)
+        
+        guard !validBeacons.isEmpty else {
+            debugger.defaultPrint("No valid beacons to send for \(type.rawValue)")
+            return
+        }
+        
+        let payload = await createIngestPayload(for: validBeacons)
         
         let service = APIService(debugger: self.debugger)
         service.sendIngestPayload(payload) { [weak self] result in
@@ -391,61 +433,54 @@ public class Bearound: BeaconActionsDelegate {
             case .success(_):
                 self.debugger.printStatments(type: type)
                 
-                // Notify sync listeners of success
                 self.notifySyncListeners(
                     success: true,
                     eventType: type.rawValue,
-                    beaconCount: beacons.count,
-                    message: "Successfully synced \(beacons.count) beacons",
+                    beaconCount: validBeacons.count,
+                    message: "Successfully synced \(validBeacons.count) beacons",
                     errorCode: nil,
                     errorMessage: nil
                 )
                 
+                if type == .lost && !self.lostBeacons.isEmpty {
+                    let clearedCount = self.lostBeacons.count
+                    self.lostBeacons.removeAll()
+                    self.debugger.defaultPrint("✅ Cleared \(clearedCount) lost beacons after successful retry")
+                }
+                
                 if type == .exit {
-                    self.removeBeacons(beacons)
+                    self.removeBeacons(validBeacons)
                 }
                 
             case .failure(let error):
                 self.notifySyncListeners(
                     success: false,
                     eventType: type.rawValue,
-                    beaconCount: beacons.count,
+                    beaconCount: validBeacons.count,
                     message: nil,
                     errorCode: (error as NSError?)?.code,
                     errorMessage: error.localizedDescription
                 )
                 
-                if self.lostBeacons.count < 10 {
-                    for beacon in beacons {
-                        if !self.lostBeacons.contains(beacon) {
-                            self.lostBeacons.append(beacon)
-                        }
-                    }
+                let availableSpace = self.backupSize.count - self.lostBeacons.count
+                
+                if availableSpace > 0 {
+                    let beaconsToAdd = validBeacons.filter { !self.lostBeacons.contains($0) }
+                    let addCount = min(beaconsToAdd.count, availableSpace)
+                    
+                    self.lostBeacons.append(contentsOf: beaconsToAdd.prefix(addCount))
+                    
+                    self.debugger.defaultPrint("📦 Backup: \(self.lostBeacons.count)/\(self.backupSize.count) beacons")
+                } else {
+                    self.debugger.defaultPrint("⚠️ Backup full! Discarding \(validBeacons.count) beacons")
                 }
             }
         }
     }
     
     func updateBeaconList(_ beacon: Beacon) {
-        if let index = beacons.firstIndex(of: beacon) {
-            var existing = beacons[index]
-            
-            existing.rssi = beacon.rssi
-            existing.lastSeen = beacon.lastSeen
-            
-            if let newDistance = beacon.distanceMeters {
-                existing.distanceMeters = newDistance
-            }
-            
-            if let newName = beacon.bluetoothName, !newName.isEmpty {
-                existing.bluetoothName = newName
-            }
-            
-            if let newAddress = beacon.bluetoothAddress, !newAddress.isEmpty {
-                existing.bluetoothAddress = newAddress
-            }
-            
-            beacons[index] = existing
+        if let existingIndex = findBeaconIndex(for: beacon) {
+            mergeBeaconData(at: existingIndex, with: beacon)
         } else {
             beacons.append(beacon)
         }
@@ -458,6 +493,35 @@ public class Bearound: BeaconActionsDelegate {
     }
     
     // MARK: - Private Helper Methods
+    
+    private func filterValidBeacons(_ beacons: [Beacon]) -> [Beacon] {
+        return beacons.filter { beacon in
+            beacon.rssi != 0 && 
+            beacon.rssi >= -120 && 
+            beacon.rssi <= -1
+        }
+    }
+    
+    private func findBeaconIndex(for beacon: Beacon) -> Int? {
+        return beacons.firstIndex(where: { $0.bluetoothName == beacon.bluetoothName })
+    }
+    
+    private func mergeBeaconData(at index: Int, with newBeacon: Beacon) {
+        var existing = beacons[index]
+        
+        existing.rssi = newBeacon.rssi
+        existing.lastSeen = newBeacon.lastSeen
+        
+        if let newDistance = newBeacon.distanceMeters {
+            existing.distanceMeters = newDistance
+        }
+        
+        if let newAddress = newBeacon.bluetoothAddress, !newAddress.isEmpty {
+            existing.bluetoothAddress = newAddress
+        }
+        
+        beacons[index] = existing
+    }
     
     private func notifyBeaconListeners(_ beacons: [Beacon], eventType: String) {
         for listener in self.beaconListeners {
