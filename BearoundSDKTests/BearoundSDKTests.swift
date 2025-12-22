@@ -57,7 +57,7 @@ struct BeaconTests {
             major: "100",
             minor: "200",
             rssi: -60,
-            bluetoothName: nil,
+            bluetoothName: "B:1.62_100.200_31_118_28",
             bluetoothAddress: nil,
             distanceMeters: nil,
             lastSeen: Date()
@@ -404,8 +404,98 @@ struct IDFATests {
         
         let idfa = sdk.currentIDFA()
         
-        // IDFA should be either a valid UUID string or empty
         #expect(idfa.isEmpty || UUID(uuidString: idfa) != nil, 
                 "IDFA should be empty or a valid UUID")
     }
 }
+// MARK: - Configuration Tests
+
+@Suite("SDK Configuration Tests")
+struct ConfigurationTests {
+    
+    @Test("SyncInterval enum values")
+    func syncIntervalValues() {
+        #expect(SyncInterval.time5.seconds == 5.0)
+        #expect(SyncInterval.time10.seconds == 10.0)
+        #expect(SyncInterval.time15.seconds == 15.0)
+        #expect(SyncInterval.time20.seconds == 20.0)
+        #expect(SyncInterval.time25.seconds == 25.0)
+        #expect(SyncInterval.time30.seconds == 30.0)
+        #expect(SyncInterval.time35.seconds == 35.0)
+        #expect(SyncInterval.time40.seconds == 40.0)
+        #expect(SyncInterval.time45.seconds == 45.0)
+        #expect(SyncInterval.time50.seconds == 50.0)
+        #expect(SyncInterval.time55.seconds == 55.0)
+        #expect(SyncInterval.time60.seconds == 60.0)
+    }
+    
+    @Test("BackupSize enum values")
+    func backupSizeValues() {
+        #expect(BackupSize.size5.count == 5)
+        #expect(BackupSize.size10.count == 10)
+        #expect(BackupSize.size15.count == 15)
+        #expect(BackupSize.size20.count == 20)
+        #expect(BackupSize.size25.count == 25)
+        #expect(BackupSize.size30.count == 30)
+        #expect(BackupSize.size35.count == 35)
+        #expect(BackupSize.size40.count == 40)
+        #expect(BackupSize.size45.count == 45)
+        #expect(BackupSize.size50.count == 50)
+    }
+    
+    @Test("Default sync interval is 20 seconds")
+    @MainActor
+    func defaultSyncInterval() {
+        let sdk = Bearound(clientToken: "test", isDebugEnable: false)
+        #expect(sdk.getSyncInterval() == .time20)
+    }
+    
+    @Test("Default backup size is 40 beacons")
+    @MainActor
+    func defaultBackupSize() {
+        let sdk = Bearound(clientToken: "test", isDebugEnable: false)
+        #expect(sdk.getBackupSize() == .size40)
+    }
+    
+    @Test("Set and get sync interval")
+    @MainActor
+    func setSyncInterval() {
+        let sdk = Bearound(clientToken: "test", isDebugEnable: false)
+        
+        sdk.setSyncInterval(.time10)
+        #expect(sdk.getSyncInterval() == .time10)
+        
+        sdk.setSyncInterval(.time60)
+        #expect(sdk.getSyncInterval() == .time60)
+    }
+    
+    @Test("Set and get backup size")
+    @MainActor
+    func setBackupSize() {
+        let sdk = Bearound(clientToken: "test", isDebugEnable: false)
+        
+        sdk.setBackupSize(.size20)
+        #expect(sdk.getBackupSize() == .size20)
+        
+        sdk.setBackupSize(.size50)
+        #expect(sdk.getBackupSize() == .size50)
+    }
+    
+    @Test("Lost beacons count starts at zero")
+    @MainActor
+    func initialLostBeaconsCount() {
+        let sdk = Bearound(clientToken: "test", isDebugEnable: false)
+        #expect(sdk.getLostBeaconsCount() == 0)
+    }
+    
+    @Test("All sync interval cases exist")
+    func allSyncIntervalCases() {
+        #expect(SyncInterval.allCases.count == 12)
+    }
+    
+    @Test("All backup size cases exist")
+    func allBackupSizeCases() {
+        #expect(BackupSize.allCases.count == 10)
+    }
+}
+

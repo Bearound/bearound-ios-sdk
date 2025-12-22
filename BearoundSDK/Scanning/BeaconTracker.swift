@@ -26,13 +26,12 @@ class BeaconTracker: NSObject, CLLocationManagerDelegate {
         self.delegate = delegate
         self.debugger = debugger
         self.locationManager = CLLocationManager()
+        self.locationManager.desiredAccuracy = kCLLocationAccuracyThreeKilometers
+        self.locationManager.pausesLocationUpdatesAutomatically = true
         self.beaconRegion = CLBeaconRegion(uuid:  UUID(uuidString: "E25B8D3C-947A-452F-A13F-589CB706D2E5")!, identifier: "BeaconRegion")
         
         super.init()
         self.locationManager.delegate = self
-        self.beaconRegion.notifyEntryStateOnDisplay = true
-        self.beaconRegion.notifyOnEntry = true
-        self.beaconRegion.notifyOnExit = true
     }
     
     //-------------------------------
@@ -41,15 +40,15 @@ class BeaconTracker: NSObject, CLLocationManagerDelegate {
     func startTracking() {
         debugger.defaultPrint("Starting beacon ranging...")
         rangingStartTime = Date()
-        beaconsWithZeroRSSI.removeAll()  // Reset tracking on restart
-        locationManager.startMonitoring(for: beaconRegion)
+        beaconsWithZeroRSSI.removeAll()
         locationManager.startRangingBeacons(satisfying: beaconRegion.beaconIdentityConstraint)
+        
+        debugger.defaultPrint("Ranging STARTED for: \(beaconRegion.identifier)")
     }
     
     func stopTracking() {
         debugger.defaultPrint("Stopping beacon ranging...")
         locationManager.stopRangingBeacons(satisfying: beaconRegion.beaconIdentityConstraint)
-        locationManager.stopMonitoring(for: beaconRegion)
         rangingStartTime = nil
     }
     
@@ -67,12 +66,10 @@ class BeaconTracker: NSObject, CLLocationManagerDelegate {
             debugger.defaultPrint("Location permission denied")
         case .authorizedAlways:
             locationManager.allowsBackgroundLocationUpdates = true
-            locationManager.startUpdatingLocation()
             startTracking()
             debugger.defaultPrint("Location permission allowed for full time usage")
         case .authorizedWhenInUse:
             locationManager.allowsBackgroundLocationUpdates = true
-            locationManager.startUpdatingLocation()
             startTracking()
             debugger.defaultPrint("Location permission allowed for foreground research")
         @unknown default:
@@ -80,7 +77,6 @@ class BeaconTracker: NSObject, CLLocationManagerDelegate {
         }
         if status == .authorizedAlways || status == .authorizedWhenInUse {
             locationManager.allowsBackgroundLocationUpdates = true
-            locationManager.startUpdatingLocation()
             startTracking()
             debugger.defaultPrint("Location permission allowed")
         }
@@ -110,10 +106,9 @@ class BeaconTracker: NSObject, CLLocationManagerDelegate {
                 major: String(describing: beacon.major),
                 minor: String(describing: beacon.minor),
                 rssi: beacon.rssi,
-                bluetoothName: nil,
+                bluetoothName: "TRACKER:\(beacon.major).\(beacon.minor)",
                 bluetoothAddress: nil,
-                distanceMeters: BeaconParser().getDistanceInMeters(rssi: Float(beacon.rssi)),
-                lastSeen: Date()
+                distanceMeters: BeaconParser().getDistanceInMeters(rssi: Float(beacon.rssi))
             )
             Task { @MainActor in
                 self.delegate.updateBeaconList(beaconObj)

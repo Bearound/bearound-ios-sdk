@@ -14,7 +14,7 @@ public struct BeAroundSDKConfig {
     
     /// Versão atual do SDK
     /// **IMPORTANTE**: Este é o único local onde a versão deve ser definida
-    public static let version: String = "1.3.0"
+    public static let version: String = "1.3.1"
     
     /// Nome do SDK usado em logs
     public static let name: String = "BeAroundSDK"

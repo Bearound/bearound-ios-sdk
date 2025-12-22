@@ -46,16 +46,7 @@ public struct IngestPayload: Codable {
 // MARK: - Beacon Extension
 
 extension Beacon {
-    /// Converte um Beacon para BeaconPayload
-    /// Retorna nil se o beacon não tiver um nome válido do formato "B:..."
-    /// Isso garante que apenas beacons reais sejam enviados ao servidor
-    func toBeaconPayload(txPower: Int? = nil) -> BeaconPayload? {
-        guard let bluetoothName = self.bluetoothName,
-              !bluetoothName.isEmpty,
-              bluetoothName.hasPrefix("B:") else {
-            return nil
-        }
-        
+    func toBeaconPayload(txPower: Int? = nil) -> BeaconPayload {
         return BeaconPayload(
             uuid: uuid.uuidString,
             name: bluetoothName,

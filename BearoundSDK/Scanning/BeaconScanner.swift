@@ -77,7 +77,11 @@ class BeaconScanner: NSObject, CBCentralManagerDelegate {
     }
     
     func centralManager(_ central: CBCentralManager, didDiscover peripheral: CBPeripheral, advertisementData: [String : Any], rssi RSSI: NSNumber) {
-        guard let name = peripheral.name, name.hasPrefix("B:") else { return }
+        guard let name = peripheral.name, 
+              name.hasPrefix("B:"),
+              !name.isEmpty else { 
+            return 
+        }
         
         let rssiValue = Int(truncating: RSSI)
         guard rssiValue != 0 && rssiValue >= -120 && rssiValue <= -1 else {
@@ -104,8 +108,7 @@ class BeaconScanner: NSObject, CBCentralManagerDelegate {
             rssi: rssiValue,
             bluetoothName: name,
             bluetoothAddress: address,
-            distanceMeters: distance,
-            lastSeen: Date()
+            distanceMeters: distance
         )
         
         Task { @MainActor in

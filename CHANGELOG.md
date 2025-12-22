@@ -5,6 +5,171 @@ All notable changes to BearoundSDK for iOS will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.3.1] - 2025-12-22
+
+### Added
+- Explicit initializer for `Beacon` struct with default values
+- RSSI validation filter before sending beacons to API (must be between -120 and -1, non-zero)
+- Location accuracy configuration: `kCLLocationAccuracyThreeKilometers` for better battery efficiency
+- Helper methods for beacon list management: `filterValidBeacons()`, `findBeaconIndex()`, `mergeBeaconData()`
+- New modular folder structure for better code organization
+- **Configuration management**:
+  - `SyncInterval` enum with predefined intervals (5s to 60s)
+  - `BackupSize` enum for lost beacons backup size (5 to 50 beacons)
+  - `setSyncInterval()` and `getSyncInterval()` methods
+  - `setBackupSize()` and `getBackupSize()` methods
+  - `getLostBeaconsCount()` method to monitor backup usage
+- Enhanced test suite with comprehensive unit tests:
+  - Configuration tests for `SyncInterval` and `BackupSize` enums
+  - Tests for sync interval getter/setter methods
+  - Tests for backup size getter/setter methods
+  - Lost beacons count validation tests
+  - Default configuration values tests
+
+### Changed
+- **Beacon struct improvements**:
+  - `uuid`, `major`, `minor`, and `bluetoothName` now immutable (`let` instead of `var`)
+  - `bluetoothName` is now required (non-optional) for all beacons
+  - `lastSeen` now has default value of `Date()` in initializer
+  - Equality comparison changed from `major/minor` to `bluetoothName` for better uniqueness
+- **BeaconScanner enhancements**:
+  - Improved name validation with empty string check
+  - RSSI validation moved to scanner level for early filtering
+- **BeaconTracker optimizations** (temporary configuration for testing):
+  - Removed location monitoring (kept only beacon ranging for efficiency)
+  - Removed continuous location updates (`startUpdatingLocation`)
+  - Added `pausesLocationUpdatesAutomatically = true` for battery savings
+  - BluetoothName format changed to `"TRACKER:{major}.{minor}"` for tracker beacons
+- **BearoundSDK.swift refactoring**:
+  - `updateBeaconList()` refactored with cleaner helper methods
+  - Invalid beacons now filtered before API requests
+  - Improved beacon merge logic with dedicated methods
+- **IngestPayload.swift**:
+  - `toBeaconPayload()` now returns non-optional `BeaconPayload` (validation moved to scanner)
+  - Removed redundant "B:" prefix validation (handled at scanner level)
+
+### Fixed
+- Release workflow simulator configuration for GitHub Actions compatibility
+- CI workflow maintained with iPhone 16 Pro for consistent local and remote testing
+- Beacon equality logic now based on `bluetoothName` preventing duplicate beacons with same major/minor
+- RSSI validation ensures only valid signal strength values are processed
+
+### Removed
+- Region monitoring in `BeaconTracker` (temporarily disabled for performance testing)
+- Continuous location updates (temporarily disabled for battery optimization testing)
+
+### Technical Details
+
+#### Beacon Validation
+Beacons must now meet the following criteria to be processed:
+```swift
+- RSSI between -120 and -1 dBm
+- RSSI not equal to 0 (invalid signal)
+- Non-empty bluetoothName starting with "B:"
+```
+
+#### Location Manager Configuration
+```swift
+locationManager.desiredAccuracy = kCLLocationAccuracyThreeKilometers
+locationManager.pausesLocationUpdatesAutomatically = true
+locationManager.allowsBackgroundLocationUpdates = true
+```
+
+### Infrastructure
+- Enhanced release workflow reliability on GitHub Actions
+- Maintained CI stability by keeping proven simulator configuration
+- Improved workflow testing capabilities with manual dispatch support
+
+### Performance
+- Reduced battery consumption with optimized location accuracy settings
+- More efficient beacon filtering at scanner level
+- Cleaner beacon list management with refactored helper methods
+
+### Project Structure Reorganization
+
+The SDK has been reorganized into a cleaner, more maintainable folder structure:
+
+**New Structure:**
+```
+BearoundSDK/
+├── Configuration/       # SDK configuration and constants
+│   ├── Constants.swift
+│   └── SyncConfiguration.swift
+├── Core/               # Core SDK functionality
+│   ├── BearoundSDK.swift
+│   └── DeviceInfoService.swift
+├── Models/             # Data models
+│   ├── Beacon.swift
+│   ├── IngestPayload.swift
+│   └── Session.swift
+├── Networking/         # API communication
+│   └── APIService.swift
+├── Protocols/          # Protocol definitions (extracted for better organization)
+│   ├── BeaconActionsDelegate.swift
+│   └── BeaconListeners.swift (BeaconListener, SyncListener, RegionListener)
+├── Scanning/           # Beacon scanning functionality
+│   ├── BeaconParser.swift
+│   ├── BeaconScanner.swift
+│   └── BeaconTracker.swift
+└── Utils/              # Utility classes
+    └── DebuggerHelper.swift
+```
+
+**Previous Structure:**
+```
+BearoundSDK/
+├── BeAround/
+│   ├── BeaconSource/
+│   ├── Network/
+│   └── Utils/
+└── BearoundSDK.swift
+```
+
+**Benefits:**
+- Clearer separation of concerns
+- Easier to navigate and maintain
+- Better organization for future features
+- Improved code discoverability
+- Follows iOS/Swift best practices
+
+**Migration Note:** This is an internal restructuring. No changes required in your code as all public APIs remain unchanged.
+
+### New Public APIs
+
+#### Configuration Management
+
+The SDK now provides configuration options for sync behavior and backup management:
+
+```swift
+// Set sync interval (how often beacons are sent to API)
+sdk.setSyncInterval(.time20)  // Default: 20 seconds
+let currentInterval = sdk.getSyncInterval()
+
+// Available intervals: .time5, .time10, .time15, .time20, .time25, 
+//                      .time30, .time35, .time40, .time45, .time50, 
+//                      .time55, .time60
+
+// Set backup size for lost beacons (when API calls fail)
+sdk.setBackupSize(.size40)    // Default: 40 beacons
+let currentSize = sdk.getBackupSize()
+
+// Available sizes: .size5, .size10, .size15, .size20, .size25,
+//                  .size30, .size35, .size40, .size45, .size50
+
+// Monitor lost beacons backup usage
+let lostCount = sdk.getLostBeaconsCount()
+```
+
+**Defaults:**
+- Sync Interval: 20 seconds
+- Backup Size: 40 beacons
+
+**Use Cases:**
+- **Lower sync interval** (5-10s): Real-time applications with immediate beacon tracking needs
+- **Higher sync interval** (40-60s): Battery-optimized applications, background monitoring
+- **Smaller backup** (5-15): Limited memory scenarios
+- **Larger backup** (40-50): Poor network conditions, offline-first applications
+
 ## [1.3.0] - 2025-12-19
 
 ### Fixed
