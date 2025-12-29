@@ -1,501 +1,581 @@
 //
-//  Bearound.swift
-//  beaconDetector
+//  BearoundSDK.swift
+//  BearoundSDK
 //
-//  Created by Arthur Sousa on 19/06/25.
+//  Created by Bearound on 29/12/25.
 //
 
-#if canImport(UIKit)
-import UIKit
-#endif
-import AdSupport
 import CoreLocation
-import AppTrackingTransparency
+import Foundation
+import UIKit
 
-enum RequestType: String {
-    case enter = "enter"
-    case exit = "exit"
-    case lost = "lost"
-}
+public class BeAroundSDK {
+    public static let shared = BeAroundSDK()
 
-// MARK: - Public Listener Protocols
+    public weak var delegate: BeAroundSDKDelegate?
 
-/// Protocol for receiving beacon detection callbacks
-public protocol BeaconListener: AnyObject {
-    func onBeaconsDetected(_ beacons: [Beacon], eventType: String)
-}
+    private var configuration: SDKConfiguration?
 
-/// Protocol for monitoring API synchronization status
-public protocol SyncListener: AnyObject {
-    func onSyncSuccess(eventType: String, beaconCount: Int, message: String)
-    func onSyncError(eventType: String, beaconCount: Int, errorCode: Int?, errorMessage: String)
-}
+    private var sdkInfo: SDKInfo?
 
-/// Protocol for tracking beacon region entry/exit
-public protocol RegionListener: AnyObject {
-    func onRegionEnter(regionName: String)
-    func onRegionExit(regionName: String)
-}
+    private var userProperties: UserProperties?
 
-// MARK: - Internal Delegate Protocol
+    private let deviceInfoCollector = DeviceInfoCollector(isColdStart: true)
 
-@MainActor
-protocol BeaconActionsDelegate {
-    func updateBeaconList(_ beacon: Beacon)
-}
+    private let beaconManager = BeaconManager()
 
-@MainActor
-public class Bearound: BeaconActionsDelegate {
-    
-    // MARK: - Singleton
-    private static var _shared: Bearound?
-    private static let lock = NSLock()
-    
-    /// Shared instance of the SDK. Must be configured before use.
-    public static var shared: Bearound {
-        get {
-            lock.lock()
-            defer { lock.unlock() }
-            
-            guard let instance = _shared else {
-                fatalError("Bearound SDK must be configured before use. Call Bearound.configure(clientToken:isDebugEnable:) first.")
-            }
-            return instance
+    private let bluetoothManager = BluetoothManager()
+
+    private var apiClient: APIClient?
+
+    private var metadataCache: [String: BeaconMetadata] = [:]
+
+    private var syncTimer: DispatchSourceTimer?
+    private var countdownTimer: DispatchSourceTimer?
+    private var nextSyncTime: Date?
+
+    private var collectedBeacons: [String: Beacon] = [:]
+
+    private let beaconQueue = DispatchQueue(label: "com.bearound.sdk.beaconQueue")
+
+    private var isSyncing = false
+
+    private var failedBatches: [[Beacon]] = []
+
+    private var consecutiveFailures = 0
+
+    private var lastFailureTime: Date?
+
+    private let maxFailedBatches = 10
+
+    private var backgroundTaskId: UIBackgroundTaskIdentifier = .invalid
+
+    private var isInBackground = false
+
+    private var wasLaunchedInBackground = false
+
+    private var isTemporaryRanging = false
+
+    public var isScanning: Bool {
+        beaconManager.isScanning
+    }
+
+    public var currentSyncInterval: TimeInterval? {
+        configuration?.syncInterval
+    }
+
+    public var currentScanDuration: TimeInterval? {
+        configuration?.scanDuration
+    }
+
+    public var isPeriodicScanningEnabled: Bool {
+        configuration?.enablePeriodicScanning ?? false
+    }
+
+    private init() {
+        wasLaunchedInBackground = UIApplication.shared.applicationState != .active
+        if wasLaunchedInBackground {
+            isInBackground = true
+            print("[BeAroundSDK] App launched in background (likely by beacon monitoring)")
         }
-    }
-    
-    // MARK: - Properties
-    private var timer: Timer?
-    private var clientToken: String
-    private var beacons: Array<Beacon>
-    private var lostBeacons: Array<Beacon>
-    private var debugger: DebuggerHelper
-    private var currentRegionState: String?
-    private var isScanning: Bool = false
-    
-    // MARK: - Listener Collections
-    private var beaconListeners: [BeaconListener] = []
-    private var syncListeners: [SyncListener] = []
-    private var regionListeners: [RegionListener] = []
-    
-    private lazy var scanner: BeaconScanner = {
-        return BeaconScanner(delegate: self, debugger: self.debugger)
-    }()
-    
-    private lazy var tracker: BeaconTracker = {
-        return BeaconTracker(delegate: self, debugger: self.debugger)
-    }()
-    
-    // MARK: - Configuration
-    
-    /// Configures the SDK with the required client token. Must be called before using the SDK.
-    /// - Parameters:
-    ///   - clientToken: Your API client token
-    ///   - isDebugEnable: Enable debug logging
-    /// - Returns: The configured SDK instance
-    /// - Note: This method can only be called once. Subsequent calls will return the existing instance.
-    @discardableResult
-    public static func configure(clientToken: String, isDebugEnable: Bool) -> Bearound {
-        lock.lock()
-        defer { lock.unlock() }
-        
-        if let existing = _shared {
-            // Use Swift.print for warning since debugger not available yet
-            Swift.print("[BeAroundSDK] Warning: SDK already configured. Returning existing instance.")
-            return existing
-        }
-        
-        let instance = Bearound(clientToken: clientToken, isDebugEnable: isDebugEnable)
-        _shared = instance
-        return instance
-    }
-    
-    /// Resets the SDK instance. Use with caution - typically only needed for testing.
-    public static func reset() {
-        lock.lock()
-        defer { lock.unlock() }
-        
-        _shared?.stopServices()
-        _shared = nil
-    }
-    
-    // MARK: - Permissions
-    /// Requests all necessary permissions used by the SDK (App Tracking Transparency for IDFA and Location permissions for beacon scanning).
-    /// - Parameters:
-    ///   - completion: Called on the main queue with the resulting statuses when using the completion-based API.
-    /// - Note: On iOS 14.5+, ATT authorization is requested; on earlier systems, it is skipped. Location permission is delegated to the internal scanner if needed.
-    @available(iOS 13.0, *)
-    public func requestPermissions() async {
-        await requestAppTrackingTransparencyIfNeeded()
-        // If your scanner needs to request location permissions explicitly, expose and call it here.
-        // For now, we assume `BeaconScanner` handles location authorization on start.
+
+        setupCallbacks()
+        setupAppStateObservers()
     }
 
-    /// Completion-based variant for codebases not using async/await.
-    public func requestPermissions(completion: (() -> Void)? = nil) {
-        if #available(iOS 14.5, *) {
-            ATTrackingManager.requestTrackingAuthorization { _ in
-                completion?()
-            }
-        } else {
-            completion?()
-        }
-    }
-
-    @available(iOS 13.0, *)
-    private func requestAppTrackingTransparencyIfNeeded() async {
-        if #available(iOS 14.5, *) {
-            let status = ATTrackingManager.trackingAuthorizationStatus
-            if status == .notDetermined {
-                _ = await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
-                    ATTrackingManager.requestTrackingAuthorization { _ in
-                        continuation.resume()
-                    }
-                }
-            }
-        }
-    }
-
-    /// Safe accessor for IDFA string. Returns empty string if not authorized or unavailable.
-    public func currentIDFA() -> String {
-        // On iOS 14+, only return IDFA if tracking is authorized
-        if #available(iOS 14, *) {
-            guard ATTrackingManager.trackingAuthorizationStatus == .authorized else {
-                return ""
-            }
-            // Even when authorized, ASIdentifierManager still provides the IDFA value
-            return ASIdentifierManager.shared().advertisingIdentifier.uuidString
-        } else {
-            // On iOS versions prior to 14, return the IDFA directly
-            return ASIdentifierManager.shared().advertisingIdentifier.uuidString
-        }
-    }
-    
-    // MARK: - Initialization
-    
-    internal init(clientToken: String, isDebugEnable: Bool) {
-        self.beacons = []
-        self.lostBeacons = []
-        self.clientToken = clientToken
-        self.debugger = DebuggerHelper(isDebugEnable)
-        self.currentRegionState = nil
-        
-        self.timer = Timer.scheduledTimer(
-            timeInterval: 5.0,
-            target: self,
-            selector: #selector(syncWithAPI),
-            userInfo: nil,
-            repeats: true
-        )
-        
-        // Mark warm start after the first initialization
-        DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
-            DeviceInfoService.shared.markWarmStart()
-        }
-    }
-    
     deinit {
-        timer?.invalidate()
-        timer = nil
-        beaconListeners.removeAll()
-        syncListeners.removeAll()
-        regionListeners.removeAll()
+        NotificationCenter.default.removeObserver(self)
+        stopSyncTimer()
+        stopCountdownTimer()
+        endBackgroundTask()
     }
-    
-    
-    // MARK: - Public Listener Management Methods
-    
-    /// Add a beacon detection listener
-    public func addBeaconListener(_ listener: BeaconListener) {
-        beaconListeners.append(listener)
-    }
-    
-    /// Remove a beacon detection listener
-    public func removeBeaconListener(_ listener: BeaconListener) {
-        beaconListeners.removeAll { $0 === listener }
-    }
-    
-    /// Add a sync status listener
-    public func addSyncListener(_ listener: SyncListener) {
-        syncListeners.append(listener)
-    }
-    
-    /// Remove a sync status listener
-    public func removeSyncListener(_ listener: SyncListener) {
-        syncListeners.removeAll { $0 === listener }
-    }
-    
-    /// Add a region entry/exit listener
-    public func addRegionListener(_ listener: RegionListener) {
-        regionListeners.append(listener)
-    }
-    
-    /// Remove a region entry/exit listener
-    public func removeRegionListener(_ listener: RegionListener) {
-        regionListeners.removeAll { $0 === listener }
-    }
-    
-    /// Get currently detected beacons
-    public func getActiveBeacons() -> [Beacon] {
-        return beacons.filter { beacon in
-            Date().timeIntervalSince(beacon.lastSeen) <= 5
+
+    private func setupCallbacks() {
+        beaconManager.onBeaconsUpdated = { [weak self] beacons in
+            guard let self else { return }
+
+            let enrichedBeacons = beacons.map { beacon -> Beacon in
+                let key = "\(beacon.major).\(beacon.minor)"
+                let metadata = self.metadataCache[key]
+
+                return Beacon(
+                    uuid: beacon.uuid,
+                    major: beacon.major,
+                    minor: beacon.minor,
+                    rssi: beacon.rssi,
+                    proximity: beacon.proximity,
+                    accuracy: beacon.accuracy,
+                    timestamp: beacon.timestamp,
+                    metadata: metadata,
+                    txPower: metadata?.txPower ?? beacon.txPower
+                )
+            }
+
+            beaconQueue.async {
+                for beacon in enrichedBeacons {
+                    let key = "\(beacon.major).\(beacon.minor)"
+                    self.collectedBeacons[key] = beacon
+                }
+            }
+
+            delegate?.didUpdateBeacons(enrichedBeacons)
         }
-    }
-    
-    /// Get all detected beacons (including recently lost ones)
-    public func getAllBeacons() -> [Beacon] {
-        return beacons
-    }
-    
-    /// Creates a complete ingest payload with device info and scan context
-    /// - Parameters:
-    ///   - beacons: Array of beacons to include in the payload
-    ///   - sdkVersion: SDK version (defaults to current version)
-    /// - Returns: IngestPayload ready to be sent to the API
-    public func createIngestPayload(
-        for beacons: [Beacon],
-        sdkVersion: String = BeAroundSDKConfig.version
-    ) async -> IngestPayload {
-        // Get SDK info
-        let sdkInfo = DeviceInfoService.shared.getSDKInfo(version: sdkVersion)
-        
-        // Get device info
-        let deviceInfo = await DeviceInfoService.shared.getUserDeviceInfo()
-        
-        // Convert beacons to beacon payloads (filter out invalid beacons)
-        let beaconPayloads = beacons.compactMap { beacon in
-            beacon.toBeaconPayload()
+
+        beaconManager.onError = { [weak self] error in
+            self?.delegate?.didFailWithError(error)
         }
-        
-        // Create scan context
-        let scanContext = DeviceInfoService.shared.createScanContext()
-        
-        return IngestPayload(
-            clientToken: self.clientToken,
-            beacons: beaconPayloads,
-            sdk: sdkInfo,
-            userDevice: deviceInfo,
-            scanContext: scanContext
+
+        beaconManager.onScanningStateChanged = { [weak self] isScanning in
+            self?.delegate?.didChangeScanning(isScanning: isScanning)
+        }
+
+        beaconManager.onBackgroundRangingComplete = { [weak self] in
+            guard let self else { return }
+            print("[BeAroundSDK] Background ranging complete - syncing collected beacons")
+            self.syncBeacons()
+        }
+
+        bluetoothManager.delegate = self
+    }
+
+    private func setupAppStateObservers() {
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(appDidEnterBackground),
+            name: UIApplication.didEnterBackgroundNotification,
+            object: nil
+        )
+
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(appWillEnterForeground),
+            name: UIApplication.willEnterForegroundNotification,
+            object: nil
         )
     }
-    
-    /// Sends beacons using the new ingest payload format
-    public func sendBeaconsWithFullInfo(
-        _ beacons: [Beacon],
-        completion: @escaping (Result<Data, Error>) -> Void
-    ) async {
-        let payload = await createIngestPayload(for: beacons)
-        
-        let service = APIService(debugger: self.debugger)
-        service.sendIngestPayload(payload) { result in
-            completion(result)
+
+    @objc private func appDidEnterBackground() {
+        isInBackground = true
+        print("[BeAroundSDK] App entered background - switching to continuous ranging mode")
+
+        if let config = configuration, config.enablePeriodicScanning {
+            beaconManager.enablePeriodicScanning = false
+            if isScanning, !beaconManager.isScanning {
+                beaconManager.startRanging()
+            }
         }
     }
-    
-    /// Call `requestPermissions()` before starting services to ensure proper authorization.
-    public func startServices() {
-        guard !isScanning else {
-            debugger.defaultPrint("Warning: Services already running. Ignoring startServices() call.")
-            return
+
+    @objc private func appWillEnterForeground() {
+        isInBackground = false
+        print("[BeAroundSDK] App entered foreground - restoring periodic mode if configured")
+
+        if let config = configuration {
+            beaconManager.enablePeriodicScanning = config.enablePeriodicScanning
+            
+            if isScanning {
+                startSyncTimer()
+            }
         }
-        
-        isScanning = true
-        
-        // Recreate timer if it was invalidated
-        if timer == nil {
-            timer = Timer.scheduledTimer(
-                timeInterval: 5.0,
-                target: self,
-                selector: #selector(syncWithAPI),
-                userInfo: nil,
-                repeats: true
+    }
+
+    public func configure(appId: String,
+                          syncInterval: TimeInterval,
+                          enableBluetoothScanning: Bool = false,
+                          enablePeriodicScanning: Bool = true)
+    {
+        let config = SDKConfiguration(
+            appId: appId,
+            syncInterval: syncInterval,
+            enableBluetoothScanning: enableBluetoothScanning,
+            enablePeriodicScanning: enablePeriodicScanning
+        )
+        configuration = config
+        apiClient = APIClient(configuration: config)
+
+        let buildNumber = Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "1"
+        let build = Int(buildNumber) ?? 1
+
+        sdkInfo = SDKInfo(appId: appId, build: build)
+
+        if isScanning {
+            startSyncTimer()
+        }
+    }
+
+    public func setUserProperties(_ properties: UserProperties) {
+        userProperties = properties
+        print(
+            "[BeAroundSDK] User properties updated: internalId=\(properties.internalId ?? "nil"), email=\(properties.email ?? "nil"), name=\(properties.name ?? "nil"), custom=\(properties.customProperties.count) properties"
+        )
+    }
+
+    public func clearUserProperties() {
+        userProperties = nil
+        print("[BeAroundSDK] User properties cleared")
+    }
+
+    public func setBluetoothScanning(enabled: Bool) {
+        configuration?.enableBluetoothScanning = enabled
+
+        if enabled, isScanning {
+            bluetoothManager.startScanning()
+        } else if !enabled {
+            bluetoothManager.stopScanning()
+            metadataCache.removeAll()
+        }
+    }
+
+    public var isBluetoothScanningEnabled: Bool {
+        configuration?.enableBluetoothScanning ?? false
+    }
+
+    public func startScanning() {
+        guard let config = configuration else {
+            let error = NSError(
+                domain: "BeAroundSDK",
+                code: 3,
+                userInfo: [NSLocalizedDescriptionKey: "SDK not configured. Call configure(token:syncInterval:) first."]
             )
-            debugger.defaultPrint("Timer recreated for beacon sync")
-        }
-        
-        self.scanner.startScanning()
-        self.tracker.startTracking()
-        
-        // Configure Bluetooth state provider
-        DeviceInfoService.shared.setBluetoothStateProvider { [weak self] in
-            return self?.scanner.getCBManagerState() ?? .unknown
-        }
-        
-        self.debugger.defaultPrint("SDK services started on version: \(BeAroundSDKConfig.version)")
-    }
-    
-    public func stopServices() {
-        guard isScanning else {
-            debugger.defaultPrint("Warning: Services not running. Ignoring stopServices() call.")
+            delegate?.didFailWithError(error)
             return
         }
-        
-        isScanning = false
-        self.scanner.stopScanning()
-        self.tracker.stopTracking()
-        
-        // Invalidate timer but keep it ready to be recreated
-        timer?.invalidate()
-        timer = nil
-        
-        debugger.defaultPrint("SDK services stopped")
-    }
-    
-    /// Check if scanning is currently active
-    public func isCurrentlyScanning() -> Bool {
-        return isScanning
-    }
-    
-    @objc private func syncWithAPI() {
-        Task { @MainActor in
-            let activeBeacons = beacons.filter { beacon in
-                Date().timeIntervalSince(beacon.lastSeen) <= 5
-            }
-            
-            let exitBeacons = beacons.filter { beacon in
-                Date().timeIntervalSince(beacon.lastSeen) >= 5
-            }
-            
-            // Notify listeners about detected beacons
-            if !activeBeacons.isEmpty {
-                debugger.defaultPrint("Beacons found: \(activeBeacons)")
-                notifyBeaconListeners(activeBeacons, eventType: "enter")
-                await sendBeacons(type: .enter, activeBeacons)
-            }
-            
-            if !exitBeacons.isEmpty {
-                debugger.defaultPrint("Beacons exit: \(exitBeacons)")
-                notifyBeaconListeners(exitBeacons, eventType: "exit")
-                await sendBeacons(type: .exit, exitBeacons)
-            }
-            
-            if !lostBeacons.isEmpty {
-                notifyBeaconListeners(lostBeacons, eventType: "failed")
-                await sendBeacons(type: .lost, lostBeacons)
-            }
-            
-            // Handle region state changes
-            handleRegionStateChanges(activeBeacons: activeBeacons)
+
+        // Sync state with actual app state before starting
+        let actualAppState = UIApplication.shared.applicationState
+        isInBackground = (actualAppState == .background)
+
+        beaconManager.enablePeriodicScanning = config.enablePeriodicScanning
+
+        beaconManager.startScanning()
+        startSyncTimer()
+
+        if config.enableBluetoothScanning {
+            bluetoothManager.startScanning()
         }
     }
-    
-    private func sendBeacons(type: RequestType, _ beacons: Array<Beacon>) async {
-        // Create the ingest payload with full device info
-        let payload = await createIngestPayload(for: beacons)
-        
-        let service = APIService(debugger: self.debugger)
-        service.sendIngestPayload(payload) { [weak self] result in
-            guard let self = self else { return }
-            
-            switch result {
-            case .success(_):
-                self.debugger.printStatments(type: type)
-                
-                // Notify sync listeners of success
-                self.notifySyncListeners(
-                    success: true,
-                    eventType: type.rawValue,
-                    beaconCount: beacons.count,
-                    message: "Successfully synced \(beacons.count) beacons",
-                    errorCode: nil,
-                    errorMessage: nil
-                )
-                
-                if type == .exit {
-                    self.removeBeacons(beacons)
+
+    public func stopScanning() {
+        beaconManager.stopScanning()
+        bluetoothManager.stopScanning()
+        stopSyncTimer()
+
+        syncBeacons()
+    }
+
+    public static func isLocationAvailable() -> Bool {
+        CLLocationManager.locationServicesEnabled()
+    }
+
+    public static func authorizationStatus() -> CLAuthorizationStatus {
+        if #available(iOS 14.0, *) {
+            CLLocationManager().authorizationStatus
+        } else {
+            CLLocationManager.authorizationStatus()
+        }
+    }
+
+    private func startSyncTimer() {
+        guard let config = configuration else { return }
+
+        stopSyncTimer()
+        startCountdownTimer()
+
+        // Sync isInBackground with actual app state
+        let actualAppState = UIApplication.shared.applicationState
+        isInBackground = (actualAppState == .background)
+
+        let timer = DispatchSource.makeTimerSource(queue: DispatchQueue.global(qos: .utility))
+        syncTimer = timer
+
+        if config.enablePeriodicScanning && !isInBackground {
+            let scanDuration = config.scanDuration
+            let syncInterval = config.syncInterval
+
+            timer.schedule(deadline: .now() + syncInterval, repeating: syncInterval)
+            timer.setEventHandler { [weak self] in
+                guard let self else { return }
+
+                self.beaconManager.stopRanging()
+                self.syncBeacons()
+                print("BeAroundSDK: Synced beacons to API")
+
+                self.nextSyncTime = Date().addingTimeInterval(syncInterval)
+
+                let delayUntilNextRanging = syncInterval - scanDuration
+                DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + delayUntilNextRanging) { [weak self] in
+                    guard let self else { return }
+                    print("BeAroundSDK: Starting ranging \(String(format: "%.1f", scanDuration))s before next sync")
+                    self.beaconManager.startRanging()
                 }
-                
-            case .failure(let error):
-                self.notifySyncListeners(
-                    success: false,
-                    eventType: type.rawValue,
-                    beaconCount: beacons.count,
-                    message: nil,
-                    errorCode: (error as NSError?)?.code,
-                    errorMessage: error.localizedDescription
+            }
+
+            let delayUntilFirstRanging = syncInterval - scanDuration
+            nextSyncTime = Date().addingTimeInterval(syncInterval)
+
+            print("BeAroundSDK: First ranging will start in \(String(format: "%.1f", delayUntilFirstRanging))s (sync in \(String(format: "%.1f", syncInterval))s)")
+            DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + delayUntilFirstRanging) { [weak self] in
+                guard let self else { return }
+                print("BeAroundSDK: Starting initial ranging for \(String(format: "%.1f", scanDuration))s")
+                self.beaconManager.startRanging()
+            }
+
+            timer.resume()
+        } else {
+            timer.schedule(deadline: .now() + config.syncInterval, repeating: config.syncInterval)
+            timer.setEventHandler { [weak self] in
+                guard let self else { return }
+                self.nextSyncTime = Date().addingTimeInterval(config.syncInterval)
+                self.syncBeacons()
+            }
+
+            nextSyncTime = Date().addingTimeInterval(config.syncInterval)
+            timer.resume()
+        }
+    }
+
+    private func stopSyncTimer() {
+        syncTimer?.cancel()
+        syncTimer = nil
+    }
+
+    private func startCountdownTimer() {
+        stopCountdownTimer()
+
+        let timer = DispatchSource.makeTimerSource(queue: DispatchQueue.main)
+        timer.schedule(deadline: .now() + 1.0, repeating: 1.0)
+        timer.setEventHandler { [weak self] in
+            self?.updateCountdown()
+        }
+        countdownTimer = timer
+        timer.resume()
+    }
+
+    private func stopCountdownTimer() {
+        countdownTimer?.cancel()
+        countdownTimer = nil
+        nextSyncTime = nil
+    }
+
+    private func updateCountdown() {
+        guard let nextSync = nextSyncTime else {
+            delegate?.didUpdateSyncStatus(secondsUntilNextSync: 0, isRanging: beaconManager.isScanning)
+            return
+        }
+
+        let secondsRemaining = max(0, Int(nextSync.timeIntervalSinceNow))
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.delegate?.didUpdateSyncStatus(
+                secondsUntilNextSync: secondsRemaining,
+                isRanging: self.beaconManager.isScanning
+            )
+        }
+    }
+
+    private func syncBeacons() {
+        beaconQueue.async { [weak self] in
+            guard let self else { return }
+
+            self.beginBackgroundTask()
+
+            guard !isSyncing else {
+                print("BeAroundSDK: Skipping sync - previous sync still in progress")
+                self.endBackgroundTask()
+                return
+            }
+
+            guard let apiClient,
+                  let sdkInfo
+            else {
+                self.endBackgroundTask()
+                return
+            }
+
+            let shouldRetryFailed = shouldRetryFailedBatches()
+
+            var beaconsToSend: [Beacon] = []
+            var isRetry = false
+
+            if shouldRetryFailed, let failedBatch = failedBatches.first {
+                beaconsToSend = failedBatch
+                isRetry = true
+                failedBatches.removeFirst()
+                print(
+                    "BeAroundSDK: Retrying failed batch with \(beaconsToSend.count) beacon\(beaconsToSend.count == 1 ? "" : "s") (attempt after \(consecutiveFailures) failures)"
                 )
-                
-                if self.lostBeacons.count < 10 {
-                    for beacon in beacons {
-                        if !self.lostBeacons.contains(beacon) {
-                            self.lostBeacons.append(beacon)
+            } else if !collectedBeacons.isEmpty {
+                beaconsToSend = Array(collectedBeacons.values)
+                collectedBeacons.removeAll()
+            } else {
+                return
+            }
+
+            isSyncing = true
+            let count = beaconsToSend.count
+
+            if !isRetry {
+                print(
+                    "BeAroundSDK: Sending \(count) beacon\(count == 1 ? "" : "s") to \(configuration?.apiBaseURL ?? "unknown")/ingest"
+                )
+            }
+
+            let locationPermission = Self.authorizationStatus()
+            let bluetoothState = bluetoothManager.isPoweredOn ? "powered_on" : "powered_off"
+            let appInForeground = !isInBackground
+
+            let userDevice = deviceInfoCollector.collectDeviceInfo(
+                locationPermission: locationPermission,
+                bluetoothState: bluetoothState,
+                appInForeground: appInForeground,
+                location: beaconManager.lastLocation
+            )
+
+            apiClient.sendBeacons(
+                beaconsToSend,
+                sdkInfo: sdkInfo,
+                userDevice: userDevice,
+                userProperties: userProperties
+            ) { [weak self] result in
+                guard let self else { return }
+
+                beaconQueue.async {
+                    self.isSyncing = false
+                }
+
+                switch result {
+                case .success:
+                    print("BeAroundSDK: Successfully sent \(count) beacon\(count == 1 ? "" : "s") (HTTP 200)")
+                    self.endBackgroundTask()
+
+                    beaconQueue.async {
+                        self.consecutiveFailures = 0
+                        self.lastFailureTime = nil
+
+                        if !self.failedBatches.isEmpty {
+                            print(
+                                "BeAroundSDK: Recovered from failures - \(self.failedBatches.count) batch\(self.failedBatches.count == 1 ? "" : "es") still queued for retry"
+                            )
                         }
                     }
+
+                case let .failure(error):
+                    print("BeAroundSDK: Failed to send beacons - \(error.localizedDescription)")
+                    self.endBackgroundTask()
+
+                    beaconQueue.async {
+                        self.consecutiveFailures += 1
+                        self.lastFailureTime = Date()
+
+                        if self.failedBatches.count < self.maxFailedBatches {
+                            self.failedBatches.append(beaconsToSend)
+                            print(
+                                "BeAroundSDK: Queued \(count) beacon\(count == 1 ? "" : "s") for retry (queue size: \(self.failedBatches.count)/\(self.maxFailedBatches), consecutive failures: \(self.consecutiveFailures))"
+                            )
+                        } else {
+                            let dropped = self.failedBatches.removeFirst()
+                            self.failedBatches.append(beaconsToSend)
+                            print(
+                                "BeAroundSDK: Retry queue full - dropped \(dropped.count) oldest beacons (queue: \(self.failedBatches.count)/\(self.maxFailedBatches))"
+                            )
+                        }
+
+                        if self.consecutiveFailures >= 10 {
+                            print(
+                                "BeAroundSDK: Circuit breaker triggered - \(self.consecutiveFailures) consecutive failures. API may be down."
+                            )
+
+                            let circuitBreakerError = NSError(
+                                domain: "BeAroundSDK",
+                                code: 6,
+                                userInfo: [
+                                    NSLocalizedDescriptionKey: "API unreachable after \(self.consecutiveFailures) consecutive failures. Beacons are queued for retry.",
+                                ]
+                            )
+                            DispatchQueue.main.async {
+                                self.delegate?.didFailWithError(circuitBreakerError)
+                            }
+                        }
+                    }
+
+                    DispatchQueue.main.async {
+                        self.delegate?.didFailWithError(error)
+                    }
                 }
             }
         }
     }
-    
-    func updateBeaconList(_ beacon: Beacon) {
-        if let index = beacons.firstIndex(of: beacon) {
-            var existing = beacons[index]
-            
-            existing.rssi = beacon.rssi
-            existing.lastSeen = beacon.lastSeen
-            
-            if let newDistance = beacon.distanceMeters {
-                existing.distanceMeters = newDistance
-            }
-            
-            if let newName = beacon.bluetoothName, !newName.isEmpty {
-                existing.bluetoothName = newName
-            }
-            
-            if let newAddress = beacon.bluetoothAddress, !newAddress.isEmpty {
-                existing.bluetoothAddress = newAddress
-            }
-            
-            beacons[index] = existing
-        } else {
-            beacons.append(beacon)
+
+    private func shouldRetryFailedBatches() -> Bool {
+        guard !failedBatches.isEmpty,
+              let lastFailure = lastFailureTime
+        else {
+            return false
         }
+
+        let timeSinceFailure = Date().timeIntervalSince(lastFailure)
+
+        let backoffDelay = min(5.0 * pow(2.0, Double(min(consecutiveFailures - 1, 3))), 60.0)
+
+        return timeSinceFailure >= backoffDelay
     }
-    
-    func removeBeacons(_ beacons: Array<Beacon>) {
-        for beacon in beacons {
-            self.beacons.removeAll { $0 == beacon }
-        }
-    }
-    
-    // MARK: - Private Helper Methods
-    
-    private func notifyBeaconListeners(_ beacons: [Beacon], eventType: String) {
-        for listener in self.beaconListeners {
-            listener.onBeaconsDetected(beacons, eventType: eventType)
-        }
-    }
-    
-    private func notifySyncListeners(success: Bool, eventType: String, beaconCount: Int, message: String?, errorCode: Int?, errorMessage: String?) {
-        for listener in syncListeners {
-            if success {
-                listener.onSyncSuccess(eventType: eventType, beaconCount: beaconCount, message: message ?? "")
-            } else {
-                listener.onSyncError(eventType: eventType, beaconCount: beaconCount, errorCode: errorCode, errorMessage: errorMessage ?? "Unknown error")
+
+    private func beginBackgroundTask() {
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+
+            if backgroundTaskId != .invalid {
+                return
+            }
+
+            backgroundTaskId = UIApplication.shared.beginBackgroundTask(withName: "BeAroundSDK-Sync") { [weak self] in
+                print("[BeAroundSDK] Background task expiring - cleaning up")
+                self?.endBackgroundTask()
+            }
+
+            if backgroundTaskId != .invalid {
+                print("[BeAroundSDK] Background task started (id: \(backgroundTaskId.rawValue))")
             }
         }
     }
-    
-    private func notifyRegionListeners(entered: Bool, regionName: String) {
-        for listener in self.regionListeners {
-            if entered {
-                listener.onRegionEnter(regionName: regionName)
-            } else {
-                listener.onRegionExit(regionName: regionName)
+
+    private func endBackgroundTask() {
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+
+            if backgroundTaskId != .invalid {
+                print("[BeAroundSDK] Background task ended (id: \(backgroundTaskId.rawValue))")
+                UIApplication.shared.endBackgroundTask(backgroundTaskId)
+                backgroundTaskId = .invalid
             }
-        }
-    }
-    
-    private func handleRegionStateChanges(activeBeacons: [Beacon]) {
-        let regionName = "BeaconRegion"
-        let hasActiveBeacons = !activeBeacons.isEmpty
-        
-        if hasActiveBeacons && currentRegionState != "entered" {
-            currentRegionState = "entered"
-            notifyRegionListeners(entered: true, regionName: regionName)
-        } else if !hasActiveBeacons && currentRegionState == "entered" {
-            currentRegionState = "exited"
-            notifyRegionListeners(entered: false, regionName: regionName)
         }
     }
 }
 
+extension BeAroundSDK: BluetoothManagerDelegate {
+    func didDiscoverBeacon(
+        uuid _: UUID,
+        major: Int,
+        minor: Int,
+        rssi _: Int,
+        txPower: Int,
+        metadata: BeaconMetadata?,
+        isConnectable: Bool
+    ) {
+        guard configuration?.enableBluetoothScanning == true else { return }
+
+        if let metadata {
+            let key = "\(major).\(minor)"
+            metadataCache[key] = metadata
+            print(
+                "[BeAroundSDK] Cached metadata for beacon \(major).\(minor): battery=\(metadata.batteryLevel)%, firmware=\(metadata.firmwareVersion), txPower=\(metadata.txPower ?? 0)dBm, rssi=\(metadata.rssiFromBLE ?? 0)dBm, connectable=\(isConnectable)"
+            )
+        }
+    }
+
+    func didUpdateBluetoothState(isPoweredOn: Bool) {
+        if !isPoweredOn, configuration?.enableBluetoothScanning == true {
+            print("[BeAroundSDK] Bluetooth is off - metadata scanning unavailable")
+        }
+    }
+}
