@@ -406,5 +406,6 @@ For issues, feature requests, or questions:
 
 ---
 
-**Made with ❤️ by Bearound**
+## 📄 License
 
+MIT © Bearound
