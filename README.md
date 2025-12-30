@@ -1,22 +1,25 @@
-# 🐻 BeAround SDKs Documentation
+# 🐻 BeAround SDK for iOS
 
-Official SDKs for integrating Bearound's secure BLE beacon detection and indoor location technology across Android, iOS, React Native, and Flutter.
+Official iOS SDK for integrating Bearound's BLE beacon detection and indoor location technology.
 
-## 📱 beAround-ios-sdk
+> **Version 2.0.0** - Complete SDK rewrite with modern Swift architecture
+
+## 📱 Overview
 
 Swift SDK for iOS — secure BLE beacon detection and indoor positioning by Bearound.
 
-## 🧩 Features
+## ✨ Features
 
-- **Continuous Beacon Detection**: Monitors BLE beacons in real-time using CoreLocation and CoreBluetooth
-- **Event Listeners**: Three types of listeners for beacons, sync status, and region tracking
-- **Automatic API Synchronization**: Sends beacon data every 5 seconds to remote API
-- **Event Types**: Tracks `enter`, `exit`, and `lost` beacon events
-- **Rich Beacon Data**: Captures distance, RSSI, UUID, major/minor, and IDFA
-- **Background Support**: Continues monitoring beacons when app is in background
-- **Active/Inactive Beacon Filtering**: Distinguishes between recently seen and lost beacons
-- **Retry Logic**: Automatically retries failed API calls (up to 10 beacons)
-- **Built-in Debug Logging**: Optional debug mode for troubleshooting
+- **Real-time Beacon Detection**: Monitors BLE beacons using CoreLocation and CoreBluetooth
+- **Delegate-Based Architecture**: Clean, protocol-based event handling
+- **Automatic API Synchronization**: Configurable sync intervals for beacon data
+- **Periodic Scanning Mode**: Battery-efficient scanning with configurable scan/pause durations
+- **Background Support**: Seamless transition between foreground and background modes
+- **Bluetooth Metadata**: Optional enhanced beacon data (firmware, battery, temperature)
+- **User Properties**: Attach custom user data to beacon events
+- **Robust Error Handling**: Circuit breaker pattern with exponential backoff retry logic
+- **Comprehensive Device Info**: Collects device telemetry (battery, network, permissions, etc.)
+- **Type-Safe API**: Modern Swift with proper type safety and error handling
 
 ---
 
@@ -72,124 +75,165 @@ For more information and the latest version, visit: https://cocoapods.org/pods/B
 
 
 
-### 🚀 Usage
+## 🚀 Quick Start
 
-#### Initialization
-
-Initialize the SDK after checking the required permissions:
+### 1. Initialize the SDK
 
 ```swift
 import BearoundSDK
 
-// Initialize the SDK
-let bearound = Bearound(clientToken: "YOUR_CLIENT_TOKEN", isDebugEnable: true)
-
-// Start beacon detection services
-bearound.startServices()
+class ViewController: UIViewController, BeAroundSDKDelegate {
+    override func viewDidLoad() {
+        super.viewDidLoad()
+        
+        // Configure the SDK (do this once)
+        BeAroundSDK.shared.configure(
+            appId: "com.example.app",
+            syncInterval: 10  // Sync every 10 seconds
+        )
+        
+        // Set delegate to receive callbacks
+        BeAroundSDK.shared.delegate = self
+        
+        // Start scanning for beacons
+        BeAroundSDK.shared.startScanning()
+    }
+    
+    // MARK: - BeAroundSDKDelegate
+    
+    func didUpdateBeacons(_ beacons: [Beacon]) {
+        print("Found \(beacons.count) beacons:")
+        beacons.forEach { beacon in
+            print("  - \(beacon.major).\(beacon.minor) | RSSI: \(beacon.rssi) | Distance: \(String(format: "%.2f", beacon.accuracy))m")
+        }
+    }
+    
+    func didFailWithError(_ error: Error) {
+        print("SDK Error: \(error.localizedDescription)")
+    }
+    
+    func didChangeScanning(isScanning: Bool) {
+        print("Scanning state: \(isScanning ? "Active" : "Stopped")")
+    }
+    
+    func didUpdateSyncStatus(secondsUntilNextSync: Int, isRanging: Bool) {
+        print("Next sync in \(secondsUntilNextSync)s | Ranging: \(isRanging)")
+    }
+}
 ```
 
-#### Stop Services
-
-To stop beacon detection and API synchronization:
+### 2. Stop Scanning
 
 ```swift
-bearound.stopServices()
+BeAroundSDK.shared.stopScanning()
 ```
 
-☝️ You must prompt the user for permissions before initializing the SDK — see example below.
+☝️ You must request location permissions before starting the SDK — see [Required Permissions](#️-required-permissions) below.
 
 ---
 
-## 📡 Event Listeners
+## ⚙️ Advanced Configuration
 
-The SDK provides three types of listeners to monitor different aspects of beacon detection:
+### Periodic Scanning (Battery Efficient)
 
-### BeaconListener
-
-Receives callbacks when beacons are detected, lost, or exit the range:
+Enable periodic scanning to save battery by scanning only near sync time:
 
 ```swift
-class MyBeaconListener: BeaconListener {
-    func onBeaconsDetected(_ beacons: [Beacon], eventType: String) {
-        print("Beacons detected - Event: \(eventType), Count: \(beacons.count)")
-        // eventType can be: "enter", "exit", or "failed"
+BeAroundSDK.shared.configure(
+    appId: "com.example.app",
+    syncInterval: 30,  // Sync every 30 seconds
+    enablePeriodicScanning: true  // Scan only 5s before sync
+)
+```
+
+**How it works:**
+- Scans for 5 seconds before each sync
+- Pauses scanning between syncs
+- Automatically switches to continuous mode in background
+- Great for battery-conscious applications
+
+### Bluetooth Metadata Scanning
+
+Get enhanced beacon information like firmware version, battery level, temperature:
+
+```swift
+BeAroundSDK.shared.configure(
+    appId: "com.example.app",
+    syncInterval: 10,
+    enableBluetoothScanning: true  // Enable metadata scanning
+)
+
+// Metadata is automatically attached to beacons
+func didUpdateBeacons(_ beacons: [Beacon]) {
+    beacons.forEach { beacon in
+        if let metadata = beacon.metadata {
+            print("Battery: \(metadata.batteryLevel)%")
+            print("Firmware: \(metadata.firmwareVersion)")
+            print("Temperature: \(metadata.temperature)°C")
+            print("TX Power: \(metadata.txPower ?? 0) dBm")
+        }
     }
 }
-
-// Register the listener
-let beaconListener = MyBeaconListener()
-bearound.addBeaconListener(beaconListener)
-
-// Remove when no longer needed
-bearound.removeBeaconListener(beaconListener)
 ```
 
-### SyncListener
+### User Properties
 
-Monitors API synchronization status for beacon events:
+Attach custom user data to all beacon events:
 
 ```swift
-class MySyncListener: SyncListener {
-    func onSyncSuccess(eventType: String, beaconCount: Int, message: String) {
-        print("Sync successful - Type: \(eventType), Beacons: \(beaconCount)")
-    }
+let properties = UserProperties(
+    internalId: "user-12345",
+    email: "user@example.com",
+    name: "John Doe",
+    customProperties: [
+        "tier": "premium",
+        "region": "US-West",
+        "age_group": "25-34"
+    ]
+)
 
-    func onSyncError(eventType: String, beaconCount: Int, errorCode: Int?, errorMessage: String) {
-        print("Sync failed - Error: \(errorMessage)")
-    }
+BeAroundSDK.shared.setUserProperties(properties)
+
+// Clear user properties when user logs out
+BeAroundSDK.shared.clearUserProperties()
+```
+
+### Check Scanning State
+
+```swift
+if BeAroundSDK.shared.isScanning {
+    print("SDK is actively scanning")
 }
 
-// Register the listener
-let syncListener = MySyncListener()
-bearound.addSyncListener(syncListener)
-
-// Remove when no longer needed
-bearound.removeSyncListener(syncListener)
-```
-
-### RegionListener
-
-Tracks when the device enters or exits beacon regions:
-
-```swift
-class MyRegionListener: RegionListener {
-    func onRegionEnter(regionName: String) {
-        print("Entered region: \(regionName)")
-    }
-
-    func onRegionExit(regionName: String) {
-        print("Exited region: \(regionName)")
-    }
+// Check sync interval
+if let interval = BeAroundSDK.shared.currentSyncInterval {
+    print("Syncing every \(interval) seconds")
 }
 
-// Register the listener
-let regionListener = MyRegionListener()
-bearound.addRegionListener(regionListener)
-
-// Remove when no longer needed
-bearound.removeRegionListener(regionListener)
+// Check if periodic scanning is enabled
+if BeAroundSDK.shared.isPeriodicScanningEnabled {
+    print("Periodic scanning active")
+}
 ```
 
----
-
-## 📊 Getting Beacon Data
-
-### Get Active Beacons
-
-Returns only beacons detected within the last 5 seconds:
+### Check Location Permissions
 
 ```swift
-let activeBeacons = bearound.getActiveBeacons()
-print("Active beacons: \(activeBeacons.count)")
-```
-
-### Get All Beacons
-
-Returns all detected beacons (including recently lost ones):
-
-```swift
-let allBeacons = bearound.getAllBeacons()
-print("Total beacons: \(allBeacons.count)")
+if BeAroundSDK.isLocationAvailable() {
+    let status = BeAroundSDK.authorizationStatus()
+    switch status {
+    case .authorizedAlways:
+        print("✅ Full access - background scanning enabled")
+    case .authorizedWhenInUse:
+        print("⚠️ Limited access - background scanning disabled")
+    case .denied, .restricted:
+        print("❌ No access - SDK won't work")
+    case .notDetermined:
+        print("⏳ Not requested yet")
+    @unknown default:
+        break
+    }
+}
 ```
 
 ---
@@ -238,25 +282,129 @@ if #available(iOS 14, *) {
 
 📌 Without these permissions, the SDK will not function properly and will not be able to detect beacons in the background.
 
-### ⚠️ After initializing it, it starts executing the service, you can follow this by activating the debug and looking at the Logs with the TAG: BeAroundSdk
+---
 
-- The SDK automatically monitors beacons with the UUID
-- When entering or exiting beacon regions, it sends a JSON payload to the remote API.
-- Events include beacon identifiers, RSSI, distance, app state (foreground/background/inactive), Bluetooth details, and IDFA.
+## 📊 Beacon Data Model
 
-### 🔐 Security
+Each `Beacon` object contains:
 
-- AES-GCM encrypted payloads
-- Obfuscated beacon identifiers
-- Privacy-first architecture
+```swift
+struct Beacon {
+    let uuid: UUID              // Beacon UUID
+    let major: Int              // Major value
+    let minor: Int              // Minor value
+    let rssi: Int               // Signal strength (dBm)
+    let proximity: CLProximity  // .immediate, .near, .far, .unknown
+    let accuracy: Double        // Estimated distance in meters
+    let timestamp: Date         // Detection timestamp
+    let metadata: BeaconMetadata?  // Optional BLE metadata
+    let txPower: Int?           // Transmission power
+}
+```
 
-### 🧪 Testing
+Optional `BeaconMetadata` (when Bluetooth scanning is enabled):
 
-- Use physical beacons or nRF Connect
-- Check logs
-- Ensure runtime permissions are granted
+```swift
+struct BeaconMetadata {
+    let firmwareVersion: String  // Beacon firmware version
+    let batteryLevel: Int        // Battery percentage (0-100)
+    let movements: Int           // Movement count
+    let temperature: Int         // Temperature in Celsius
+    let txPower: Int?            // TX power from BLE
+    let rssiFromBLE: Int?        // RSSI from BLE scan
+    let isConnectable: Bool?     // Whether beacon is connectable
+}
+```
 
-### 📄 License
+---
 
-MIT © Bearound
+## 🔍 Monitoring & Debugging
+
+The SDK logs important events with the tag `[BeAroundSDK]`. Look for:
+
+- `[BeAroundSDK] App launched in background (likely by beacon monitoring)`
+- `[BeAroundSDK] App entered background - switching to continuous ranging mode`
+- `[BeAroundSDK] App entered foreground - restoring periodic mode`
+- `[BeAroundSDK] Sending N beacons to {API_URL}/ingest`
+- `[BeAroundSDK] Successfully sent N beacons (HTTP 200)`
+- `[BeAroundSDK] Failed to send beacons - {error}`
+- `[BeAroundSDK] Circuit breaker triggered - API may be down`
+
+---
+
+## 🔄 Background Behavior
+
+The SDK intelligently manages background scanning:
+
+1. **Foreground**: Uses configured mode (periodic or continuous)
+2. **Background**: Automatically switches to continuous mode
+3. **Background Ranging**: Triggers sync when beacons are detected
+4. **Return to Foreground**: Restores original configuration
+
+Background tasks are properly managed with `UIBackgroundTaskIdentifier` to ensure data is synced even when the app is backgrounded.
+
+---
+
+## 🛠️ Building the Framework
+
+To build the XCFramework for distribution:
+
+```bash
+./build_framework.sh
+```
+
+This creates `build/BearoundSDK.xcframework` containing:
+- `ios-arm64` - Physical devices
+- `ios-arm64_x86_64-simulator` - Simulators (Intel + Apple Silicon)
+
+The framework can then be distributed via CocoaPods, SPM, or manual integration.
+
+---
+
+## 🧪 Testing
+
+### Requirements
+- Physical iOS device with iOS 13+ (recommended) or Simulator
+- Physical BLE beacons or beacon simulator (e.g., nRF Connect)
+- Location "Always" permission
+- Bluetooth enabled
+
+### Test Checklist
+- [ ] Foreground beacon detection
+- [ ] Background beacon detection
+- [ ] API synchronization
+- [ ] Periodic scanning mode
+- [ ] Bluetooth metadata scanning
+- [ ] User properties attachment
+- [ ] Error handling and retries
+- [ ] App state transitions (background ↔ foreground)
+
+---
+
+## 🔐 Privacy & Security
+
+- Requires explicit user permission for location and Bluetooth
+- Respects iOS privacy guidelines
+- All beacon data transmitted securely to your API endpoint
+- No data stored locally by default
+- Comprehensive device telemetry for analytics
+
+---
+
+## 📄 License
+
+MIT License - See [LICENSE](LICENSE) file for details.
+
+---
+
+## 🆘 Support
+
+For issues, feature requests, or questions:
+- 📧 Email: support@bearound.com
+- 🐛 Issues: [GitHub Issues](https://github.com/bearound/bearound-ios-sdk/issues)
+- 📖 Docs: [Full Documentation](https://docs.bearound.com)
+
+---
+
+**Made with ❤️ by Bearound**
 

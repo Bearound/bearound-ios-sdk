@@ -5,6 +5,234 @@ All notable changes to BearoundSDK for iOS will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.0.0] - 2025-12-29
+
+### 🔥 BREAKING CHANGES - Complete SDK Rewrite
+
+This is a **major rewrite** of the SDK with a completely new architecture. The entire codebase was refactored from scratch.
+
+### ⚠️ Migration Required
+
+**This version is NOT backward compatible with v1.x.** You will need to update your integration code.
+
+### What Changed
+
+#### Architecture
+- **Complete rewrite** of the SDK core
+- New modular architecture with clear separation of concerns
+- Improved background processing with proper app state management
+- Better memory management and lifecycle handling
+
+#### New API
+
+**Old API (v1.x - REMOVED):**
+```swift
+let bearound = Bearound(clientToken: token, isDebugEnable: true)
+bearound.startServices()
+bearound.addBeaconListener(listener)
+```
+
+**New API (v2.0):**
+```swift
+let sdk = BeAroundSDK.shared
+sdk.configure(appId: appId, syncInterval: 10)
+sdk.delegate = self
+sdk.startScanning()
+```
+
+#### Key Changes
+
+1. **Singleton Pattern**: Now uses `BeAroundSDK.shared` instead of creating instances
+2. **Delegate-Based**: Replaced listener pattern with protocol-based delegates
+3. **Simplified Configuration**: One-time configuration with `configure()`
+4. **Better Sync Control**: Configurable sync intervals with periodic/continuous modes
+5. **Enhanced Metadata**: Optional Bluetooth scanning for beacon metadata (firmware, battery, etc.)
+6. **User Properties**: Support for custom user properties attached to beacon data
+
+### Added
+
+- `BeAroundSDK` class with singleton pattern
+- `BeAroundSDKDelegate` protocol for event callbacks:
+  - `didUpdateBeacons(_:)` - Beacon detection updates
+  - `didFailWithError(_:)` - Error handling
+  - `didChangeScanning(isScanning:)` - Scanning state changes
+  - `didUpdateSyncStatus(secondsUntilNextSync:isRanging:)` - Sync countdown
+- `UserProperties` model for custom user data
+- `BeaconMetadata` for enhanced beacon information via Bluetooth
+- Periodic scanning mode with configurable scan/pause durations
+- Background ranging support with proper state management
+- Circuit breaker pattern for API failure handling (10 consecutive failures)
+- Retry queue for failed beacon batches (up to 10 batches)
+- Exponential backoff for retry logic (5s, 10s, 20s, 40s, max 60s)
+
+### Changed
+
+- **Module name**: Still `BearoundSDK` but class is now `BeAroundSDK`
+- **Configuration**: Now uses `configure(appId:syncInterval:enableBluetoothScanning:enablePeriodicScanning:)`
+- **Scanning control**: `startScanning()` / `stopScanning()` instead of `startServices()` / `stopServices()`
+- **Event handling**: Delegate pattern instead of listener pattern
+- **Background mode**: Automatic switching between periodic and continuous modes
+- **API payload structure**: More comprehensive device and SDK information
+- **Logs**: All logs now use `[BeAroundSDK]` tag (was inconsistent before)
+
+### Removed
+
+- `Bearound` class (replaced by `BeAroundSDK`)
+- Listener pattern (`BeaconListener`, `SyncListener`, `RegionListener`)
+- `clientToken` configuration (now uses `appId`)
+- `isDebugEnable` parameter (logging is always enabled)
+- Old API methods: `addBeaconListener()`, `removeBeaconListener()`, etc.
+- Event type tracking (`enter`, `exit`, `lost`)
+
+### Features
+
+#### Periodic Scanning
+```swift
+sdk.configure(
+    appId: "com.example.app",
+    syncInterval: 30,  // Sync every 30 seconds
+    enablePeriodicScanning: true  // Save battery
+)
+```
+
+#### Bluetooth Metadata Scanning
+```swift
+sdk.configure(
+    appId: "com.example.app",
+    syncInterval: 10,
+    enableBluetoothScanning: true  // Get battery, firmware, etc.
+)
+```
+
+#### User Properties
+```swift
+let properties = UserProperties(
+    internalId: "user123",
+    email: "user@example.com",
+    name: "John Doe",
+    customProperties: ["tier": "premium"]
+)
+sdk.setUserProperties(properties)
+```
+
+#### Delegate Implementation
+```swift
+class MyViewController: UIViewController, BeAroundSDKDelegate {
+    func didUpdateBeacons(_ beacons: [Beacon]) {
+        print("Found \(beacons.count) beacons")
+    }
+    
+    func didFailWithError(_ error: Error) {
+        print("Error: \(error.localizedDescription)")
+    }
+    
+    func didChangeScanning(isScanning: Bool) {
+        print("Scanning: \(isScanning)")
+    }
+    
+    func didUpdateSyncStatus(secondsUntilNextSync: Int, isRanging: Bool) {
+        print("Next sync in: \(secondsUntilNextSync)s, Ranging: \(isRanging)")
+    }
+}
+```
+
+### Fixed
+
+- Module/class name conflict that prevented framework builds
+- Background state detection issues
+- Memory leaks in timer management
+- Inconsistent logging tags
+- Thread safety issues in beacon collection
+- Background task lifecycle management
+
+### Technical Details
+
+#### New Models
+
+- `Beacon`: UUID, major, minor, RSSI, proximity, accuracy, timestamp, metadata, txPower
+- `BeaconMetadata`: Firmware version, battery level, movements, temperature, txPower, RSSI from BLE, connectivity
+- `SDKConfiguration`: App ID, sync interval, Bluetooth scanning, periodic scanning, scan duration
+- `SDKInfo`: App ID, SDK version, platform, build number
+- `UserDevice`: Comprehensive device information (manufacturer, model, OS, battery, network, permissions, etc.)
+- `UserProperties`: Internal ID, email, name, custom properties dictionary
+
+#### New Managers
+
+- `BeaconManager`: CoreLocation-based beacon ranging
+- `BluetoothManager`: CoreBluetooth-based metadata scanning
+- `DeviceInfoCollector`: Device telemetry collection
+- `APIClient`: Network communication with retry logic
+
+### Migration Guide
+
+#### Step 1: Update Initialization
+
+**Before (v1.x):**
+```swift
+let bearound = Bearound(clientToken: "your-token", isDebugEnable: true)
+bearound.startServices()
+```
+
+**After (v2.0):**
+```swift
+let sdk = BeAroundSDK.shared
+sdk.configure(appId: "com.example.app", syncInterval: 10)
+sdk.delegate = self  // Conform to BeAroundSDKDelegate
+sdk.startScanning()
+```
+
+#### Step 2: Replace Listeners with Delegate
+
+**Before (v1.x):**
+```swift
+class MyBeaconListener: BeaconListener {
+    func onBeaconsDetected(_ beacons: [Beacon], eventType: String) {
+        // Handle beacons
+    }
+}
+bearound.addBeaconListener(MyBeaconListener())
+```
+
+**After (v2.0):**
+```swift
+class MyViewController: UIViewController, BeAroundSDKDelegate {
+    func didUpdateBeacons(_ beacons: [Beacon]) {
+        // Handle beacons
+    }
+}
+```
+
+#### Step 3: Update Beacon Access
+
+**Before (v1.x):**
+```swift
+let activeBeacons = bearound.getActiveBeacons()
+let allBeacons = bearound.getAllBeacons()
+```
+
+**After (v2.0):**
+```swift
+// Beacons are now delivered via delegate callbacks
+func didUpdateBeacons(_ beacons: [Beacon]) {
+    self.beacons = beacons
+}
+```
+
+### Requirements
+
+- iOS 13.0+
+- Swift 5.0+
+- Xcode 11.0+
+
+### Dependencies
+
+- CoreLocation
+- CoreBluetooth
+- Foundation
+- UIKit
+
+---
+
 ## [1.2.1] - 2025-12-10
 
 ### Added
