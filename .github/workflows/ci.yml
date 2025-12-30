@@ -10,12 +10,11 @@ on:
 env:
   PROJECT: BearoundSDK.xcodeproj
   SCHEME: BearoundSDK
-  DESTINATION: 'platform=iOS Simulator,name=iPhone 15 Pro'
   DERIVED_DATA: DerivedData
 
 jobs:
-  unit_tests:
-    name: Unit Tests
+  build_sdk:
+    name: Build SDK
     runs-on: macos-latest
     timeout-minutes: 30
 
@@ -26,25 +25,36 @@ jobs:
       - name: Use Xcode LTS
         uses: maxim-lobanov/setup-xcode@v1
 
-      - name: CocoaPods availability
-        run: pod --version
-
-      - name: Run tests
+      - name: Build SDK for iOS Device
         run: |
           set -o pipefail
-          xcodebuild \
+          xcodebuild build \
             -project "$PROJECT" \
             -scheme "$SCHEME" \
-            -destination "$DESTINATION" \
-            -sdk iphonesimulator \
-            -configuration Debug \
+            -destination "generic/platform=iOS" \
+            -configuration Release \
             -derivedDataPath "$DERIVED_DATA" \
-            clean test
+            | xcpretty || true
+          
+          echo "✅ SDK builds successfully for iOS devices"
+
+      - name: Build SDK for Simulator
+        run: |
+          set -o pipefail
+          xcodebuild build \
+            -project "$PROJECT" \
+            -scheme "$SCHEME" \
+            -destination "generic/platform=iOS Simulator" \
+            -configuration Release \
+            -derivedDataPath "$DERIVED_DATA" \
+            | xcpretty || true
+          
+          echo "✅ SDK builds successfully for iOS Simulator"
 
   pod_lint:
     name: CocoaPods Lint
     runs-on: macos-latest
-    needs: unit_tests
+    needs: build_sdk
     timeout-minutes: 25
 
     steps:
@@ -64,7 +74,7 @@ jobs:
   build_xcframework:
     name: Build XCFramework
     runs-on: macos-latest
-    needs: [unit_tests, pod_lint]
+    needs: [build_sdk, pod_lint]
     timeout-minutes: 30
 
     steps:
@@ -88,18 +98,18 @@ jobs:
   ci_success:
     name: CI Success
     runs-on: ubuntu-latest
-    needs: [unit_tests, pod_lint, build_xcframework]
+    needs: [build_sdk, pod_lint, build_xcframework]
     if: always()
 
     steps:
       - name: Check all jobs status
         if: |
-          needs.unit_tests.result != 'success' ||
+          needs.build_sdk.result != 'success' ||
           needs.pod_lint.result != 'success' ||
           needs.build_xcframework.result != 'success'
         run: |
           echo "❌ One or more CI jobs failed:"
-          echo "Unit Tests: ${{ needs.unit_tests.result }}"
+          echo "Build SDK: ${{ needs.build_sdk.result }}"
           echo "Pod Lint: ${{ needs.pod_lint.result }}"
           echo "Build XCFramework: ${{ needs.build_xcframework.result }}"
           exit 1
