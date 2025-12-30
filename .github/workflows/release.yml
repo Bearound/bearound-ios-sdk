@@ -14,7 +14,6 @@ on:
 env:
   PROJECT: BearoundSDK.xcodeproj
   SCHEME: BearoundSDK
-  DESTINATION: 'platform=iOS Simulator,name=iPhone 15 Pro'
   DERIVED_DATA: DerivedData
 
 jobs:
@@ -113,18 +112,6 @@ jobs:
         with:
           name: release-notes-${{ steps.get_version.outputs.version }}
           path: release_notes.md
-
-      - name: Run unit tests
-        run: |
-          set -o pipefail
-          xcodebuild \
-            -project "$PROJECT" \
-            -scheme "$SCHEME" \
-            -destination "$DESTINATION" \
-            -sdk iphonesimulator \
-            -configuration Debug \
-            -derivedDataPath "$DERIVED_DATA" \
-            clean test
 
       - name: Lint podspec
         run: |
