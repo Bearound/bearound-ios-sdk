@@ -66,7 +66,8 @@ class BeaconManager: NSObject {
     private(set) var lastLocation: CLLocation?
 
     private var hasBackgroundModes: Bool {
-        guard let modes = Bundle.main.object(forInfoDictionaryKey: "UIBackgroundModes") as? [String] else {
+        guard let modes = Bundle.main.object(forInfoDictionaryKey: "UIBackgroundModes") as? [String]
+        else {
             return false
         }
         return modes.contains("location")
@@ -113,7 +114,8 @@ class BeaconManager: NSObject {
                     domain: "BeAroundSDK",
                     code: 4,
                     userInfo: [
-                        NSLocalizedDescriptionKey: "Background location updates require 'location' in UIBackgroundModes (Info.plist). Continuous mode will be limited to foreground only.",
+                        NSLocalizedDescriptionKey:
+                            "Background location updates require 'location' in UIBackgroundModes (Info.plist). Continuous mode will be limited to foreground only."
                     ]
                 )
                 onError?(error)
@@ -146,7 +148,8 @@ class BeaconManager: NSObject {
 
     @objc private func appDidEnterForeground() {
         isInForeground = true
-        print("BeAroundSDK: App entered foreground (scanning: \(isScanning), ranging: \(isRanging))")
+        print(
+            "BeAroundSDK: App entered foreground (scanning: \(isScanning), ranging: \(isRanging))")
 
         stopRangingRefreshTimer()
 
@@ -164,7 +167,8 @@ class BeaconManager: NSObject {
 
     @objc private func appDidEnterBackground() {
         isInForeground = false
-        print("BeAroundSDK: App entered background (scanning: \(isScanning), ranging: \(isRanging))")
+        print(
+            "BeAroundSDK: App entered background (scanning: \(isScanning), ranging: \(isRanging))")
 
         if isScanning {
             print("BeAroundSDK: Maintaining continuous operation in background")
@@ -187,11 +191,12 @@ class BeaconManager: NSObject {
             return
         }
 
-        let status: CLAuthorizationStatus = if #available(iOS 14.0, *) {
-            locationManager.authorizationStatus
-        } else {
-            CLLocationManager.authorizationStatus()
-        }
+        let status: CLAuthorizationStatus =
+            if #available(iOS 14.0, *) {
+                locationManager.authorizationStatus
+            } else {
+                CLLocationManager.authorizationStatus()
+            }
 
         guard status == .authorizedWhenInUse || status == .authorizedAlways else {
             print("BeAroundSDK: Location authorization required (current: \(status.rawValue))")
@@ -199,14 +204,17 @@ class BeaconManager: NSObject {
                 domain: "BeAroundSDK",
                 code: 1,
                 userInfo: [
-                    NSLocalizedDescriptionKey: "Location authorization required. The app must request location permissions before starting beacon scanning.",
+                    NSLocalizedDescriptionKey:
+                        "Location authorization required. The app must request location permissions before starting beacon scanning."
                 ]
             )
             onError?(error)
             return
         }
 
-        print("BeAroundSDK: Starting beacon scanning (permission: \(status == .authorizedAlways ? "Always" : "When In Use"))")
+        print(
+            "BeAroundSDK: Starting beacon scanning (permission: \(status == .authorizedAlways ? "Always" : "When In Use"))"
+        )
         startMonitoring()
     }
 
@@ -267,7 +275,8 @@ class BeaconManager: NSObject {
         }
 
         if !isInForeground {
-            print("BeAroundSDK: Ignoring stopRanging in background to maintain continuous operation")
+            print(
+                "BeAroundSDK: Ignoring stopRanging in background to maintain continuous operation")
             return
         }
 
@@ -288,7 +297,8 @@ class BeaconManager: NSObject {
 
     private func startMonitoring() {
         let constraint = CLBeaconIdentityConstraint(uuid: beaconUUID)
-        let region = CLBeaconRegion(beaconIdentityConstraint: constraint, identifier: "BeAroundRegion")
+        let region = CLBeaconRegion(
+            beaconIdentityConstraint: constraint, identifier: "BeAroundRegion")
 
         region.notifyOnEntry = true
         region.notifyOnExit = true
@@ -314,7 +324,8 @@ class BeaconManager: NSObject {
                 startRangingRefreshTimer()
             }
         } else {
-            print("BeAroundSDK: Periodic scanning enabled - ranging will be controlled by sync timer")
+            print(
+                "BeAroundSDK: Periodic scanning enabled - ranging will be controlled by sync timer")
         }
 
         isScanning = true
@@ -328,7 +339,9 @@ class BeaconManager: NSObject {
             emptyBeaconCount += 1
 
             if emptyBeaconCount > 5, isInBeaconRegion {
-                print("[BeAroundSDK] Too many empty beacon arrays (\(emptyBeaconCount)), refreshing ranging...")
+                print(
+                    "[BeAroundSDK] Too many empty beacon arrays (\(emptyBeaconCount)), refreshing ranging..."
+                )
                 emptyBeaconCount = 0
                 restartRanging()
                 return
@@ -368,7 +381,7 @@ class BeaconManager: NSObject {
                 updatedBeacons.append(beacon)
             } else {
                 if let lastSeen = beaconLastSeen[identifier],
-                   let cachedBeacon = detectedBeacons[identifier]
+                    let cachedBeacon = detectedBeacons[identifier]
                 {
                     let timeSinceLastSeen = now.timeIntervalSince(lastSeen)
 
@@ -386,7 +399,9 @@ class BeaconManager: NSObject {
                         beaconLastSeen.removeValue(forKey: identifier)
                     }
                 } else {
-                    print("BeAroundSDK: Skipping new beacon \(major).\(minor) with invalid RSSI (\(clBeacon.rssi))")
+                    print(
+                        "BeAroundSDK: Skipping new beacon \(major).\(minor) with invalid RSSI (\(clBeacon.rssi))"
+                    )
                 }
             }
         }
@@ -401,7 +416,8 @@ class BeaconManager: NSObject {
         }
 
         if !updatedBeacons.isEmpty {
-            let beaconList = updatedBeacons.map { "\($0.major).\($0.minor)" }.joined(separator: ", ")
+            let beaconList = updatedBeacons.map { "\($0.major).\($0.minor)" }.joined(
+                separator: ", ")
             print(
                 "BeAroundSDK: Detected \(updatedBeacons.count) beacon\(updatedBeacons.count == 1 ? "" : "s"): [\(beaconList)]"
             )
@@ -448,7 +464,9 @@ class BeaconManager: NSObject {
     private func startBackgroundRangingTimer(duration: TimeInterval) {
         stopBackgroundRangingTimer()
 
-        print("[BeAroundSDK] Starting temporary background ranging for \(String(format: "%.0f", duration))s")
+        print(
+            "[BeAroundSDK] Starting temporary background ranging for \(String(format: "%.0f", duration))s"
+        )
         isBackgroundTemporaryRanging = true
 
         let timer = DispatchSource.makeTimerSource(queue: DispatchQueue.global(qos: .utility))
@@ -529,7 +547,8 @@ class BeaconManager: NSObject {
                     domain: "BeAroundSDK",
                     code: 5,
                     userInfo: [
-                        NSLocalizedDescriptionKey: "Ranging is unstable - restarted \(rangingRestartCount) times in the last minute. Applying exponential backoff.",
+                        NSLocalizedDescriptionKey:
+                            "Ranging is unstable - restarted \(rangingRestartCount) times in the last minute. Applying exponential backoff."
                     ]
                 )
                 onError?(error)
@@ -566,11 +585,12 @@ class BeaconManager: NSObject {
 
 extension BeaconManager: CLLocationManagerDelegate {
     func locationManagerDidChangeAuthorization(_ manager: CLLocationManager) {
-        let status: CLAuthorizationStatus = if #available(iOS 14.0, *) {
-            manager.authorizationStatus
-        } else {
-            CLLocationManager.authorizationStatus()
-        }
+        let status: CLAuthorizationStatus =
+            if #available(iOS 14.0, *) {
+                manager.authorizationStatus
+            } else {
+                CLLocationManager.authorizationStatus()
+            }
 
         if status == .denied || status == .restricted {
             let error = NSError(
@@ -586,7 +606,9 @@ extension BeaconManager: CLLocationManagerDelegate {
         }
     }
 
-    func locationManager(_: CLLocationManager, didRange beacons: [CLBeacon], satisfying _: CLBeaconIdentityConstraint) {
+    func locationManager(
+        _: CLLocationManager, didRange beacons: [CLBeacon], satisfying _: CLBeaconIdentityConstraint
+    ) {
         processBeacons(beacons)
     }
 
@@ -607,8 +629,11 @@ extension BeaconManager: CLLocationManagerDelegate {
             configureBackgroundUpdates(enabled: true)
 
             if !isScanning {
-                print("[BeAroundSDK] App relaunched by beacon monitoring - starting temporary ranging")
-                locationManager.startRangingBeacons(satisfying: beaconRegion.beaconIdentityConstraint)
+                print(
+                    "[BeAroundSDK] App relaunched by beacon monitoring - starting temporary ranging"
+                )
+                locationManager.startRangingBeacons(
+                    satisfying: beaconRegion.beaconIdentityConstraint)
                 isRanging = true
                 startWatchdog()
 
@@ -648,7 +673,9 @@ extension BeaconManager: CLLocationManagerDelegate {
         onBeaconsUpdated?([])
     }
 
-    func locationManager(_ manager: CLLocationManager, didDetermineState state: CLRegionState, for region: CLRegion) {
+    func locationManager(
+        _ manager: CLLocationManager, didDetermineState state: CLRegionState, for region: CLRegion
+    ) {
         guard let beaconRegion = region as? CLBeaconRegion else { return }
 
         print("[BeAroundSDK] Determined region state: \(state.rawValue)")
@@ -671,7 +698,9 @@ extension BeaconManager: CLLocationManagerDelegate {
         let age = -location.timestamp.timeIntervalSinceNow
         if age < 15 && location.horizontalAccuracy >= 0 && location.horizontalAccuracy < 100 {
             lastLocation = location
-            print("[BeAroundSDK] Updated location: lat=\(location.coordinate.latitude), lng=\(location.coordinate.longitude), accuracy=\(location.horizontalAccuracy)m")
+            print(
+                "[BeAroundSDK] Updated location: lat=\(location.coordinate.latitude), lng=\(location.coordinate.longitude), accuracy=\(location.horizontalAccuracy)m"
+            )
         }
     }
 }

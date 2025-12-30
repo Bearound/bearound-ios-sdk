@@ -17,9 +17,8 @@ public protocol BeAroundSDKDelegate: AnyObject {
 	func didUpdateSyncStatus(secondsUntilNextSync: Int, isRanging: Bool)
 }
 
-public extension BeAroundSDKDelegate {
-	func didFailWithError(_: Error) {}
-	func didChangeScanning(isScanning _: Bool) {}
-	func didUpdateSyncStatus(secondsUntilNextSync _: Int, isRanging _: Bool) {}
+extension BeAroundSDKDelegate {
+	public func didFailWithError(_: Error) {}
+	public func didChangeScanning(isScanning _: Bool) {}
+	public func didUpdateSyncStatus(secondsUntilNextSync _: Int, isRanging _: Bool) {}
 }
-

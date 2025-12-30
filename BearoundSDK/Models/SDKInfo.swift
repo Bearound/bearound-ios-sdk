@@ -9,14 +9,11 @@ import Foundation
 
 struct SDKInfo {
     let version: String
-
     let platform: String
-
     let appId: String
-
     let build: Int
 
-    init(version: String = "1.4.0", appId: String, build: Int) {
+    init(version: String = "2.0.0", appId: String, build: Int) {
         self.version = version
         platform = "ios"
         self.appId = appId

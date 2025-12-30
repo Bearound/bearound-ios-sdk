@@ -48,8 +48,8 @@ class KeychainHelper {
         let status = SecItemCopyMatching(query as CFDictionary, &result)
 
         guard status == errSecSuccess,
-              let data = result as? Data,
-              let value = String(data: data, encoding: .utf8)
+            let data = result as? Data,
+            let value = String(data: data, encoding: .utf8)
         else {
             return nil
         }

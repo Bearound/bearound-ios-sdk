@@ -37,7 +37,6 @@ struct UserDevice {
     let notificationsPermission: String
     let networkType: String
     let cellularGeneration: String?
-    let isRoaming: Bool?
     let ramTotalMb: Int
     let ramAvailableMb: Int
     let screenWidth: Int

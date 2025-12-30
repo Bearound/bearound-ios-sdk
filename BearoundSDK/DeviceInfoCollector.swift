@@ -14,7 +14,6 @@ import SystemConfiguration
 import SystemConfiguration.CaptiveNetwork
 import UIKit
 import UserNotifications
-import CoreTelephony
 
 class DeviceInfoCollector {
 	private let appStartTime: Date
@@ -39,32 +38,8 @@ class DeviceInfoCollector {
 	private func updateNotificationPermissionCache() async {
 		let settings = await UNUserNotificationCenter.current().notificationSettings()
 
-		let status = switch settings.authorizationStatus {
-		case .authorized:
-			"authorized"
-		case .denied:
-			"denied"
-		case .notDetermined:
-			"not_determined"
-		case .provisional:
-			"provisional"
-		case .ephemeral:
-			"ephemeral"
-		@unknown default:
-			"unknown"
-		}
-
-		permissionLock.lock()
-		cachedNotificationPermission = status
-		permissionCacheReady = true
-		permissionLock.unlock()
-	}
-
-	private func updateNotificationPermissionCacheSync() {
-		UNUserNotificationCenter.current().getNotificationSettings { [weak self] settings in
-			guard let self else { return }
-
-			let status = switch settings.authorizationStatus {
+		let status =
+			switch settings.authorizationStatus {
 			case .authorized:
 				"authorized"
 			case .denied:
@@ -78,6 +53,32 @@ class DeviceInfoCollector {
 			@unknown default:
 				"unknown"
 			}
+
+		permissionLock.lock()
+		cachedNotificationPermission = status
+		permissionCacheReady = true
+		permissionLock.unlock()
+	}
+
+	private func updateNotificationPermissionCacheSync() {
+		UNUserNotificationCenter.current().getNotificationSettings { [weak self] settings in
+			guard let self else { return }
+
+			let status =
+				switch settings.authorizationStatus {
+				case .authorized:
+					"authorized"
+				case .denied:
+					"denied"
+				case .notDetermined:
+					"not_determined"
+				case .provisional:
+					"provisional"
+				case .ephemeral:
+					"ephemeral"
+				@unknown default:
+					"unknown"
+				}
 
 			permissionLock.lock()
 			cachedNotificationPermission = status
@@ -154,7 +155,6 @@ class DeviceInfoCollector {
 			notificationsPermission: notificationPermission,
 			networkType: networkType(),
 			cellularGeneration: cellularGeneration(),
-            isRoaming: nil,
 			ramTotalMb: ramTotalMb(),
 			ramAvailableMb: ramAvailableMb(),
 			screenWidth: Int(screen.bounds.width * screen.scale),
@@ -240,11 +240,15 @@ class DeviceInfoCollector {
 		zeroAddress.sin_len = UInt8(MemoryLayout.size(ofValue: zeroAddress))
 		zeroAddress.sin_family = sa_family_t(AF_INET)
 
-		guard let defaultRouteReachability = withUnsafePointer(to: &zeroAddress, {
-			$0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
-				SCNetworkReachabilityCreateWithAddress(nil, $0)
-			}
-		}) else {
+		guard
+			let defaultRouteReachability = withUnsafePointer(
+				to: &zeroAddress,
+				{
+					$0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+						SCNetworkReachabilityCreateWithAddress(nil, $0)
+					}
+				})
+		else {
 			return "none"
 		}
 
@@ -278,17 +282,17 @@ class DeviceInfoCollector {
 
 			switch carrier {
 			case CTRadioAccessTechnologyGPRS,
-			     CTRadioAccessTechnologyEdge,
-			     CTRadioAccessTechnologyCDMA1x:
+				CTRadioAccessTechnologyEdge,
+				CTRadioAccessTechnologyCDMA1x:
 				return "2G"
 
 			case CTRadioAccessTechnologyWCDMA,
-			     CTRadioAccessTechnologyHSDPA,
-			     CTRadioAccessTechnologyHSUPA,
-			     CTRadioAccessTechnologyCDMAEVDORev0,
-			     CTRadioAccessTechnologyCDMAEVDORevA,
-			     CTRadioAccessTechnologyCDMAEVDORevB,
-			     CTRadioAccessTechnologyeHRPD:
+				CTRadioAccessTechnologyHSDPA,
+				CTRadioAccessTechnologyHSUPA,
+				CTRadioAccessTechnologyCDMAEVDORev0,
+				CTRadioAccessTechnologyCDMAEVDORevA,
+				CTRadioAccessTechnologyCDMAEVDORevB,
+				CTRadioAccessTechnologyeHRPD:
 				return "3G"
 
 			case CTRadioAccessTechnologyLTE:
@@ -296,8 +300,8 @@ class DeviceInfoCollector {
 
 			default:
 				if #available(iOS 14.1, *) {
-					if carrier == CTRadioAccessTechnologyNRNSA ||
-						carrier == CTRadioAccessTechnologyNR
+					if carrier == CTRadioAccessTechnologyNRNSA
+						|| carrier == CTRadioAccessTechnologyNR
 					{
 						return "5G"
 					}
@@ -309,14 +313,14 @@ class DeviceInfoCollector {
 		return nil
 	}
 
-
 	private func wifiSSID() -> String? {
 		guard let interfaces = CNCopySupportedInterfaces() as? [String] else {
 			return nil
 		}
 
 		for interface in interfaces {
-			if let interfaceInfo = CNCopyCurrentNetworkInfo(interface as CFString) as NSDictionary? {
+			if let interfaceInfo = CNCopyCurrentNetworkInfo(interface as CFString) as NSDictionary?
+			{
 				if let ssid = interfaceInfo[kCNNetworkInfoKeySSID as String] as? String {
 					return ssid
 				}
@@ -411,7 +415,8 @@ class DeviceInfoCollector {
 		}
 
 		if let carrier = networkInfo.subscriberCellularProvider,
-		   let carrierName = carrier.carrierName, !carrierName.isEmpty {
+			let carrierName = carrier.carrierName, !carrierName.isEmpty
+		{
 			return carrierName
 		}
 
@@ -421,7 +426,8 @@ class DeviceInfoCollector {
 	private func availableStorageMb() -> Int? {
 		let fileManager = FileManager.default
 		do {
-			let systemAttributes = try fileManager.attributesOfFileSystem(forPath: NSHomeDirectory())
+			let systemAttributes = try fileManager.attributesOfFileSystem(
+				forPath: NSHomeDirectory())
 			if let freeSize = systemAttributes[.systemFreeSize] as? NSNumber {
 				return Int(freeSize.int64Value / 1024 / 1024)
 			}

@@ -43,13 +43,14 @@ class APIClient {
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
 
         let beaconsPayload = beacons.map { beacon -> [String: Any] in
-            let proximityString: String = switch beacon.proximity {
-            case .immediate: "immediate"
-            case .near: "near"
-            case .far: "far"
-            case .unknown: "unknown"
-            @unknown default: "unknown"
-            }
+            let proximityString: String =
+                switch beacon.proximity {
+                case .immediate: "immediate"
+                case .near: "near"
+                case .far: "far"
+                case .unknown: "unknown"
+                @unknown default: "unknown"
+                }
 
             var beaconData: [String: Any] = [
                 "uuid": beacon.uuid.uuidString,
@@ -127,13 +128,15 @@ class APIClient {
                 return
             }
 
-            guard (200 ... 299).contains(httpResponse.statusCode) else {
+            guard (200...299).contains(httpResponse.statusCode) else {
                 print("BeAroundSDK: HTTP error - \(httpResponse.statusCode)")
                 completion(.failure(APIError.httpError(statusCode: httpResponse.statusCode)))
                 return
             }
 
-            print("BeAroundSDK: Successfully sent \(beacons.count) beacons (HTTP \(httpResponse.statusCode))")
+            print(
+                "BeAroundSDK: Successfully sent \(beacons.count) beacons (HTTP \(httpResponse.statusCode))"
+            )
             completion(.success(()))
         }
 
@@ -141,14 +144,14 @@ class APIClient {
     }
 
     private func buildDevicePayload(_ device: UserDevice) -> [String: Any] {
-        let hardware: [String: Any] = [
+        var hardware: [String: Any] = [
             "manufacturer": device.manufacturer,
             "model": device.model,
             "os": device.os ?? "iOS",
             "osVersion": device.osVersion,
         ]
 
-        let screen: [String: Any] = [
+        var screen: [String: Any] = [
             "width": device.screenWidth,
             "height": device.screenHeight,
         ]
@@ -162,7 +165,7 @@ class APIClient {
         }
 
         var network: [String: Any] = [
-            "type": device.networkType,
+            "type": device.networkType
         ]
         if let cellularGeneration = device.cellularGeneration {
             network["cellularGeneration"] = cellularGeneration
@@ -176,7 +179,6 @@ class APIClient {
             "notifications": device.notificationsPermission,
             "bluetooth": device.bluetoothState,
         ]
-        
         if let locationAccuracy = device.locationAccuracy {
             permissions["locationAccuracy"] = locationAccuracy
         }
@@ -185,12 +187,12 @@ class APIClient {
         }
         permissions["adTrackingEnabled"] = device.adTrackingEnabled
 
-        let memory: [String: Any] = [
+        var memory: [String: Any] = [
             "totalMb": device.ramTotalMb,
             "availableMb": device.ramAvailableMb,
         ]
 
-        let appState: [String: Any] = [
+        var appState: [String: Any] = [
             "inForeground": device.appInForeground,
             "uptimeMs": device.appUptimeMs,
             "coldStart": device.coldStart,
@@ -277,7 +279,7 @@ enum APIError: LocalizedError {
             "Invalid API URL"
         case .invalidResponse:
             "Invalid server response"
-        case let .httpError(code):
+        case .httpError(let code):
             "HTTP error: \(code)"
         }
     }

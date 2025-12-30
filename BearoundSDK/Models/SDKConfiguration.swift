@@ -18,11 +18,12 @@ public struct SDKConfiguration {
 
     let apiBaseURL: String
 
-    public init(appId: String,
-                syncInterval: TimeInterval,
-                enableBluetoothScanning: Bool = false,
-                enablePeriodicScanning: Bool = true)
-    {
+    public init(
+        appId: String,
+        syncInterval: TimeInterval,
+        enableBluetoothScanning: Bool = false,
+        enablePeriodicScanning: Bool = true
+    ) {
         self.appId = appId
         self.enableBluetoothScanning = enableBluetoothScanning
         self.enablePeriodicScanning = enablePeriodicScanning

@@ -172,18 +172,19 @@ public class BeAroundSDK {
 
         if let config = configuration {
             beaconManager.enablePeriodicScanning = config.enablePeriodicScanning
-            
+
             if isScanning {
                 startSyncTimer()
             }
         }
     }
 
-    public func configure(appId: String,
-                          syncInterval: TimeInterval,
-                          enableBluetoothScanning: Bool = false,
-                          enablePeriodicScanning: Bool = true)
-    {
+    public func configure(
+        appId: String,
+        syncInterval: TimeInterval,
+        enableBluetoothScanning: Bool = false,
+        enablePeriodicScanning: Bool = true
+    ) {
         let config = SDKConfiguration(
             appId: appId,
             syncInterval: syncInterval,
@@ -235,7 +236,10 @@ public class BeAroundSDK {
             let error = NSError(
                 domain: "BeAroundSDK",
                 code: 3,
-                userInfo: [NSLocalizedDescriptionKey: "SDK not configured. Call configure(token:syncInterval:) first."]
+                userInfo: [
+                    NSLocalizedDescriptionKey:
+                        "SDK not configured. Call configure(token:syncInterval:) first."
+                ]
             )
             delegate?.didFailWithError(error)
             return
@@ -303,9 +307,13 @@ public class BeAroundSDK {
                 self.nextSyncTime = Date().addingTimeInterval(syncInterval)
 
                 let delayUntilNextRanging = syncInterval - scanDuration
-                DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + delayUntilNextRanging) { [weak self] in
+                DispatchQueue.global(qos: .utility).asyncAfter(
+                    deadline: .now() + delayUntilNextRanging
+                ) { [weak self] in
                     guard let self else { return }
-                    print("BeAroundSDK: Starting ranging \(String(format: "%.1f", scanDuration))s before next sync")
+                    print(
+                        "BeAroundSDK: Starting ranging \(String(format: "%.1f", scanDuration))s before next sync"
+                    )
                     self.beaconManager.startRanging()
                 }
             }
@@ -313,10 +321,16 @@ public class BeAroundSDK {
             let delayUntilFirstRanging = syncInterval - scanDuration
             nextSyncTime = Date().addingTimeInterval(syncInterval)
 
-            print("BeAroundSDK: First ranging will start in \(String(format: "%.1f", delayUntilFirstRanging))s (sync in \(String(format: "%.1f", syncInterval))s)")
-            DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + delayUntilFirstRanging) { [weak self] in
+            print(
+                "BeAroundSDK: First ranging will start in \(String(format: "%.1f", delayUntilFirstRanging))s (sync in \(String(format: "%.1f", syncInterval))s)"
+            )
+            DispatchQueue.global(qos: .utility).asyncAfter(
+                deadline: .now() + delayUntilFirstRanging
+            ) { [weak self] in
                 guard let self else { return }
-                print("BeAroundSDK: Starting initial ranging for \(String(format: "%.1f", scanDuration))s")
+                print(
+                    "BeAroundSDK: Starting initial ranging for \(String(format: "%.1f", scanDuration))s"
+                )
                 self.beaconManager.startRanging()
             }
 
@@ -359,7 +373,8 @@ public class BeAroundSDK {
 
     private func updateCountdown() {
         guard let nextSync = nextSyncTime else {
-            delegate?.didUpdateSyncStatus(secondsUntilNextSync: 0, isRanging: beaconManager.isScanning)
+            delegate?.didUpdateSyncStatus(
+                secondsUntilNextSync: 0, isRanging: beaconManager.isScanning)
             return
         }
 
@@ -386,7 +401,7 @@ public class BeAroundSDK {
             }
 
             guard let apiClient,
-                  let sdkInfo
+                let sdkInfo
             else {
                 self.endBackgroundTask()
                 return
@@ -445,7 +460,9 @@ public class BeAroundSDK {
 
                 switch result {
                 case .success:
-                    print("BeAroundSDK: Successfully sent \(count) beacon\(count == 1 ? "" : "s") (HTTP 200)")
+                    print(
+                        "BeAroundSDK: Successfully sent \(count) beacon\(count == 1 ? "" : "s") (HTTP 200)"
+                    )
                     self.endBackgroundTask()
 
                     beaconQueue.async {
@@ -459,7 +476,7 @@ public class BeAroundSDK {
                         }
                     }
 
-                case let .failure(error):
+                case .failure(let error):
                     print("BeAroundSDK: Failed to send beacons - \(error.localizedDescription)")
                     self.endBackgroundTask()
 
@@ -489,7 +506,8 @@ public class BeAroundSDK {
                                 domain: "BeAroundSDK",
                                 code: 6,
                                 userInfo: [
-                                    NSLocalizedDescriptionKey: "API unreachable after \(self.consecutiveFailures) consecutive failures. Beacons are queued for retry.",
+                                    NSLocalizedDescriptionKey:
+                                        "API unreachable after \(self.consecutiveFailures) consecutive failures. Beacons are queued for retry."
                                 ]
                             )
                             DispatchQueue.main.async {
@@ -508,7 +526,7 @@ public class BeAroundSDK {
 
     private func shouldRetryFailedBatches() -> Bool {
         guard !failedBatches.isEmpty,
-              let lastFailure = lastFailureTime
+            let lastFailure = lastFailureTime
         else {
             return false
         }
@@ -528,7 +546,9 @@ public class BeAroundSDK {
                 return
             }
 
-            backgroundTaskId = UIApplication.shared.beginBackgroundTask(withName: "BeAroundSDK-Sync") { [weak self] in
+            backgroundTaskId = UIApplication.shared.beginBackgroundTask(
+                withName: "BeAroundSDK-Sync"
+            ) { [weak self] in
                 print("[BeAroundSDK] Background task expiring - cleaning up")
                 self?.endBackgroundTask()
             }

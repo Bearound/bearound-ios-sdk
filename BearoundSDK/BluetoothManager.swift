@@ -74,15 +74,19 @@ class BluetoothManager: NSObject {
         print("[BluetoothManager] Stopped BLE scanning")
     }
 
-    private func parseIBeaconData(from manufacturerData: Data) -> (uuid: UUID, major: Int, minor: Int, txPower: Int)? {
+    private func parseIBeaconData(from manufacturerData: Data) -> (
+        uuid: UUID, major: Int, minor: Int, txPower: Int
+    )? {
         guard manufacturerData.count >= 25 else { return nil }
 
-        let companyID = manufacturerData.withUnsafeBytes { $0.load(fromByteOffset: 0, as: UInt16.self) }
+        let companyID = manufacturerData.withUnsafeBytes {
+            $0.load(fromByteOffset: 0, as: UInt16.self)
+        }
         guard companyID == 0x004C else { return nil }
 
         guard manufacturerData[2] == 0x02, manufacturerData[3] == 0x15 else { return nil }
 
-        let uuidData = manufacturerData.subdata(in: 4 ..< 20)
+        let uuidData = manufacturerData.subdata(in: 4..<20)
         guard let uuid = UUID(data: uuidData) else { return nil }
 
         let major = Int(manufacturerData[20]) << 8 | Int(manufacturerData[21])
@@ -102,8 +106,8 @@ class BluetoothManager: NSObject {
 
         let firmware = String(components[0])
         guard let battery = Int(components[2]),
-              let movements = Int(components[3]),
-              let temperature = Int(components[4])
+            let movements = Int(components[3]),
+            let temperature = Int(components[4])
         else {
             return nil
         }
@@ -145,14 +149,18 @@ extension BluetoothManager: CBCentralManagerDelegate {
         }
     }
 
-    func centralManager(_: CBCentralManager,
-                        didDiscover _: CBPeripheral,
-                        advertisementData: [String: Any],
-                        rssi RSSI: NSNumber)
-    {
+    func centralManager(
+        _: CBCentralManager,
+        didDiscover _: CBPeripheral,
+        advertisementData: [String: Any],
+        rssi RSSI: NSNumber
+    ) {
         guard RSSI.intValue != 127, RSSI.intValue != 0 else { return }
 
-        guard let manufacturerData = advertisementData[CBAdvertisementDataManufacturerDataKey] as? Data else {
+        guard
+            let manufacturerData = advertisementData[CBAdvertisementDataManufacturerDataKey]
+                as? Data
+        else {
             return
         }
 
@@ -164,7 +172,10 @@ extension BluetoothManager: CBCentralManagerDelegate {
             return
         }
 
-        guard shouldProcessBeacon(uuid: beaconData.uuid, major: beaconData.major, minor: beaconData.minor) else {
+        guard
+            shouldProcessBeacon(
+                uuid: beaconData.uuid, major: beaconData.major, minor: beaconData.minor)
+        else {
             return
         }
 
