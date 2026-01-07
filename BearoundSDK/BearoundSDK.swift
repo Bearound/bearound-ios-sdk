@@ -180,13 +180,13 @@ public class BeAroundSDK {
     }
 
     public func configure(
-        appId: String,
+        businessToken: String,
         syncInterval: TimeInterval,
         enableBluetoothScanning: Bool = false,
         enablePeriodicScanning: Bool = true
     ) {
         let config = SDKConfiguration(
-            appId: appId,
+            businessToken: businessToken,
             syncInterval: syncInterval,
             enableBluetoothScanning: enableBluetoothScanning,
             enablePeriodicScanning: enablePeriodicScanning
@@ -197,7 +197,7 @@ public class BeAroundSDK {
         let buildNumber = Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "1"
         let build = Int(buildNumber) ?? 1
 
-        sdkInfo = SDKInfo(appId: appId, build: build)
+        sdkInfo = SDKInfo(appId: config.appId, build: build)
 
         if isScanning {
             startSyncTimer()
@@ -238,7 +238,7 @@ public class BeAroundSDK {
                 code: 3,
                 userInfo: [
                     NSLocalizedDescriptionKey:
-                        "SDK not configured. Call configure(token:syncInterval:) first."
+                        "SDK not configured. Call configure(businessToken:syncInterval:) first."
                 ]
             )
             delegate?.didFailWithError(error)
@@ -263,6 +263,7 @@ public class BeAroundSDK {
         beaconManager.stopScanning()
         bluetoothManager.stopScanning()
         stopSyncTimer()
+        stopCountdownTimer()
 
         syncBeacons()
     }
@@ -311,6 +312,7 @@ public class BeAroundSDK {
                     deadline: .now() + delayUntilNextRanging
                 ) { [weak self] in
                     guard let self else { return }
+                    guard self.beaconManager.isScanning else { return }
                     print(
                         "BeAroundSDK: Starting ranging \(String(format: "%.1f", scanDuration))s before next sync"
                     )
@@ -328,6 +330,7 @@ public class BeAroundSDK {
                 deadline: .now() + delayUntilFirstRanging
             ) { [weak self] in
                 guard let self else { return }
+                guard self.beaconManager.isScanning else { return }
                 print(
                     "BeAroundSDK: Starting initial ranging for \(String(format: "%.1f", scanDuration))s"
                 )

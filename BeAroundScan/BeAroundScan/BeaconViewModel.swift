@@ -77,7 +77,7 @@ class BeaconViewModel: NSObject, ObservableObject, BeAroundSDKDelegate {
     private func initializeSDK() {
         let appId = Bundle.main.bundleIdentifier ?? "io.bearound.BeAround-Scan"
         BeAroundSDK.shared.configure(
-            appId: appId,
+            businessToken: "CLIENT_TOKEN",
             syncInterval: TimeInterval(currentSyncInterval)
         )
 
@@ -112,7 +112,7 @@ class BeaconViewModel: NSObject, ObservableObject, BeAroundSDKDelegate {
         currentSyncInterval = seconds
         let appId = Bundle.main.bundleIdentifier ?? "io.bearound.BeAround-Scan"
         BeAroundSDK.shared.configure(
-            appId: appId,
+            businessToken: "CLIENT_TOKEN",
             syncInterval: TimeInterval(seconds)
         )
         statusMessage = "Intervalo: \(seconds)s"

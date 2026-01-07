@@ -10,6 +10,8 @@ import Foundation
 public struct SDKConfiguration {
     public let appId: String
 
+    public let businessToken: String
+
     public let syncInterval: TimeInterval
 
     public var enableBluetoothScanning: Bool
@@ -19,18 +21,20 @@ public struct SDKConfiguration {
     let apiBaseURL: String
 
     public init(
-        appId: String,
+        businessToken: String,
         syncInterval: TimeInterval,
         enableBluetoothScanning: Bool = false,
         enablePeriodicScanning: Bool = true
     ) {
-        self.appId = appId
+        self.businessToken = businessToken
         self.enableBluetoothScanning = enableBluetoothScanning
         self.enablePeriodicScanning = enablePeriodicScanning
 
         self.syncInterval = min(max(syncInterval, 5), 60)
 
         apiBaseURL = "https://ingest.bearound.io"
+
+        self.appId = Bundle.main.bundleIdentifier ?? "unknown"
     }
 
     var scanDuration: TimeInterval {

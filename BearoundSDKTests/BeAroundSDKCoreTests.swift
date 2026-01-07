@@ -12,91 +12,91 @@
 //
 //@Suite("BeAroundSDK Core Functionality")
 //struct BeAroundSDKCoreTests {
-//    
+//
 //    @Test("SDK singleton instance")
 //    func sdkSingletonInstance() {
 //        let instance1 = BeAroundSDK.shared
 //        let instance2 = BeAroundSDK.shared
-//        
+//
 //        #expect(instance1 === instance2) // Same instance
 //    }
-//    
+//
 //    @Test("SDK initial state before configuration")
 //    func initialState() {
 //        let sdk = BeAroundSDK.shared
-//        
+//
 //        #expect(sdk.isScanning == false)
 //        #expect(sdk.currentSyncInterval == nil)
 //        #expect(sdk.currentScanDuration == nil)
 //        #expect(sdk.isPeriodicScanningEnabled == false)
 //        #expect(sdk.isBluetoothScanningEnabled == false)
 //    }
-//    
+//
 //    @Test("SDK configuration updates state")
 //    func configurationUpdatesState() {
 //        let sdk = BeAroundSDK.shared
-//        
+//
 //        sdk.configure(
-//            appId: "test-app",
+//            businessToken: "test-business-token-abc123",
 //            syncInterval: 25,
 //            enableBluetoothScanning: true,
 //            enablePeriodicScanning: false
 //        )
-//        
+//
 //        #expect(sdk.currentSyncInterval == 25)
 //        #expect(sdk.currentScanDuration != nil)
 //        #expect(sdk.isPeriodicScanningEnabled == false)
 //        #expect(sdk.isBluetoothScanningEnabled == true)
 //    }
-//    
+//
 //    @Test("SDK bluetooth scanning toggle")
 //    func bluetoothScanningToggle() {
 //        let sdk = BeAroundSDK.shared
-//        
+//
 //        sdk.configure(
-//            appId: "test-app",
+//            businessToken: "test-business-token-xyz789",
 //            syncInterval: 20,
 //            enableBluetoothScanning: false
 //        )
-//        
+//
 //        #expect(sdk.isBluetoothScanningEnabled == false)
-//        
+//
 //        sdk.setBluetoothScanning(enabled: true)
 //        #expect(sdk.isBluetoothScanningEnabled == true)
-//        
+//
 //        sdk.setBluetoothScanning(enabled: false)
 //        #expect(sdk.isBluetoothScanningEnabled == false)
 //    }
-//    
+//
 //    @Test("SDK user properties management")
 //    func userPropertiesManagement() {
 //        let sdk = BeAroundSDK.shared
-//        
+//
 //        let properties = UserProperties(
 //            internalId: "user789",
 //            email: "user@test.com",
 //            name: "Test User"
 //        )
-//        
+//
 //        // Setting properties should not throw
 //        sdk.setUserProperties(properties)
-//        
+//
 //        // Clearing properties should not throw
 //        sdk.clearUserProperties()
 //    }
-//    
+//
 //    @Test("SDK location availability check")
 //    func locationAvailabilityCheck() {
 //        let isAvailable = BeAroundSDK.isLocationAvailable()
-//        
+//
 //        // Just verify it returns a boolean
 //        #expect(isAvailable == true || isAvailable == false)
 //    }
-//    
+//
 //    @Test("SDK authorization status check")
 //    func authorizationStatusCheck() {
 //        let status = BeAroundSDK.authorizationStatus()
-//        
+//
 //        // Verify it returns a valid CLAuthorizationStatus
 //        let validStatuses: [CLAuthorizationStatus] = [
 //            .notDetermined,
@@ -105,22 +105,22 @@
 //            .authorizedAlways,
 //            .authorizedWhenInUse
 //        ]
-//        
+//
 //        #expect(validStatuses.contains(status))
 //    }
-//    
+//
 //    @Test("Complete SDK setup workflow")
 //    func completeSetupWorkflow() {
 //        let sdk = BeAroundSDK.shared
-//        
-//        // 1. Configure SDK
+//
+//        // 1. Configure SDK (appId agora vem do Bundle ID automaticamente)
 //        sdk.configure(
-//            appId: "production-app-id",
+//            businessToken: "production-business-token-secure123",
 //            syncInterval: 30,
 //            enableBluetoothScanning: true,
 //            enablePeriodicScanning: true
 //        )
-//        
+//
 //        // 2. Set user properties
 //        let userProps = UserProperties(
 //            internalId: "user123",
@@ -129,37 +129,37 @@
 //            customProperties: ["tier": "premium"]
 //        )
 //        sdk.setUserProperties(userProps)
-//        
+//
 //        // 3. Verify configuration
 //        #expect(sdk.currentSyncInterval == 30)
 //        #expect(sdk.isBluetoothScanningEnabled == true)
 //        #expect(sdk.isPeriodicScanningEnabled == true)
 //    }
-//    
+//
 //    @Test("Dynamic configuration changes")
 //    func dynamicConfigurationChanges() {
 //        let sdk = BeAroundSDK.shared
-//        
+//
 //        // Initial configuration
 //        sdk.configure(
-//            appId: "app-v1",
+//            businessToken: "business-token-v1-abc",
 //            syncInterval: 20,
 //            enableBluetoothScanning: false
 //        )
-//        
+//
 //        #expect(sdk.isBluetoothScanningEnabled == false)
-//        
+//
 //        // Update bluetooth scanning
 //        sdk.setBluetoothScanning(enabled: true)
 //        #expect(sdk.isBluetoothScanningEnabled == true)
-//        
-//        // Reconfigure with new settings
+//
+//        // Reconfigure with new settings (appId will be extracted automatically)
 //        sdk.configure(
-//            appId: "app-v2",
+//            businessToken: "business-token-v2-xyz",
 //            syncInterval: 45,
 //            enableBluetoothScanning: false
 //        )
-//        
+//
 //        #expect(sdk.currentSyncInterval == 45)
 //        #expect(sdk.isBluetoothScanningEnabled == false)
 //    }

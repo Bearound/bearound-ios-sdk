@@ -12,7 +12,7 @@
 //
 //@Suite("Concurrency and Thread Safety")
 //struct ConcurrencyTests {
-//    
+//
 //    @Test("Concurrent beacon creation")
 //    func concurrentBeaconCreation() async {
 //        await withTaskGroup(of: Beacon.self) { group in
@@ -29,20 +29,20 @@
 //                    )
 //                }
 //            }
-//            
+//
 //            var beacons: [Beacon] = []
 //            for await beacon in group {
 //                beacons.append(beacon)
 //            }
-//            
+//
 //            #expect(beacons.count == 100)
 //        }
 //    }
-//    
+//
 //    @Test("Concurrent user properties updates")
 //    func concurrentUserPropertiesUpdates() async {
 //        let sdk = BeAroundSDK.shared
-//        
+//
 //        await withTaskGroup(of: Void.self) { group in
 //            for i in 1...50 {
 //                group.addTask {
@@ -54,14 +54,14 @@
 //                }
 //            }
 //        }
-//        
+//
 //        // Should complete without crashes
 //    }
-//    
+//
 //    @Test("Concurrent configuration changes")
 //    func concurrentConfigurationChanges() async {
 //        let sdk = BeAroundSDK.shared
-//        
+//
 //        await withTaskGroup(of: Void.self) { group in
 //            for i in 1...20 {
 //                group.addTask {
@@ -73,7 +73,7 @@
 //                }
 //            }
 //        }
-//        
+//
 //        // Should complete without crashes
 //        #expect(sdk.currentSyncInterval != nil)
 //    }
