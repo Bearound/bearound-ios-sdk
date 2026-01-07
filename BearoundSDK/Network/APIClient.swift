@@ -41,6 +41,7 @@ class APIClient {
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue(configuration.businessToken, forHTTPHeaderField: "Authorization")
 
         let beaconsPayload = beacons.map { beacon -> [String: Any] in
             let proximityString: String =

@@ -227,6 +227,7 @@ class BeaconManager: NSObject {
         print("BeAroundSDK: Stopping beacon scanning")
         stopWatchdog()
         stopRangingRefreshTimer()
+        stopBackgroundRangingTimer()
 
         if let region = beaconRegion {
             locationManager.stopMonitoring(for: region)
@@ -244,13 +245,20 @@ class BeaconManager: NSObject {
         lastLocation = nil
         beaconLock.unlock()
 
+        beaconRegion = nil
         isInBeaconRegion = false
         emptyBeaconCount = 0
         isScanning = false
         onScanningStateChanged?(false)
+        onBeaconsUpdated?([])
     }
 
     func startRanging() {
+        guard isScanning else {
+            print("BeAroundSDK: Ignoring startRanging because scanning is stopped")
+            return
+        }
+
         guard let region = beaconRegion, !isRanging else {
             if isRanging {
                 print("BeAroundSDK: Already ranging")
@@ -528,7 +536,7 @@ class BeaconManager: NSObject {
     }
 
     private func restartRanging() {
-        guard let region = beaconRegion else { return }
+        guard isScanning, let region = beaconRegion else { return }
 
         let now = Date()
         if let lastRestart = lastRangingRestartTime {
@@ -574,7 +582,7 @@ class BeaconManager: NSObject {
         )
 
         DispatchQueue.main.asyncAfter(deadline: .now() + backoffDelay) { [weak self] in
-            guard let self, let region = beaconRegion else { return }
+            guard let self, self.isScanning, let region = self.beaconRegion else { return }
 
             locationManager.startRangingBeacons(satisfying: region.beaconIdentityConstraint)
             isRanging = true
