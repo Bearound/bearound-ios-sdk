@@ -42,3 +42,4 @@ public struct SDKConfiguration {
         return max(5, min(calculatedDuration, 10))
     }
 }
+

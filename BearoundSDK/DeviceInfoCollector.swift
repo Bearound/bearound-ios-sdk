@@ -463,3 +463,4 @@ class DeviceInfoCollector {
 		Int(ProcessInfo.processInfo.systemUptime * 1000)
 	}
 }
+

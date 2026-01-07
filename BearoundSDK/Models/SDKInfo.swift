@@ -20,3 +20,4 @@ struct SDKInfo {
         self.build = build
     }
 }
+

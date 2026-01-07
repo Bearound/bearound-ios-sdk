@@ -60,3 +60,4 @@ struct UserDevice {
     let thermalState: String
     let systemUptimeMs: Int
 }
+

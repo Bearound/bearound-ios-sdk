@@ -80,3 +80,4 @@ class DeviceIdentifier {
         UIDevice.current.identifierForVendor?.uuidString ?? UUID().uuidString
     }
 }
+
