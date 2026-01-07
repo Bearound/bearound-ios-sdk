@@ -5,6 +5,38 @@ All notable changes to BearoundSDK for iOS will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.0.1] - 2026-01-07
+
+### ⚠️ Breaking Changes
+
+**Authentication Update**: SDK now requires business token instead of appId for authentication.
+
+### Changed
+
+- **Configuration**: `configure()` now requires `businessToken` parameter (replaces `appId`)
+- **Auto-detection**: `appId` automatically extracted from `Bundle.main.bundleIdentifier`
+- **Authorization**: Business token sent in `Authorization` header for all API requests
+
+### Fixed
+
+- BeaconManager stability improvements (guards to prevent operations after scanning stopped)
+- Memory cleanup in `stopScanning()` method
+- Race conditions in ranging operations
+
+### Migration
+
+**Before (v2.0.0):**
+```swift
+BeAroundSDK.shared.configure(appId: "com.example.app", syncInterval: 10)
+```
+
+**After (v2.0.1):**
+```swift
+BeAroundSDK.shared.configure(businessToken: "your-token-here", syncInterval: 10)
+```
+
+---
+
 ## [2.0.0] - 2025-12-29
 
 ### 🔥 BREAKING CHANGES - Complete SDK Rewrite
