@@ -106,7 +106,7 @@ class ViewController: UIViewController, BeAroundSDKDelegate {
         
         // 1. Configure the SDK (do once)
         BeAroundSDK.shared.configure(
-            token: "your-api-token-here",
+            businessToken: "your-business-token-here",
             syncInterval: 10  // Sync every 10 seconds
         )
         // Note: appId is automatically extracted from Bundle.main.bundleIdentifier
@@ -217,7 +217,7 @@ Enable periodic scanning to save battery:
 
 ```swift
 BeAroundSDK.shared.configure(
-    token: "your-api-token-here",
+    businessToken: "your-business-token-here",
     syncInterval: 30,  // Sync every 30 seconds
     enablePeriodicScanning: true  // Scan only 5s before sync
 )
@@ -390,8 +390,8 @@ The SDK logs important events with tag `[BeAroundSDK]`:
 
 - Requires explicit user permission for location and Bluetooth
 - Respects iOS privacy guidelines
-- All beacon data transmitted to your configured API endpoint with secure token authentication
-- Authorization header sent as `Authorization: {token}` (no Bearer prefix)
+- All beacon data transmitted to your configured API endpoint with secure business token authentication
+- Authorization header sent as `Authorization: {businessToken}` (no Bearer prefix)
 - No local data storage by default
 - IDFA collected only with user consent (ATT framework)
 - Comprehensive device telemetry for analytics
@@ -458,7 +458,7 @@ import BearoundSDK
 class MyViewController: BeAroundSDKDelegate {
     func setup() {
         BeAroundSDK.shared.configure(
-            token: "your-api-token-here",
+            businessToken: "your-business-token-here",
             syncInterval: 10
         )
         // appId is now automatically extracted from Bundle ID
@@ -477,10 +477,10 @@ class MyViewController: BeAroundSDKDelegate {
 
 1. **Singleton Pattern**: Use `BeAroundSDK.shared` instead of creating instances
 2. **Delegate, not Listeners**: Implement `BeAroundSDKDelegate` protocol
-3. **Configuration**: Use `configure(token:syncInterval:)` instead of initializer
-   - **Token parameter is now required**: Pass your API token directly
+3. **Configuration**: Use `configure(businessToken:syncInterval:)` instead of initializer
+   - **businessToken parameter is now required**: Pass your business API token directly
    - **appId removed**: Now automatically extracted from `Bundle.main.bundleIdentifier`
-   - **Authorization header**: Token sent as `Authorization: {token}` (no Bearer prefix)
+   - **Authorization header**: Token sent as `Authorization: {businessToken}` (no Bearer prefix)
 4. **Scanning Methods**: `startScanning()` / `stopScanning()` (was `startServices()` / `stopServices()`)
 5. **Beacon Access**: Beacons delivered via delegate callbacks only
 6. **No More Event Types**: No `enter`/`exit`/`lost` distinction
@@ -592,7 +592,7 @@ class BeaconViewController: UIViewController, BeAroundSDKDelegate {
         
         // Configure SDK with advanced options
         BeAroundSDK.shared.configure(
-            token: "your-api-token-here",
+            businessToken: "your-business-token-here",
             syncInterval: 30,
             enableBluetoothScanning: true,  // Get battery, firmware, etc.
             enablePeriodicScanning: true    // Save battery
