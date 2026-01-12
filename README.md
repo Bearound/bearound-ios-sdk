@@ -106,8 +106,8 @@ class ViewController: UIViewController, BeAroundSDKDelegate {
         
         // 1. Configure the SDK (do once)
         BeAroundSDK.shared.configure(
-            businessToken: "your-business-token-here",
-            syncInterval: 10  // Sync every 10 seconds
+            businessToken: "your-business-token-here"
+            // Uses defaults: foreground 15s, background 60s, queue 100 payloads
         )
         // Note: appId is automatically extracted from Bundle.main.bundleIdentifier
         
@@ -211,24 +211,34 @@ if #available(iOS 14, *) {
 
 ### Advanced Configuration
 
-#### Periodic Scanning (Battery Efficient)
+#### Scan Interval Configuration
 
-Enable periodic scanning to save battery:
+Configure different scan intervals for foreground and background modes:
 
 ```swift
 BeAroundSDK.shared.configure(
     businessToken: "your-business-token-here",
-    syncInterval: 30,  // Sync every 30 seconds
-    enablePeriodicScanning: true  // Scan only 5s before sync
+    foregroundScanInterval: .seconds30,      // Scan every 30s when app is active
+    backgroundScanInterval: .seconds90,      // Scan every 90s in background
+    maxQueuedPayloads: .large,               // Store up to 200 failed payloads
+    enablePeriodicScanning: true             // Battery-efficient mode
 )
-// Note: appId is automatically extracted from your app's Bundle Identifier
 ```
 
+**Available Scan Intervals:**
+
+| Foreground | Background | Payload Queue |
+|------------|------------|---------------|
+| `.seconds5` to `.seconds60` (5s increments) | `.seconds60` | `.small` (50) |
+| Default: `.seconds15` | `.seconds90` | `.medium` (100) - default |
+| | `.seconds120` | `.large` (200) |
+| | Default: `.seconds60` | `.xlarge` (500) |
+
 **How it works:**
-- Scans for 5 seconds before each sync interval
-- Pauses scanning between sync times
-- Automatically switches to continuous mode in background
-- Ideal for battery-conscious applications
+- SDK automatically switches intervals based on app state (foreground/background)
+- Scan duration is calculated as `syncInterval / 3` (limited between 5-10 seconds)
+- Failed API requests are queued for retry based on `maxQueuedPayloads` setting
+- Periodic scanning mode pauses between sync times to save battery
 
 #### Bluetooth Metadata Scanning
 
@@ -236,8 +246,7 @@ Get enhanced beacon information (firmware, battery, temperature):
 
 ```swift
 BeAroundSDK.shared.configure(
-    appId: "com.example.app",
-    syncInterval: 10,
+    businessToken: "your-business-token-here",
     enableBluetoothScanning: true  // Enable metadata
 )
 
@@ -451,15 +460,15 @@ let active = bearound.getActiveBeacons()
 let all = bearound.getAllBeacons()
 ```
 
-**New API (v2.0):**
+**New API (v2.1):**
 ```swift
 import BearoundSDK
 
 class MyViewController: BeAroundSDKDelegate {
     func setup() {
         BeAroundSDK.shared.configure(
-            businessToken: "your-business-token-here",
-            syncInterval: 10
+            businessToken: "your-business-token-here"
+            // Optional: foregroundScanInterval, backgroundScanInterval, maxQueuedPayloads
         )
         // appId is now automatically extracted from Bundle ID
         BeAroundSDK.shared.delegate = self
@@ -477,10 +486,11 @@ class MyViewController: BeAroundSDKDelegate {
 
 1. **Singleton Pattern**: Use `BeAroundSDK.shared` instead of creating instances
 2. **Delegate, not Listeners**: Implement `BeAroundSDKDelegate` protocol
-3. **Configuration**: Use `configure(businessToken:syncInterval:)` instead of initializer
+3. **Configuration**: Use `configure(businessToken:...)` with enum-based intervals (v2.1+)
    - **businessToken parameter is now required**: Pass your business API token directly
    - **appId removed**: Now automatically extracted from `Bundle.main.bundleIdentifier`
    - **Authorization header**: Token sent as `Authorization: {businessToken}` (no Bearer prefix)
+   - **Scan intervals**: Use `ForegroundScanInterval` and `BackgroundScanInterval` enums instead of raw TimeInterval
 4. **Scanning Methods**: `startScanning()` / `stopScanning()` (was `startServices()` / `stopServices()`)
 5. **Beacon Access**: Beacons delivered via delegate callbacks only
 6. **No More Event Types**: No `enter`/`exit`/`lost` distinction
@@ -593,9 +603,11 @@ class BeaconViewController: UIViewController, BeAroundSDKDelegate {
         // Configure SDK with advanced options
         BeAroundSDK.shared.configure(
             businessToken: "your-business-token-here",
-            syncInterval: 30,
-            enableBluetoothScanning: true,  // Get battery, firmware, etc.
-            enablePeriodicScanning: true    // Save battery
+            foregroundScanInterval: .seconds30,     // Scan every 30s when active
+            backgroundScanInterval: .seconds90,     // Scan every 90s in background
+            maxQueuedPayloads: .large,              // Queue up to 200 failed payloads
+            enableBluetoothScanning: true,          // Get battery, firmware, etc.
+            enablePeriodicScanning: true            // Save battery
         )
         // Note: appId automatically extracted from Bundle Identifier
         

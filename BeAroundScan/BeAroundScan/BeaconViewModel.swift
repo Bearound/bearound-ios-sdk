@@ -16,15 +16,22 @@ class BeaconViewModel: NSObject, ObservableObject, BeAroundSDKDelegate {
     @Published var statusMessage = "Pronto"
     @Published var permissionStatus = "Verificando..."
     @Published var lastScanTime: Date?
-    @Published var currentSyncInterval: Int = 10
     @Published var sortOption: BeaconSortOption = .proximity
     @Published var secondsUntilNextSync: Int = 0
     @Published var isRanging: Bool = false
     @Published var bluetoothStatus: String = "Verificando..."
     @Published var notificationStatus: String = "Verificando..."
+    
+    // SDK Configuration Settings
+    @Published var foregroundInterval: ForegroundIntervalOption = .seconds15
+    @Published var backgroundInterval: BackgroundIntervalOption = .seconds60
+    @Published var queueSize: QueueSizeOption = .medium
+    @Published var enableBluetoothScanning: Bool = false
+    @Published var enablePeriodicScanning: Bool = true
+    
     private let locationManager = CLLocationManager()
-    private var wasInBeaconRegion = false // Para detectar entrada na região
-    private var scanStartTime: Date? // Para evitar notificações imediatas ao iniciar
+    private var wasInBeaconRegion = false
+    private var scanStartTime: Date?
     private let notificationManager = NotificationManager.shared
     private var bluetoothManager: CBCentralManager?
 
@@ -75,10 +82,13 @@ class BeaconViewModel: NSObject, ObservableObject, BeAroundSDKDelegate {
 
     @MainActor
     private func initializeSDK() {
-        let appId = Bundle.main.bundleIdentifier ?? "io.bearound.BeAround-Scan"
         BeAroundSDK.shared.configure(
             businessToken: "CLIENT_TOKEN",
-            syncInterval: TimeInterval(currentSyncInterval)
+            foregroundScanInterval: foregroundInterval.sdkValue,
+            backgroundScanInterval: backgroundInterval.sdkValue,
+            maxQueuedPayloads: queueSize.sdkValue,
+            enableBluetoothScanning: enableBluetoothScanning,
+            enablePeriodicScanning: enablePeriodicScanning
         )
 
         BeAroundSDK.shared.delegate = self
@@ -86,6 +96,30 @@ class BeaconViewModel: NSObject, ObservableObject, BeAroundSDKDelegate {
         statusMessage = "Configurado"
 
         startScanning()
+    }
+    
+    @MainActor
+    func applySettings() {
+        let wasScanning = isScanning
+        
+        if wasScanning {
+            stopScanning()
+        }
+        
+        BeAroundSDK.shared.configure(
+            businessToken: "CLIENT_TOKEN",
+            foregroundScanInterval: foregroundInterval.sdkValue,
+            backgroundScanInterval: backgroundInterval.sdkValue,
+            maxQueuedPayloads: queueSize.sdkValue,
+            enableBluetoothScanning: enableBluetoothScanning,
+            enablePeriodicScanning: enablePeriodicScanning
+        )
+        
+        statusMessage = "Configurações aplicadas"
+        
+        if wasScanning {
+            startScanning()
+        }
     }
 
     @MainActor
@@ -107,17 +141,10 @@ class BeaconViewModel: NSObject, ObservableObject, BeAroundSDKDelegate {
         scanStartTime = nil
     }
 
-    @MainActor
-    func changeSyncInterval(_ seconds: Int) {
-        currentSyncInterval = seconds
-        let appId = Bundle.main.bundleIdentifier ?? "io.bearound.BeAround-Scan"
-        BeAroundSDK.shared.configure(
-            businessToken: "CLIENT_TOKEN",
-            syncInterval: TimeInterval(seconds)
-        )
-        statusMessage = "Intervalo: \(seconds)s"
+    var currentDisplayInterval: Int {
+        Int(BeAroundSDK.shared.currentSyncInterval ?? 0)
     }
-
+    
     var scanDuration: Int {
         Int(BeAroundSDK.shared.currentScanDuration ?? 0)
     }
@@ -129,12 +156,8 @@ class BeaconViewModel: NSObject, ObservableObject, BeAroundSDKDelegate {
     }
 
     var scanMode: String {
-        if BeAroundSDK.shared.isPeriodicScanningEnabled {
-            if pauseDuration > 0 {
-                return "Periódico"
-            } else {
-                return "Contínuo"
-            }
+        if enablePeriodicScanning && pauseDuration > 0 {
+            return "Periódico (economiza bateria)"
         }
         return "Contínuo"
     }
