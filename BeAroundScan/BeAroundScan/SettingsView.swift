@@ -41,9 +41,9 @@ struct SettingsView: View {
                         }
                     }
                 } header: {
-                    Text("Intervalos de Scan")
+                    Text("Intervalos de Sync")
                 } footer: {
-                    Text("Foreground: quando o app está ativo\nBackground: quando o app está em segundo plano")
+                    Text("Controla a frequência de envio de dados para a API.\n\nForeground: quando o app está ativo\nBackground: quando em segundo plano (ranging é contínuo, interval controla sync)")
                 }
                 
                 // Queue Settings Section
@@ -67,7 +67,7 @@ struct SettingsView: View {
                 } header: {
                     Text("Funcionalidades")
                 } footer: {
-                    Text("Bluetooth: coleta metadados dos beacons\nPeriódico: economiza bateria ligando/desligando o scan")
+                    Text("Bluetooth: coleta metadados dos beacons\nPeriódico: economiza bateria (apenas em foreground - liga/desliga ranging antes do sync)\n\nNOTA: Em background o ranging é sempre contínuo (limitação do iOS)")
                 }
                 
                 // Current Configuration Display
@@ -205,14 +205,20 @@ enum ForegroundIntervalOption: CaseIterable {
 }
 
 enum BackgroundIntervalOption: CaseIterable {
-    case seconds60, seconds90, seconds120
+    case seconds15, seconds30, seconds60, seconds90, seconds120
     
     var displayText: String {
-        "\(seconds)s (\(minutes)min)"
+        if seconds < 60 {
+            return "\(seconds)s"
+        } else {
+            return "\(seconds)s (\(minutes)min)"
+        }
     }
     
     var seconds: Int {
         switch self {
+        case .seconds15: return 15
+        case .seconds30: return 30
         case .seconds60: return 60
         case .seconds90: return 90
         case .seconds120: return 120
@@ -225,6 +231,8 @@ enum BackgroundIntervalOption: CaseIterable {
     
     var sdkValue: BackgroundScanInterval {
         switch self {
+        case .seconds15: return .seconds15
+        case .seconds30: return .seconds30
         case .seconds60: return .seconds60
         case .seconds90: return .seconds90
         case .seconds120: return .seconds120
@@ -233,6 +241,8 @@ enum BackgroundIntervalOption: CaseIterable {
     
     static func from(sdkValue: BackgroundScanInterval) -> BackgroundIntervalOption {
         switch sdkValue {
+        case .seconds15: return .seconds15
+        case .seconds30: return .seconds30
         case .seconds60: return .seconds60
         case .seconds90: return .seconds90
         case .seconds120: return .seconds120

@@ -24,7 +24,7 @@ class BeaconViewModel: NSObject, ObservableObject, BeAroundSDKDelegate {
     
     // SDK Configuration Settings
     @Published var foregroundInterval: ForegroundIntervalOption = .seconds15
-    @Published var backgroundInterval: BackgroundIntervalOption = .seconds60
+    @Published var backgroundInterval: BackgroundIntervalOption = .seconds30
     @Published var queueSize: QueueSizeOption = .medium
     @Published var enableBluetoothScanning: Bool = false
     @Published var enablePeriodicScanning: Bool = true

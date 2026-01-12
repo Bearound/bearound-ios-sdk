@@ -45,6 +45,8 @@ public enum ForegroundScanInterval {
 /// Background scan interval configuration
 /// Controls how frequently the SDK scans for beacons when the app is in background
 public enum BackgroundScanInterval {
+    case seconds15
+    case seconds30
     case seconds60
     case seconds90
     case seconds120
@@ -52,6 +54,8 @@ public enum BackgroundScanInterval {
     /// Returns the time interval in seconds
     public var timeInterval: TimeInterval {
         switch self {
+        case .seconds15: return 15
+        case .seconds30: return 30
         case .seconds60: return 60
         case .seconds90: return 90
         case .seconds120: return 120
