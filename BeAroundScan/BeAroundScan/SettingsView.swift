@@ -56,7 +56,7 @@ struct SettingsView: View {
                 } header: {
                     Text("Fila de Retry")
                 } footer: {
-                    Text("Número máximo de payloads guardados quando a API falha")
+                    Text("Número máximo de batches de requisições guardados quando a API falha. Cada batch contém múltiplos beacons.")
                 }
                 
                 // Features Section
@@ -245,10 +245,10 @@ enum QueueSizeOption: CaseIterable {
     
     var displayText: String {
         switch self {
-        case .small: return "Small (50)"
-        case .medium: return "Medium (100)"
-        case .large: return "Large (200)"
-        case .xlarge: return "XLarge (500)"
+        case .small: return "Small (50 batches)"
+        case .medium: return "Medium (100 batches)"
+        case .large: return "Large (200 batches)"
+        case .xlarge: return "XLarge (500 batches)"
         }
     }
     

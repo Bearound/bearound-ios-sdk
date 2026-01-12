@@ -14,12 +14,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `BackgroundScanInterval`: Configure background scan intervals (60s, 90s, or 120s)
   - Default: 15 seconds for foreground, 60 seconds for background
 
-- **Configurable Payload Queue**: New `MaxQueuedPayloads` enum to control retry queue size
-  - `.small` (50 payloads)
-  - `.medium` (100 payloads) - default
-  - `.large` (200 payloads)
-  - `.xlarge` (500 payloads)
+- **Configurable Retry Queue**: New `MaxQueuedPayloads` enum to control retry queue size
+  - `.small` (50 failed batches)
+  - `.medium` (100 failed batches) - default
+  - `.large` (200 failed batches)
+  - `.xlarge` (500 failed batches)
   - Replaces fixed limit of 10 batches with configurable options
+  - Each batch can contain multiple beacons from a single sync
 
 ### Changed
 
@@ -30,7 +31,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Old `syncInterval` parameter removed in favor of separate foreground/background intervals
 
 - **Dynamic Interval Switching**: SDK now automatically switches between foreground and background intervals based on app state
-- **Improved Resilience**: Increased default retry queue from 10 to 100 payloads
+- **Improved Resilience**: Increased default retry queue from 10 to 100 failed batches
 
 ### Migration
 

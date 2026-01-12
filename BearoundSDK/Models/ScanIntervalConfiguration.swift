@@ -60,14 +60,15 @@ public enum BackgroundScanInterval {
 }
 
 /// Maximum queued payloads configuration
-/// Controls how many failed API requests are stored for retry
+/// Controls how many failed API request batches are stored for retry
+/// Each batch contains all beacons from a single sync operation
 public enum MaxQueuedPayloads {
     case small
     case medium
     case large
     case xlarge
     
-    /// Returns the maximum number of payloads that can be queued
+    /// Returns the maximum number of failed batches that can be queued
     public var value: Int {
         switch self {
         case .small: return 50

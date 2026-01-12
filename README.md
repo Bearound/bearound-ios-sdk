@@ -107,7 +107,7 @@ class ViewController: UIViewController, BeAroundSDKDelegate {
         // 1. Configure the SDK (do once)
         BeAroundSDK.shared.configure(
             businessToken: "your-business-token-here"
-            // Uses defaults: foreground 15s, background 60s, queue 100 payloads
+            // Uses defaults: foreground 15s, background 60s, queue 100 failed batches
         )
         // Note: appId is automatically extracted from Bundle.main.bundleIdentifier
         
@@ -220,24 +220,24 @@ BeAroundSDK.shared.configure(
     businessToken: "your-business-token-here",
     foregroundScanInterval: .seconds30,      // Scan every 30s when app is active
     backgroundScanInterval: .seconds90,      // Scan every 90s in background
-    maxQueuedPayloads: .large,               // Store up to 200 failed payloads
+    maxQueuedPayloads: .large,               // Store up to 200 failed batches
     enablePeriodicScanning: true             // Battery-efficient mode
 )
 ```
 
 **Available Scan Intervals:**
 
-| Foreground | Background | Payload Queue |
-|------------|------------|---------------|
-| `.seconds5` to `.seconds60` (5s increments) | `.seconds60` | `.small` (50) |
-| Default: `.seconds15` | `.seconds90` | `.medium` (100) - default |
-| | `.seconds120` | `.large` (200) |
-| | Default: `.seconds60` | `.xlarge` (500) |
+| Foreground | Background | Retry Queue |
+|------------|------------|-------------|
+| `.seconds5` to `.seconds60` (5s increments) | `.seconds60` | `.small` (50 batches) |
+| Default: `.seconds15` | `.seconds90` | `.medium` (100 batches) - default |
+| | `.seconds120` | `.large` (200 batches) |
+| | Default: `.seconds60` | `.xlarge` (500 batches) |
 
 **How it works:**
 - SDK automatically switches intervals based on app state (foreground/background)
 - Scan duration is calculated as `syncInterval / 3` (limited between 5-10 seconds)
-- Failed API requests are queued for retry based on `maxQueuedPayloads` setting
+- Failed API requests are queued for retry based on `maxQueuedPayloads` setting (each batch contains all beacons from one sync)
 - Periodic scanning mode pauses between sync times to save battery
 
 #### Bluetooth Metadata Scanning
@@ -605,7 +605,7 @@ class BeaconViewController: UIViewController, BeAroundSDKDelegate {
             businessToken: "your-business-token-here",
             foregroundScanInterval: .seconds30,     // Scan every 30s when active
             backgroundScanInterval: .seconds90,     // Scan every 90s in background
-            maxQueuedPayloads: .large,              // Queue up to 200 failed payloads
+            maxQueuedPayloads: .large,              // Queue up to 200 failed batches
             enableBluetoothScanning: true,          // Get battery, firmware, etc.
             enablePeriodicScanning: true            // Save battery
         )

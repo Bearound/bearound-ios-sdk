@@ -26,12 +26,12 @@ Permite configurar todos os parâmetros do SDK:
   - Controla frequência de scan em background
 
 #### 📦 Fila de Retry
-- **Small**: 50 payloads
-- **Medium**: 100 payloads (default)
-- **Large**: 200 payloads
-- **XLarge**: 500 payloads
+- **Small**: 50 batches
+- **Medium**: 100 batches (default)
+- **Large**: 200 batches
+- **XLarge**: 500 batches
 
-Controla quantos payloads são guardados quando a API falha.
+Controla quantos batches de requisições falhadas são guardados. Cada batch contém múltiplos beacons de uma única sincronização.
 
 #### 🔧 Funcionalidades
 - **Bluetooth Scanning**: Coleta metadados dos beacons (bateria, firmware, temperatura)
