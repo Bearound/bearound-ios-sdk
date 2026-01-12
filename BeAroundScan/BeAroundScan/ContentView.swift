@@ -4,6 +4,7 @@ import SwiftUI
 
 struct ContentView: View {
     @StateObject private var viewModel = BeaconViewModel()
+    @State private var showSettings = false
 
     var body: some View {
         NavigationView {
@@ -98,7 +99,7 @@ struct ContentView: View {
                                     .font(.caption)
                                     .foregroundColor(.secondary)
                                 Spacer()
-                                Text("\(viewModel.currentSyncInterval)s")
+                                Text("\(viewModel.currentDisplayInterval)s")
                                     .font(.caption)
                                     .fontWeight(.medium)
                             }
@@ -176,25 +177,15 @@ struct ContentView: View {
                 .buttonStyle(.borderedProminent)
                 .tint(viewModel.isScanning ? .red : .blue)
                 .padding(.horizontal)
-
-                HStack {
-                    Text("Intervalo:")
+                
+                Button(action: {
+                    showSettings = true
+                }) {
+                    Label("Configurações do SDK", systemImage: "gearshape.fill")
                         .font(.subheadline)
-                        .foregroundColor(.secondary)
-
-                    Spacer()
-
-                    Picker("", selection: $viewModel.currentSyncInterval) {
-                        ForEach([5, 10, 15, 20, 30, 60], id: \.self) { interval in
-                            Text("\(interval)s").tag(interval)
-                        }
-                    }
-                    .pickerStyle(.menu)
-                    .frame(width: 80)
-                    .onChange(of: viewModel.currentSyncInterval) { _, newValue in
-                        viewModel.changeSyncInterval(newValue)
-                    }
+                        .frame(maxWidth: .infinity)
                 }
+                .buttonStyle(.bordered)
                 .padding(.horizontal)
 
                 HStack {
@@ -246,6 +237,18 @@ struct ContentView: View {
             }
             .padding(.vertical)
             .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    Button(action: {
+                        showSettings = true
+                    }) {
+                        Image(systemName: "gearshape.fill")
+                    }
+                }
+            }
+            .sheet(isPresented: $showSettings) {
+                SettingsView(viewModel: viewModel)
+            }
         }
     }
 

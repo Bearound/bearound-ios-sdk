@@ -5,6 +5,65 @@ All notable changes to BearoundSDK for iOS will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.1.0] - 2026-01-12
+
+### ✨ Added
+
+- **Configurable Scan Intervals**: New enums for fine-grained control over scan behavior
+  - `ForegroundScanInterval`: Configure foreground scan intervals from 5 to 60 seconds (in 5-second increments)
+  - `BackgroundScanInterval`: Configure background scan intervals (60s, 90s, or 120s)
+  - Default: 15 seconds for foreground, 60 seconds for background
+
+- **Configurable Payload Queue**: New `MaxQueuedPayloads` enum to control retry queue size
+  - `.small` (50 payloads)
+  - `.medium` (100 payloads) - default
+  - `.large` (200 payloads)
+  - `.xlarge` (500 payloads)
+  - Replaces fixed limit of 10 batches with configurable options
+
+### Changed
+
+- **Configuration API**: `configure()` method now accepts enum parameters instead of raw `TimeInterval`
+  - `foregroundScanInterval: ForegroundScanInterval = .seconds15`
+  - `backgroundScanInterval: BackgroundScanInterval = .seconds60`
+  - `maxQueuedPayloads: MaxQueuedPayloads = .medium`
+  - Old `syncInterval` parameter removed in favor of separate foreground/background intervals
+
+- **Dynamic Interval Switching**: SDK now automatically switches between foreground and background intervals based on app state
+- **Improved Resilience**: Increased default retry queue from 10 to 100 payloads
+
+### Migration
+
+**Before (v2.0.1):**
+```swift
+BeAroundSDK.shared.configure(
+    businessToken: "your-token",
+    syncInterval: 15
+)
+```
+
+**After (v2.1.0):**
+```swift
+// Using defaults (recommended)
+BeAroundSDK.shared.configure(businessToken: "your-token")
+
+// Custom configuration
+BeAroundSDK.shared.configure(
+    businessToken: "your-token",
+    foregroundScanInterval: .seconds30,
+    backgroundScanInterval: .seconds90,
+    maxQueuedPayloads: .large
+)
+```
+
+### Technical Details
+
+- Scan duration formula unchanged: `scanDuration = max(5, min(syncInterval / 3, 10))`
+- Backoff retry logic unchanged: exponential backoff with max 60s delay
+- All existing scanning and sync behaviors preserved
+
+---
+
 ## [2.0.1] - 2026-01-07
 
 ### ⚠️ Breaking Changes

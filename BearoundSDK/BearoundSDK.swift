@@ -46,8 +46,6 @@ public class BeAroundSDK {
 
     private var lastFailureTime: Date?
 
-    private let maxFailedBatches = 10
-
     private var backgroundTaskId: UIBackgroundTaskIdentifier = .invalid
 
     private var isInBackground = false
@@ -61,11 +59,14 @@ public class BeAroundSDK {
     }
 
     public var currentSyncInterval: TimeInterval? {
-        configuration?.syncInterval
+        guard let config = configuration else { return nil }
+        return config.syncInterval(isInBackground: isInBackground)
     }
 
     public var currentScanDuration: TimeInterval? {
-        configuration?.scanDuration
+        guard let config = configuration else { return nil }
+        let interval = config.syncInterval(isInBackground: isInBackground)
+        return config.scanDuration(for: interval)
     }
 
     public var isPeriodicScanningEnabled: Bool {
@@ -181,13 +182,17 @@ public class BeAroundSDK {
 
     public func configure(
         businessToken: String,
-        syncInterval: TimeInterval,
+        foregroundScanInterval: ForegroundScanInterval = .seconds15,
+        backgroundScanInterval: BackgroundScanInterval = .seconds60,
+        maxQueuedPayloads: MaxQueuedPayloads = .medium,
         enableBluetoothScanning: Bool = false,
         enablePeriodicScanning: Bool = true
     ) {
         let config = SDKConfiguration(
             businessToken: businessToken,
-            syncInterval: syncInterval,
+            foregroundScanInterval: foregroundScanInterval,
+            backgroundScanInterval: backgroundScanInterval,
+            maxQueuedPayloads: maxQueuedPayloads,
             enableBluetoothScanning: enableBluetoothScanning,
             enablePeriodicScanning: enablePeriodicScanning
         )
@@ -290,13 +295,13 @@ public class BeAroundSDK {
         let actualAppState = UIApplication.shared.applicationState
         isInBackground = (actualAppState == .background)
 
+        let syncInterval = config.syncInterval(isInBackground: isInBackground)
+        let scanDuration = config.scanDuration(for: syncInterval)
+
         let timer = DispatchSource.makeTimerSource(queue: DispatchQueue.global(qos: .utility))
         syncTimer = timer
 
         if config.enablePeriodicScanning && !isInBackground {
-            let scanDuration = config.scanDuration
-            let syncInterval = config.syncInterval
-
             timer.schedule(deadline: .now() + syncInterval, repeating: syncInterval)
             timer.setEventHandler { [weak self] in
                 guard let self else { return }
@@ -339,14 +344,14 @@ public class BeAroundSDK {
 
             timer.resume()
         } else {
-            timer.schedule(deadline: .now() + config.syncInterval, repeating: config.syncInterval)
+            timer.schedule(deadline: .now() + syncInterval, repeating: syncInterval)
             timer.setEventHandler { [weak self] in
                 guard let self else { return }
-                self.nextSyncTime = Date().addingTimeInterval(config.syncInterval)
+                self.nextSyncTime = Date().addingTimeInterval(syncInterval)
                 self.syncBeacons()
             }
 
-            nextSyncTime = Date().addingTimeInterval(config.syncInterval)
+            nextSyncTime = Date().addingTimeInterval(syncInterval)
             timer.resume()
         }
     }
@@ -487,16 +492,18 @@ public class BeAroundSDK {
                         self.consecutiveFailures += 1
                         self.lastFailureTime = Date()
 
-                        if self.failedBatches.count < self.maxFailedBatches {
+                        let maxQueueSize = self.configuration?.maxQueuedPayloads.value ?? 100
+                        
+                        if self.failedBatches.count < maxQueueSize {
                             self.failedBatches.append(beaconsToSend)
                             print(
-                                "BeAroundSDK: Queued \(count) beacon\(count == 1 ? "" : "s") for retry (queue size: \(self.failedBatches.count)/\(self.maxFailedBatches), consecutive failures: \(self.consecutiveFailures))"
+                                "BeAroundSDK: Queued \(count) beacon\(count == 1 ? "" : "s") for retry (queue size: \(self.failedBatches.count)/\(maxQueueSize), consecutive failures: \(self.consecutiveFailures))"
                             )
                         } else {
                             let dropped = self.failedBatches.removeFirst()
                             self.failedBatches.append(beaconsToSend)
                             print(
-                                "BeAroundSDK: Retry queue full - dropped \(dropped.count) oldest beacons (queue: \(self.failedBatches.count)/\(self.maxFailedBatches))"
+                                "BeAroundSDK: Retry queue full - dropped \(dropped.count) oldest beacons (queue: \(self.failedBatches.count)/\(maxQueueSize))"
                             )
                         }
 
