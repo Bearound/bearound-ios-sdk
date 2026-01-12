@@ -13,10 +13,11 @@ struct SDKInfo {
     let appId: String
     let build: Int
 
-    init(version: String = "2.0.1", appId: String, build: Int) {
+    init(version: String = "2.1.0", appId: String, build: Int) {
         self.version = version
         platform = "ios"
         self.appId = appId
         self.build = build
     }
 }
+

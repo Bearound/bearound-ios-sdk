@@ -49,3 +49,4 @@ public struct Beacon {
         self.txPower = txPower
     }
 }
+

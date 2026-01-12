@@ -40,3 +40,4 @@ public struct BeaconMetadata: Equatable {
         self.isConnectable = isConnectable
     }
 }
+

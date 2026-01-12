@@ -22,3 +22,4 @@ extension BeAroundSDKDelegate {
 	public func didChangeScanning(isScanning _: Bool) {}
 	public func didUpdateSyncStatus(secondsUntilNextSync _: Int, isRanging _: Bool) {}
 }
+

@@ -712,3 +712,4 @@ extension BeaconManager: CLLocationManagerDelegate {
         }
     }
 }
+

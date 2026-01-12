@@ -48,3 +48,4 @@ public struct UserProperties {
         internalId != nil || email != nil || name != nil || !customProperties.isEmpty
     }
 }
+
