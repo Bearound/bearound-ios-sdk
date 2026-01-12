@@ -40,7 +40,8 @@ struct APIClientTests {
     func apiClientInitialization() {
         let config = SDKConfiguration(
             businessToken: "test-business-token-123",
-            syncInterval: 10
+            foregroundScanInterval: .seconds10,
+            backgroundScanInterval: .seconds60
         )
 
         let apiClient = APIClient(configuration: config)

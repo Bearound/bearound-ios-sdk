@@ -225,14 +225,21 @@ BeAroundSDK.shared.configure(
 )
 ```
 
-**Available Scan Intervals:**
+**Available Configuration Options:**
 
-| Foreground | Background | Retry Queue |
-|------------|------------|-------------|
-| `.seconds5` to `.seconds60` (5s increments) | `.seconds60` | `.small` (50 batches) |
-| Default: `.seconds15` | `.seconds90` | `.medium` (100 batches) - default |
-| | `.seconds120` | `.large` (200 batches) |
-| | Default: `.seconds60` | `.xlarge` (500 batches) |
+- **Foreground Scan Interval** (`foregroundScanInterval`)
+  - Available values: `.seconds5`, `.seconds10`, `.seconds15`, `.seconds20`, `.seconds25`, `.seconds30`, `.seconds35`, `.seconds40`, `.seconds45`, `.seconds50`, `.seconds55`, `.seconds60`
+  - Default: `.seconds15`
+
+- **Background Scan Interval** (`backgroundScanInterval`)
+  - Available values: `.seconds60`, `.seconds90`, `.seconds120`
+  - Default: `.seconds60`
+
+- **Retry Queue Size** (`maxQueuedPayloads`)
+  - `.small` - 50 failed batches
+  - `.medium` - 100 failed batches (default)
+  - `.large` - 200 failed batches
+  - `.xlarge` - 500 failed batches
 
 **How it works:**
 - SDK automatically switches intervals based on app state (foreground/background)
