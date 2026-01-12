@@ -19,11 +19,12 @@ Permite configurar todos os parâmetros do SDK:
 #### 📡 Intervalos de Scan
 - **Foreground**: 5s até 60s (incrementos de 5s)
   - Default: 15s
-  - Controla frequência de scan quando app está ativo
+  - Controla frequência de sync com API quando app está ativo
   
-- **Background**: 60s, 90s ou 120s
-  - Default: 60s
-  - Controla frequência de scan em background
+- **Background**: 15s, 30s, 60s, 90s ou 120s
+  - Default: 30s
+  - Controla frequência de sync com API em background
+  - Nota: Ranging (detecção) é sempre contínuo em background, o interval controla apenas quando envia para a API
 
 #### 📦 Fila de Retry
 - **Small**: 50 batches
@@ -98,22 +99,31 @@ O SDK será reconfigurado com os novos parâmetros!
 Foreground: 60s
 Background: 120s
 Periodic Scanning: ON
+Queue: Medium
 ```
 
-### Detecção Rápida
+### Sync Rápido (Dev/Debug)
 ```
 Foreground: 5s
-Background: 60s
+Background: 15s
 Periodic Scanning: OFF
+Queue: Large
 ```
 
-### Balanceado (Recomendado)
+### Balanceado (Recomendado - Default)
 ```
 Foreground: 15s
-Background: 60s
+Background: 30s
 Periodic Scanning: ON
 Queue: Medium
 ```
+
+**Nota Importante:**
+- Em background, o **ranging (detecção) é sempre contínuo**
+- O interval controla apenas a **frequência de sync com a API**
+- Background 15s: sync muito rápido mas consome mais bateria
+- Background 30s: sync balanceado (recomendado - default)
+- Background 60s+: sync lento mas ótima economia de bateria
 
 ## 📝 Notas
 
