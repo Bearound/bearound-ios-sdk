@@ -5,6 +5,7 @@ Pod::Spec.new do |spec|
   spec.summary      = "Swift SDK for iOS — secure BLE beacon detection and indoor positioning by Bearound."
   spec.description  = "Official SDK for integrating Bearound's secure BLE beacon detection and indoor location technology on iOS. Provides real-time beacon monitoring, region tracking, and seamless API synchronization."
   spec.homepage     = "https://github.com/Bearound/bearound-ios-sdk"
+  spec.documentation_url = "https://github.com/Bearound/bearound-ios-sdk/blob/main/README.md"
   spec.license      = { :type => "MIT", :file => "LICENSE" }
 
   spec.author   = { "Felipe Araujo" => "felipe.araujo@opencircle.com.br" }
