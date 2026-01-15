@@ -668,6 +668,25 @@ class BeaconViewController: UIViewController, BeAroundSDKDelegate {
 }
 ```
 
+## ⚠️ Technical Pending Issues
+
+Due to iOS system restrictions and manufacturer-specific behaviors, the following limitations currently apply:
+
+### 1. Background scanning with app fully closed 
+
+- **Background beacon scanning when the app is fully closed is not supported for any iOS version**
+- This is a platform-level limitation imposed by iOS background execution policies.
+
+**Impact:** iPhone and iOS devices may not detect beacons when the app is fully closed.
+
+### Summary
+
+| Scenario | Supported |
+|--------|---------|
+| App in foreground | ✅ Yes |
+| App in background (in memory) | ✅ Yes |
+| App closed | ❌ No |
+
 ### Support
 
 For issues, feature requests, or questions:
