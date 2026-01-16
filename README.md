@@ -6,7 +6,7 @@ Swift SDK for iOS — secure BLE beacon detection and indoor positioning by Bear
 
 BearoundSDK provides BLE beacon detection and indoor location technology for iOS applications. The SDK offers real-time beacon monitoring, delegate-based event callbacks, automatic API synchronization, and comprehensive device telemetry.
 
-**Current Version:** 2.0.1
+**Current Version:** 2.1.0
 
 > **Version 2.0.1 Breaking Changes**: Complete SDK rewrite with new architecture. See migration guide below.
 
@@ -46,7 +46,7 @@ https://github.com/Bearound/bearound-ios-sdk.git
 
 Add to your `Podfile`:
 ```ruby
-pod 'BearoundSDK', '~> 2.0.1'
+pod 'BearoundSDK', '~> 2.1'
 ```
 
 Then run:
@@ -315,7 +315,7 @@ if BeAroundSDK.shared.isPeriodicScanningEnabled {
 The SDK automatically collects comprehensive device information:
 
 #### SDK Information
-- Version (2.0.1)
+- Version (2.1.0)
 - Platform (ios)
 - App ID (Bundle identifier)
 - Build number
@@ -540,7 +540,7 @@ The SDK automatically sends beacon data to your API endpoint in this structure:
     }
   ],
   "sdk": {
-    "version": "2.0.1",
+    "version": "2.1.0",
     "platform": "ios",
     "appId": "com.example.app",
     "build": 210
@@ -667,6 +667,25 @@ class BeaconViewController: UIViewController, BeAroundSDKDelegate {
     }
 }
 ```
+
+## ⚠️ Technical Pending Issues
+
+Due to iOS system restrictions and manufacturer-specific behaviors, the following limitations currently apply:
+
+### 1. Background scanning with app fully closed
+
+- **Background beacon scanning when the app is fully closed is not supported for any iOS version**
+- This is a platform-level limitation imposed by iOS background execution policies.
+
+**Impact:** iPhone and iOS devices may not detect beacons when the app is fully closed.
+
+### Summary
+
+| Scenario | Supported |
+|--------|---------|
+| App in foreground | ✅ Yes |
+| App in background (in memory) | ✅ Yes |
+| App closed | ❌ No |
 
 ### Support
 
