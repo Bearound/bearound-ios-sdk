@@ -52,8 +52,6 @@ public class BeAroundSDK {
 
     private var wasLaunchedInBackground = false
 
-    private var isTemporaryRanging = false
-
     public var isScanning: Bool {
         beaconManager.isScanning
     }
@@ -101,6 +99,18 @@ public class BeAroundSDK {
         
         guard let savedConfig = SDKConfigStorage.load() else {
             NSLog("[BeAroundSDK] No saved configuration found for auto-configure")
+            return
+        }
+        
+        // Respect user's intention - only auto-start if scanning was active
+        guard SDKConfigStorage.loadIsScanning() else {
+            NSLog("[BeAroundSDK] User had scanning disabled, not auto-starting")
+            // Still configure the SDK so it's ready if needed
+            configuration = savedConfig
+            apiClient = APIClient(configuration: savedConfig)
+            let buildNumber = Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "1"
+            let build = Int(buildNumber) ?? 1
+            sdkInfo = SDKInfo(appId: savedConfig.appId, build: build)
             return
         }
         
@@ -175,6 +185,12 @@ public class BeAroundSDK {
         beaconManager.onFirstBackgroundBeaconDetected = { [weak self] in
             guard let self else { return }
             NSLog("[BeAroundSDK] First background beacon detected - syncing immediately (collectedBeacons=%d)", self.collectedBeacons.count)
+            self.syncBeacons()
+        }
+        
+        beaconManager.onSignificantLocationChange = { [weak self] in
+            guard let self else { return }
+            NSLog("[BeAroundSDK] Significant location change detected - syncing")
             self.syncBeacons()
         }
 
@@ -306,15 +322,35 @@ public class BeAroundSDK {
         if config.enableBluetoothScanning {
             bluetoothManager.startScanning()
         }
+        
+        // Persist scanning state for background relaunch
+        SDKConfigStorage.saveIsScanning(true)
+        
+        // Schedule background sync task
+        if #available(iOS 13.0, *) {
+            BackgroundTaskManager.shared.scheduleSync()
+        }
+        
+        // Start significant location monitoring for additional background wake triggers
+        beaconManager.startSignificantLocationMonitoring()
     }
 
     public func stopScanning() {
         beaconManager.stopScanning()
+        beaconManager.stopSignificantLocationMonitoring()
         bluetoothManager.stopScanning()
         stopSyncTimer()
         stopCountdownTimer()
 
         syncBeacons()
+        
+        // Persist scanning state
+        SDKConfigStorage.saveIsScanning(false)
+        
+        // Cancel pending background tasks
+        if #available(iOS 13.0, *) {
+            BackgroundTaskManager.shared.cancelPendingTasks()
+        }
     }
 
     public static func isLocationAvailable() -> Bool {
@@ -462,6 +498,7 @@ public class BeAroundSDK {
                 beaconsToSend = Array(collectedBeacons.values)
                 collectedBeacons.removeAll()
             } else {
+                NSLog("[BeAroundSDK] Sync skipped - no beacons collected")
                 self.endBackgroundTask()
                 return
             }
@@ -540,6 +577,69 @@ public class BeAroundSDK {
             }
         }
     }
+
+    // MARK: - Background Execution Support
+    
+    /// Called by BackgroundTaskManager when BGTaskScheduler triggers a sync
+    /// This method is internal and should not be called directly by app developers
+    func performBackgroundSync(completion: @escaping (Bool) -> Void) {
+        NSLog("[BeAroundSDK] performBackgroundSync called")
+        
+        beaconQueue.async { [weak self] in
+            guard let self else {
+                completion(false)
+                return
+            }
+            
+            // Check if we have anything to sync
+            let hasBeacons = !collectedBeacons.isEmpty
+            let hasFailedBatches = !failedBatches.isEmpty
+            
+            if hasBeacons || hasFailedBatches {
+                NSLog("[BeAroundSDK] Background sync: has beacons=%d, has failed batches=%d", hasBeacons ? 1 : 0, hasFailedBatches ? 1 : 0)
+                syncBeacons()
+                completion(true)
+            } else {
+                NSLog("[BeAroundSDK] Background sync: nothing to sync")
+                completion(false)
+            }
+        }
+    }
+    
+    /// Called by app when iOS triggers a background fetch
+    /// App should implement application(_:performFetchWithCompletionHandler:) and call this method
+    ///
+    /// Example:
+    /// ```swift
+    /// func application(_ application: UIApplication, performFetchWithCompletionHandler completionHandler: @escaping (UIBackgroundFetchResult) -> Void) {
+    ///     BeAroundSDK.shared.performBackgroundFetch { success in
+    ///         completionHandler(success ? .newData : .noData)
+    ///     }
+    /// }
+    /// ```
+    public func performBackgroundFetch(completion: @escaping (Bool) -> Void) {
+        NSLog("[BeAroundSDK] Background fetch triggered")
+        
+        // Auto-configure if needed
+        if configuration == nil {
+            if let savedConfig = SDKConfigStorage.load() {
+                configuration = savedConfig
+                apiClient = APIClient(configuration: savedConfig)
+                let buildNumber = Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "1"
+                let build = Int(buildNumber) ?? 1
+                sdkInfo = SDKInfo(appId: savedConfig.appId, build: build)
+                NSLog("[BeAroundSDK] Auto-configured from storage during background fetch")
+            } else {
+                NSLog("[BeAroundSDK] Background fetch: no configuration available")
+                completion(false)
+                return
+            }
+        }
+        
+        performBackgroundSync(completion: completion)
+    }
+    
+    // MARK: - Private Methods
 
     private func shouldRetryFailedBatches() -> Bool {
         guard !failedBatches.isEmpty,

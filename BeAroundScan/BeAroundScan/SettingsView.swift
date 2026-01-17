@@ -20,7 +20,7 @@ struct SettingsView: View {
                     HStack {
                         Text("SDK Version")
                         Spacer()
-                        Text("2.1.1")
+                        Text("2.2.0")
                             .foregroundColor(.secondary)
                     }
                 } header: {

@@ -20,6 +20,7 @@ public class SDKConfigStorage {
     private static let keyEnableBluetooth = "enable_bluetooth"
     private static let keyEnablePeriodic = "enable_periodic"
     private static let keyIsConfigured = "is_configured"
+    private static let keyIsScanning = "is_scanning"
     
     private static var defaults: UserDefaults? {
         UserDefaults(suiteName: suiteName)
@@ -28,7 +29,7 @@ public class SDKConfigStorage {
     /// Saves the SDK configuration to persistent storage
     static func save(_ config: SDKConfiguration) {
         guard let defaults = defaults else {
-            print("[BeAroundSDK] Failed to access UserDefaults for config storage")
+            NSLog("[BeAroundSDK] Failed to access UserDefaults for config storage")
             return
         }
         
@@ -41,24 +42,24 @@ public class SDKConfigStorage {
         defaults.set(true, forKey: keyIsConfigured)
         
         defaults.synchronize()
-        print("[BeAroundSDK] Configuration saved to persistent storage")
+        NSLog("[BeAroundSDK] Configuration saved to persistent storage")
     }
     
     /// Loads the SDK configuration from persistent storage
     static func load() -> SDKConfiguration? {
         guard let defaults = defaults else {
-            print("[BeAroundSDK] Failed to access UserDefaults for config storage")
+            NSLog("[BeAroundSDK] Failed to access UserDefaults for config storage")
             return nil
         }
         
         guard defaults.bool(forKey: keyIsConfigured) else {
-            print("[BeAroundSDK] No saved configuration found")
+            NSLog("[BeAroundSDK] No saved configuration found")
             return nil
         }
         
         guard let businessToken = defaults.string(forKey: keyBusinessToken),
               !businessToken.isEmpty else {
-            print("[BeAroundSDK] Saved configuration missing business token")
+            NSLog("[BeAroundSDK] Saved configuration missing business token")
             return nil
         }
         
@@ -73,7 +74,7 @@ public class SDKConfigStorage {
         let enableBluetooth = defaults.bool(forKey: keyEnableBluetooth)
         let enablePeriodic = defaults.bool(forKey: keyEnablePeriodic)
         
-        print("[BeAroundSDK] Loaded configuration from persistent storage")
+        NSLog("[BeAroundSDK] Loaded configuration from persistent storage")
         
         return SDKConfiguration(
             businessToken: businessToken,
@@ -101,8 +102,25 @@ public class SDKConfigStorage {
         defaults.removeObject(forKey: keyEnableBluetooth)
         defaults.removeObject(forKey: keyEnablePeriodic)
         defaults.removeObject(forKey: keyIsConfigured)
+        defaults.removeObject(forKey: keyIsScanning)
         
         defaults.synchronize()
-        print("[BeAroundSDK] Configuration cleared from persistent storage")
+        NSLog("[BeAroundSDK] Configuration cleared from persistent storage")
+    }
+    
+    // MARK: - Scanning State Persistence
+    
+    /// Saves the current scanning state
+    static func saveIsScanning(_ value: Bool) {
+        guard let defaults = defaults else { return }
+        defaults.set(value, forKey: keyIsScanning)
+        defaults.synchronize()
+        NSLog("[BeAroundSDK] Scanning state saved: %d", value ? 1 : 0)
+    }
+    
+    /// Loads the saved scanning state
+    /// Returns true if scanning was active when app was closed
+    static func loadIsScanning() -> Bool {
+        return defaults?.bool(forKey: keyIsScanning) ?? false
     }
 }

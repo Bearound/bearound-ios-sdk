@@ -6,7 +6,7 @@ Swift SDK for iOS — secure BLE beacon detection and indoor positioning by Bear
 
 BearoundSDK provides BLE beacon detection and indoor location technology for iOS applications. The SDK offers real-time beacon monitoring, delegate-based event callbacks, automatic API synchronization, and comprehensive device telemetry.
 
-**Current Version:** 2.1.1
+**Current Version:** 2.2.0
 
 > **Version 2.0.1 Breaking Changes**: Complete SDK rewrite with new architecture. See migration guide below.
 
@@ -89,7 +89,67 @@ For background mode support, add:
 </array>
 ```
 
+For BGTaskScheduler support (iOS 13+), add:
+
+```xml
+<key>BGTaskSchedulerPermittedIdentifiers</key>
+<array>
+   <string>io.bearound.sdk.sync</string>
+</array>
+```
+
 **Important**: The user must allow at least location or Bluetooth access for the SDK to function properly.
+
+### Advanced Background Integration
+
+For maximum reliability when the app is completely closed, implement the following in your `AppDelegate`:
+
+#### 1. Register Background Tasks (iOS 13+)
+
+```swift
+import BearoundSDK
+
+@main
+class AppDelegate: UIResponder, UIApplicationDelegate {
+    
+    func application(_ application: UIApplication, didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?) -> Bool {
+        
+        // Register background tasks for beacon sync
+        if #available(iOS 13.0, *) {
+            BackgroundTaskManager.shared.registerTasks()
+        }
+        
+        // Set minimum background fetch interval
+        application.setMinimumBackgroundFetchInterval(UIApplication.backgroundFetchIntervalMinimum)
+        
+        return true
+    }
+}
+```
+
+#### 2. Handle Background Fetch
+
+```swift
+// AppDelegate.swift
+func application(_ application: UIApplication, performFetchWithCompletionHandler completionHandler: @escaping (UIBackgroundFetchResult) -> Void) {
+    BeAroundSDK.shared.performBackgroundFetch { success in
+        completionHandler(success ? .newData : .noData)
+    }
+}
+```
+
+#### Background Execution Summary
+
+The SDK uses multiple mechanisms to ensure beacon data is synced even when the app is closed:
+
+| Mechanism | Trigger | Reliability |
+|-----------|---------|-------------|
+| **Region Monitoring** | iOS detects beacon region entry/exit | High - works even when terminated |
+| **Significant Location Changes** | User moves ~500m | Medium - depends on movement |
+| **Background Fetch** | iOS periodically wakes app | Low - not guaranteed timing |
+| **BGTaskScheduler** | iOS schedules when resources available | Medium - opportunistic |
+
+**Note**: When the user force-quits the app (swipe up from app switcher), most background execution is disabled by iOS. This is expected system behavior.
 
 ### Basic Usage
 

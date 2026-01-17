@@ -5,6 +5,129 @@ All notable changes to BearoundSDK for iOS will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.2.0] - 2026-01-17
+
+### 🚀 Major Background Improvements
+
+This release adds comprehensive background execution support with multiple fallback mechanisms to ensure beacon data is synced even when the app is completely closed.
+
+### ✨ Added
+
+#### BGTaskScheduler Support (iOS 13+)
+- **New `BackgroundTaskManager` class**: Manages `BGTaskScheduler` for scheduled background syncs
+  - `registerTasks()`: Register background task identifiers (call in AppDelegate)
+  - `scheduleSync()`: Schedule sync for ~15 minutes later
+  - `cancelPendingTasks()`: Cancel pending background tasks
+- Task identifier: `io.bearound.sdk.sync`
+
+#### Significant Location Changes
+- SDK now monitors significant location changes (~500m movement)
+- When user moves significantly, SDK wakes up and syncs pending beacons
+- New `onSignificantLocationChange` callback in `BeaconManager`
+- Automatic start/stop with `startScanning()`/`stopScanning()`
+
+#### Background Fetch Support
+- New public `performBackgroundFetch(completion:)` method
+- Call from `application(_:performFetchWithCompletionHandler:)` in AppDelegate
+- Auto-configures SDK from saved settings if needed
+
+#### Scanning State Persistence
+- `isScanning` state now persisted to `UserDefaults`
+- SDK respects user intention on background relaunch
+- If user had stopped scanning, SDK won't auto-restart
+
+### 🐛 Fixed
+
+1. **Empty beacons sync logging**: Added `NSLog` when `syncBeacons()` is called with no beacons collected
+2. **Background logging visibility**: Replaced all `print()` with `NSLog()` in `SDKConfigStorage` (print doesn't work in background)
+3. **Unused variable cleanup**: Removed unused `isTemporaryRanging` variable
+4. **Duplicate Region Monitoring**: Added guard in `startMonitoring()` to prevent duplicate region setup
+5. **Duplicate `didEnterRegion` calls**: Added `isProcessingRegionEntry` flag to prevent double processing
+
+### Changed
+
+- `startScanning()` now:
+  - Persists scanning state to storage
+  - Schedules BGTaskScheduler sync
+  - Starts significant location monitoring
+- `stopScanning()` now:
+  - Persists scanning state to storage
+  - Cancels pending background tasks
+  - Stops significant location monitoring
+- `autoConfigureFromStorage()` now respects `isScanning` state
+
+### 📚 Documentation
+
+- Added comprehensive background integration guide to README
+- Added BGTaskScheduler setup instructions
+- Added Background Fetch integration example
+- Added background execution mechanism comparison table
+
+### Technical Details
+
+#### Background Execution Architecture
+
+```
+┌────────────────────────────────────────────────────────────┐
+│                  Background Triggers                        │
+├─────────────┬─────────────┬─────────────┬─────────────────┤
+│   Region    │ Significant │  Background │ BGTaskScheduler │
+│  Monitoring │  Location   │    Fetch    │                 │
+└──────┬──────┴──────┬──────┴──────┬──────┴────────┬────────┘
+       │             │             │               │
+       ▼             ▼             ▼               ▼
+┌────────────────────────────────────────────────────────────┐
+│                     BeAroundSDK                            │
+│  autoConfigureFromStorage() → performBackgroundFetch() →   │
+│               syncBeacons()                                │
+└────────────────────────────────────────────────────────────┘
+```
+
+#### Info.plist Requirements
+
+```xml
+<key>UIBackgroundModes</key>
+<array>
+   <string>location</string>
+   <string>fetch</string>
+   <string>processing</string>
+   <string>bluetooth-central</string>
+</array>
+
+<key>BGTaskSchedulerPermittedIdentifiers</key>
+<array>
+   <string>io.bearound.sdk.sync</string>
+</array>
+```
+
+#### AppDelegate Integration
+
+```swift
+func application(_ application: UIApplication, didFinishLaunchingWithOptions...) -> Bool {
+    if #available(iOS 13.0, *) {
+        BackgroundTaskManager.shared.registerTasks()
+    }
+    application.setMinimumBackgroundFetchInterval(UIApplication.backgroundFetchIntervalMinimum)
+    return true
+}
+
+func application(_ application: UIApplication, performFetchWithCompletionHandler completionHandler: @escaping (UIBackgroundFetchResult) -> Void) {
+    BeAroundSDK.shared.performBackgroundFetch { success in
+        completionHandler(success ? .newData : .noData)
+    }
+}
+```
+
+### Requirements
+
+- iOS 13.0+
+- `location` in UIBackgroundModes
+- `fetch` in UIBackgroundModes
+- `processing` in UIBackgroundModes
+- "Always" location permission recommended
+
+---
+
 ## [2.1.1] - 2026-01-17
 
 ### 🐛 Fixed - Background Execution (Critical)

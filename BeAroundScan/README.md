@@ -1,6 +1,6 @@
 # BeAroundScan - App de Exemplo
 
-App de exemplo para demonstrar todas as funcionalidades do **BearoundSDK v2.1.1**.
+App de exemplo para demonstrar todas as funcionalidades do **BearoundSDK v2.2.0**.
 
 ## 🎯 Funcionalidades
 

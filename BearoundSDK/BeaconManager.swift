@@ -36,7 +36,12 @@ class BeaconManager: NSObject {
     /// Called when first beacon is detected in background (for immediate sync)
     var onFirstBackgroundBeaconDetected: (() -> Void)?
     
+    /// Called when significant location change is detected (can be used to trigger sync)
+    var onSignificantLocationChange: (() -> Void)?
+    
     private var hasNotifiedFirstBackgroundBeacon = false
+    
+    private var isMonitoringSignificantLocationChanges = false
 
     private var detectedBeacons: [String: Beacon] = [:]
     private var beaconLastSeen: [String: Date] = [:]
@@ -59,6 +64,9 @@ class BeaconManager: NSObject {
     private var lastBeaconUpdate: Date?
 
     private var isInBeaconRegion = false
+    
+    /// Flag to prevent duplicate processing when didDetermineState calls didEnterRegion
+    private var isProcessingRegionEntry = false
 
     private var rangingRefreshTimer: DispatchSourceTimer?
 
@@ -274,8 +282,43 @@ class BeaconManager: NSObject {
 
         onBeaconsUpdated?([])
     }
+    
+    // MARK: - Significant Location Changes
+    
+    /// Starts monitoring significant location changes
+    /// This can wake up the app even when terminated and trigger a sync opportunity
+    func startSignificantLocationMonitoring() {
+        guard CLLocationManager.significantLocationChangeMonitoringAvailable() else {
+            NSLog("[BeAroundSDK] Significant location changes not available on this device")
+            return
+        }
+        
+        guard !isMonitoringSignificantLocationChanges else {
+            NSLog("[BeAroundSDK] Already monitoring significant location changes")
+            return
+        }
+        
+        locationManager.startMonitoringSignificantLocationChanges()
+        isMonitoringSignificantLocationChanges = true
+        NSLog("[BeAroundSDK] Started significant location change monitoring")
+    }
+    
+    /// Stops monitoring significant location changes
+    func stopSignificantLocationMonitoring() {
+        guard isMonitoringSignificantLocationChanges else { return }
+        
+        locationManager.stopMonitoringSignificantLocationChanges()
+        isMonitoringSignificantLocationChanges = false
+        NSLog("[BeAroundSDK] Stopped significant location change monitoring")
+    }
 
     private func startMonitoring() {
+        // Avoid duplicate region monitoring when relaunched in background
+        if beaconRegion != nil && isScanning {
+            NSLog("[BeAroundSDK] Region already being monitored, skipping duplicate setup")
+            return
+        }
+        
         let constraint = CLBeaconIdentityConstraint(uuid: beaconUUID)
         let region = CLBeaconRegion(
             beaconIdentityConstraint: constraint, identifier: "BeAroundRegion")
@@ -558,6 +601,14 @@ extension BeaconManager: CLLocationManagerDelegate {
 
     func locationManager(_: CLLocationManager, didEnterRegion region: CLRegion) {
         guard let clBeaconRegion = region as? CLBeaconRegion else { return }
+        
+        // Prevent duplicate processing
+        guard !isProcessingRegionEntry else {
+            NSLog("[BeAroundSDK] Already processing region entry, skipping duplicate")
+            return
+        }
+        isProcessingRegionEntry = true
+        defer { isProcessingRegionEntry = false }
 
         NSLog("[BeAroundSDK] Entered beacon region (isInForeground=%d, isScanning=%d, isRanging=%d)", isInForeground ? 1 : 0, isScanning ? 1 : 0, isRanging ? 1 : 0)
         isInBeaconRegion = true
@@ -641,6 +692,13 @@ extension BeaconManager: CLLocationManagerDelegate {
         let age = -location.timestamp.timeIntervalSinceNow
         if age < 15 && location.horizontalAccuracy >= 0 && location.horizontalAccuracy < 100 {
             lastLocation = location
+        }
+        
+        // Detect if app was woken by significant location change
+        // This happens when the app is in background/terminated and location changes significantly
+        if !isInForeground && isMonitoringSignificantLocationChanges {
+            NSLog("[BeAroundSDK] Location update in background - may be significant location change")
+            onSignificantLocationChange?()
         }
     }
 }
