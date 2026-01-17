@@ -17,8 +17,6 @@ class BeaconViewModel: NSObject, ObservableObject, BeAroundSDKDelegate {
     @Published var permissionStatus = "Verificando..."
     @Published var lastScanTime: Date?
     @Published var sortOption: BeaconSortOption = .proximity
-    @Published var secondsUntilNextSync: Int = 0
-    @Published var isRanging: Bool = false
     @Published var bluetoothStatus: String = "Verificando..."
     @Published var notificationStatus: String = "Verificando..."
     
@@ -26,8 +24,6 @@ class BeaconViewModel: NSObject, ObservableObject, BeAroundSDKDelegate {
     @Published var foregroundInterval: ForegroundIntervalOption = .seconds15
     @Published var backgroundInterval: BackgroundIntervalOption = .seconds30
     @Published var queueSize: QueueSizeOption = .medium
-    @Published var enableBluetoothScanning: Bool = false
-    @Published var enablePeriodicScanning: Bool = true
     
     private let locationManager = CLLocationManager()
     private var wasInBeaconRegion = false
@@ -86,9 +82,7 @@ class BeaconViewModel: NSObject, ObservableObject, BeAroundSDKDelegate {
             businessToken: "CLIENT_TOKEN",
             foregroundScanInterval: foregroundInterval.sdkValue,
             backgroundScanInterval: backgroundInterval.sdkValue,
-            maxQueuedPayloads: queueSize.sdkValue,
-            enableBluetoothScanning: enableBluetoothScanning,
-            enablePeriodicScanning: enablePeriodicScanning
+            maxQueuedPayloads: queueSize.sdkValue
         )
 
         BeAroundSDK.shared.delegate = self
@@ -110,9 +104,7 @@ class BeaconViewModel: NSObject, ObservableObject, BeAroundSDKDelegate {
             businessToken: "CLIENT_TOKEN",
             foregroundScanInterval: foregroundInterval.sdkValue,
             backgroundScanInterval: backgroundInterval.sdkValue,
-            maxQueuedPayloads: queueSize.sdkValue,
-            enableBluetoothScanning: enableBluetoothScanning,
-            enablePeriodicScanning: enablePeriodicScanning
+            maxQueuedPayloads: queueSize.sdkValue
         )
         
         statusMessage = "Configurações aplicadas"
@@ -156,10 +148,7 @@ class BeaconViewModel: NSObject, ObservableObject, BeAroundSDKDelegate {
     }
 
     var scanMode: String {
-        if enablePeriodicScanning {
-            return "Periódico (economiza bateria)"
-        }
-        return "Contínuo (sempre ativo)"
+        return "Periódico (economiza bateria)"
     }
 
     deinit {}
@@ -284,10 +273,4 @@ extension BeaconViewModel {
         }
     }
 
-    func didUpdateSyncStatus(secondsUntilNextSync: Int, isRanging: Bool) {
-        DispatchQueue.main.async {
-            self.secondsUntilNextSync = secondsUntilNextSync
-            self.isRanging = isRanging
-        }
-    }
 }

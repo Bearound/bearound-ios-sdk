@@ -42,7 +42,7 @@ struct ContentView: View {
                         }
 
                         HStack {
-                            Image(systemName: "bluetooth")
+                            Image(systemName: "antenna.radiowaves.left.and.right")
                                 .font(.caption)
                                 .foregroundColor(bluetoothPermissionColor)
                                 .frame(width: 20)
@@ -104,58 +104,18 @@ struct ContentView: View {
                                     .fontWeight(.medium)
                             }
 
-                            if viewModel.enablePeriodicScanning {
-                                HStack {
-                                    Text("Duração do scan:")
-                                        .font(.caption)
-                                        .foregroundColor(.secondary)
-                                    Spacer()
-                                    Text("\(viewModel.scanDuration)s")
-                                        .font(.caption)
-                                        .fontWeight(.medium)
-                                }
-
-                                if viewModel.pauseDuration > 0 {
-                                    HStack {
-                                        Text("Tempo de pausa:")
-                                            .font(.caption)
-                                            .foregroundColor(.secondary)
-                                        Spacer()
-                                        Text("\(viewModel.pauseDuration)s")
-                                            .font(.caption)
-                                            .fontWeight(.medium)
-                                    }
-                                }
+                            HStack {
+                                Text("Duração do scan:")
+                                    .font(.caption)
+                                    .foregroundColor(.secondary)
+                                Spacer()
+                                Text("\(viewModel.scanDuration)s")
+                                    .font(.caption)
+                                    .fontWeight(.medium)
                             }
 
                             Divider()
 
-                            HStack {
-                                Text("Envio para API em:")
-                                    .font(.caption)
-                                    .foregroundColor(.secondary)
-                                Spacer()
-                                Text("\(viewModel.secondsUntilNextSync)s")
-                                    .font(.caption)
-                                    .fontWeight(.medium)
-                                    .foregroundColor(.blue)
-                            }
-
-                            HStack {
-                                Text("Ranging:")
-                                    .font(.caption)
-                                    .foregroundColor(.secondary)
-                                Spacer()
-                                HStack(spacing: 4) {
-                                    Circle()
-                                        .fill(viewModel.isRanging ? Color.green : Color.orange)
-                                        .frame(width: 6, height: 6)
-                                    Text(viewModel.isRanging ? "Ativo" : "Pausado")
-                                        .font(.caption)
-                                        .fontWeight(.medium)
-                                        .foregroundColor(viewModel.isRanging ? .green : .orange)
-                                }
-                            }
                         }
                         .padding(12)
                         .background(Color.gray.opacity(0.1))

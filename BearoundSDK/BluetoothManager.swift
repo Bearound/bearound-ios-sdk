@@ -34,6 +34,9 @@ class BluetoothManager: NSObject {
     private var lastSeenBeacons: [String: Date] = [:]
     private let deduplicationInterval: TimeInterval = 1.0
 
+    /// track if we should auto start scanning when bluetooth is on
+    private var pendingAutoStart = false
+
     var isPoweredOn: Bool {
         centralManager.state == .poweredOn
     }
@@ -42,6 +45,8 @@ class BluetoothManager: NSObject {
         super.init()
         _ = centralManager
     }
+
+    // MARK: - Public Methods
 
     func startScanning() {
         guard centralManager.state == .poweredOn else {
@@ -68,11 +73,54 @@ class BluetoothManager: NSObject {
         guard isScanning else { return }
 
         isScanning = false
+        pendingAutoStart = false
         centralManager.stopScan()
         lastSeenBeacons.removeAll()
 
         print("[BluetoothManager] Stopped BLE scanning")
     }
+
+    // MARK: - Auto-Enable
+
+    /// Auto-starts Bluetooth scanning if permission is already granted
+    /// This eliminates the need to manually call setBluetoothScanning(enabled: true)
+    func autoStartIfAuthorized() {
+        // Check Bluetooth authorization status (iOS 13.1+)
+        if #available(iOS 13.1, *) {
+            switch CBCentralManager.authorization {
+            case .allowedAlways:
+                // Permission granted, check if Bluetooth is powered on
+                if centralManager.state == .poweredOn {
+                    startScanning()
+                } else {
+                    // Will start when Bluetooth powers on
+                    pendingAutoStart = true
+                    print("[BluetoothManager] Auto-start pending - waiting for Bluetooth to power on")
+                }
+            case .notDetermined:
+                // Triggering the centralManager above will prompt for permission
+                // Set flag to auto-start once authorized
+                pendingAutoStart = true
+                print("[BluetoothManager] Bluetooth authorization not determined - waiting for user decision")
+            case .denied, .restricted:
+                print("[BluetoothManager] Bluetooth permission denied or restricted")
+                pendingAutoStart = false
+            @unknown default:
+                print("[BluetoothManager] Unknown Bluetooth authorization status")
+                pendingAutoStart = false
+            }
+        } else {
+            // iOS 12 - just check if Bluetooth is powered on
+            if centralManager.state == .poweredOn {
+                startScanning()
+            } else {
+                pendingAutoStart = true
+                print("[BluetoothManager] Auto-start pending - waiting for Bluetooth to power on (iOS 12)")
+            }
+        }
+    }
+
+    // MARK: - Private Methods
 
     private func parseIBeaconData(from manufacturerData: Data) -> (
         uuid: UUID, major: Int, minor: Int, txPower: Int
@@ -142,8 +190,23 @@ extension BluetoothManager: CBCentralManagerDelegate {
         print("[BluetoothManager] Bluetooth state: \(central.state.rawValue)")
         delegate?.didUpdateBluetoothState(isPoweredOn: isPoweredOn)
 
-        if isPoweredOn, isScanning {
-            startScanning()
+        if isPoweredOn {
+            if pendingAutoStart {
+                pendingAutoStart = false
+
+                // recheck for ios 13+
+                if #available(iOS 13.1, *) {
+                    if CBCentralManager.authorization == .allowedAlways {
+                        startScanning()
+                    }
+                } else {
+                    // ios 12
+                    startScanning()
+                }
+            } else if isScanning {
+                // this is to restart
+                startScanning()
+            }
         } else if !isPoweredOn, isScanning {
             isScanning = false
         }

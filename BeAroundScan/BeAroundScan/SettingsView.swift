@@ -61,13 +61,15 @@ struct SettingsView: View {
                 
                 // Features Section
                 Section {
-                    Toggle("Bluetooth Scanning", isOn: $viewModel.enableBluetoothScanning)
-                    
-                    Toggle("Periodic Scanning", isOn: $viewModel.enablePeriodicScanning)
+                    Text("Bluetooth Scanning: Sempre ativo")
+                        .foregroundColor(.secondary)
+
+                    Text("Periodic Scanning: Sempre ativo (economiza bateria)")
+                        .foregroundColor(.secondary)
                 } header: {
                     Text("Funcionalidades")
                 } footer: {
-                    Text("Bluetooth: coleta metadados dos beacons\nPeriódico: economiza bateria (apenas em foreground - liga/desliga ranging antes do sync)\n\nNOTA: Em background o ranging é sempre contínuo (limitação do iOS)")
+                    Text("O SDK agora sempre ativa Bluetooth scanning e periodic scanning para otimização de bateria.\n\nEm background o ranging é sempre contínuo (limitação do iOS)")
                 }
                 
                 // Current Configuration Display
@@ -91,18 +93,6 @@ struct SettingsView: View {
                             Text("\(viewModel.scanDuration)s")
                                 .font(.caption)
                                 .fontWeight(.medium)
-                        }
-                        
-                        if viewModel.pauseDuration > 0 {
-                            HStack {
-                                Text("Pause Duration:")
-                                    .font(.caption)
-                                    .foregroundColor(.secondary)
-                                Spacer()
-                                Text("\(viewModel.pauseDuration)s")
-                                    .font(.caption)
-                                    .fontWeight(.medium)
-                            }
                         }
                     }
                 } header: {

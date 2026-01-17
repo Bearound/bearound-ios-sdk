@@ -135,7 +135,6 @@
 			mainGroup = D05732272EFF295000EEAE6E;
 			minimizedProjectReferenceProxies = 1;
 			packageReferences = (
-				D073F6262EFF82CB00B7B602 /* XCLocalSwiftPackageReference "../BeAroundSDK" */,
 			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = D05732312EFF295000EEAE6E /* Products */;
@@ -390,10 +389,6 @@
 /* End XCConfigurationList section */
 
 /* Begin XCLocalSwiftPackageReference section */
-		D073F6262EFF82CB00B7B602 /* XCLocalSwiftPackageReference "../BeAroundSDK" */ = {
-			isa = XCLocalSwiftPackageReference;
-			relativePath = ../BeAroundSDK;
-		};
 /* End XCLocalSwiftPackageReference section */
 	};
 	rootObject = D05732282EFF295000EEAE6E /* Project object */;
