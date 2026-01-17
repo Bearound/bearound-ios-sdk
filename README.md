@@ -6,7 +6,7 @@ Swift SDK for iOS — secure BLE beacon detection and indoor positioning by Bear
 
 BearoundSDK provides BLE beacon detection and indoor location technology for iOS applications. The SDK offers real-time beacon monitoring, delegate-based event callbacks, automatic API synchronization, and comprehensive device telemetry.
 
-**Current Version:** 2.1.0
+**Current Version:** 2.2.0
 
 > **Version 2.0.1 Breaking Changes**: Complete SDK rewrite with new architecture. See migration guide below.
 
@@ -89,7 +89,67 @@ For background mode support, add:
 </array>
 ```
 
+For BGTaskScheduler support (iOS 13+), add:
+
+```xml
+<key>BGTaskSchedulerPermittedIdentifiers</key>
+<array>
+   <string>io.bearound.sdk.sync</string>
+</array>
+```
+
 **Important**: The user must allow at least location or Bluetooth access for the SDK to function properly.
+
+### Advanced Background Integration
+
+For maximum reliability when the app is completely closed, implement the following in your `AppDelegate`:
+
+#### 1. Register Background Tasks (iOS 13+)
+
+```swift
+import BearoundSDK
+
+@main
+class AppDelegate: UIResponder, UIApplicationDelegate {
+    
+    func application(_ application: UIApplication, didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?) -> Bool {
+        
+        // Register background tasks for beacon sync
+        if #available(iOS 13.0, *) {
+            BackgroundTaskManager.shared.registerTasks()
+        }
+        
+        // Set minimum background fetch interval
+        application.setMinimumBackgroundFetchInterval(UIApplication.backgroundFetchIntervalMinimum)
+        
+        return true
+    }
+}
+```
+
+#### 2. Handle Background Fetch
+
+```swift
+// AppDelegate.swift
+func application(_ application: UIApplication, performFetchWithCompletionHandler completionHandler: @escaping (UIBackgroundFetchResult) -> Void) {
+    BeAroundSDK.shared.performBackgroundFetch { success in
+        completionHandler(success ? .newData : .noData)
+    }
+}
+```
+
+#### Background Execution Summary
+
+The SDK uses multiple mechanisms to ensure beacon data is synced even when the app is closed:
+
+| Mechanism | Trigger | Reliability |
+|-----------|---------|-------------|
+| **Region Monitoring** | iOS detects beacon region entry/exit | High - works even when terminated |
+| **Significant Location Changes** | User moves ~500m | Medium - depends on movement |
+| **Background Fetch** | iOS periodically wakes app | Low - not guaranteed timing |
+| **BGTaskScheduler** | iOS schedules when resources available | Medium - opportunistic |
+
+**Note**: When the user force-quits the app (swipe up from app switcher), most background execution is disabled by iOS. This is expected system behavior.
 
 ### Basic Usage
 
@@ -379,6 +439,37 @@ The SDK intelligently manages background operation:
 4. **Return to Foreground**: Restores original configuration
 
 Background tasks are managed with `UIBackgroundTaskIdentifier` to ensure data syncs even when backgrounded.
+
+### Terminated App Detection
+
+The SDK uses CoreLocation Region Monitoring to detect beacons even when the app is completely closed/terminated:
+
+**Requirements:**
+1. **Background Modes**: Must include `fetch` in UIBackgroundModes (in addition to `location` and `bluetooth-central`)
+2. **Location Permission**: User must grant "Always" permission (not "When In Use")
+3. **Background App Refresh**: User must have Background App Refresh enabled in device Settings
+4. **How it works**:
+   - CoreLocation monitors beacon regions even with app terminated
+   - When beacon detected, iOS wakes up the app in background
+   - App has ~30 seconds to scan and sync beacons
+   - Then iOS may suspend the app again
+
+**Testing terminated app detection:**
+1. Grant "Always" location permission to the app
+2. Ensure Background App Refresh is enabled (Settings > General > Background App Refresh)
+3. Start scanning in the app
+4. Close the app completely (swipe up in app switcher)
+5. Walk near a beacon
+6. Check Xcode Console or Console.app - you should see:
+   - `"App launched in background (likely by beacon monitoring)"`
+   - `"Entered beacon region"`
+   - Beacons being detected and synced
+
+**Important Notes:**
+- iOS may delay the wake-up (not instant)
+- Low Power Mode disables background wake-ups
+- iOS limits how often it will wake the app
+- Works best with "Always" location permission
 
 ### Error Handling & Retry Logic
 

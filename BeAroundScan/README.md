@@ -1,6 +1,6 @@
 # BeAroundScan - App de Exemplo
 
-App de exemplo para demonstrar todas as funcionalidades do **BearoundSDK v2.1.0**.
+App de exemplo para demonstrar todas as funcionalidades do **BearoundSDK v2.2.0**.
 
 ## 🎯 Funcionalidades
 
@@ -12,7 +12,7 @@ App de exemplo para demonstrar todas as funcionalidades do **BearoundSDK v2.1.0*
 - ✅ Botão de iniciar/parar scan
 - ✅ Acesso às configurações
 
-### ⚙️ Tela de Configurações (NOVO v2.1.0)
+### ⚙️ Tela de Configurações
 
 Permite configurar todos os parâmetros do SDK:
 

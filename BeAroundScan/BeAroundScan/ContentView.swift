@@ -104,25 +104,27 @@ struct ContentView: View {
                                     .fontWeight(.medium)
                             }
 
-                            HStack {
-                                Text("Duração do scan:")
-                                    .font(.caption)
-                                    .foregroundColor(.secondary)
-                                Spacer()
-                                Text("\(viewModel.scanDuration)s")
-                                    .font(.caption)
-                                    .fontWeight(.medium)
-                            }
-
-                            if viewModel.pauseDuration > 0 {
+                            if viewModel.enablePeriodicScanning {
                                 HStack {
-                                    Text("Tempo de pausa:")
+                                    Text("Duração do scan:")
                                         .font(.caption)
                                         .foregroundColor(.secondary)
                                     Spacer()
-                                    Text("\(viewModel.pauseDuration)s")
+                                    Text("\(viewModel.scanDuration)s")
                                         .font(.caption)
                                         .fontWeight(.medium)
+                                }
+
+                                if viewModel.pauseDuration > 0 {
+                                    HStack {
+                                        Text("Tempo de pausa:")
+                                            .font(.caption)
+                                            .foregroundColor(.secondary)
+                                        Spacer()
+                                        Text("\(viewModel.pauseDuration)s")
+                                            .font(.caption)
+                                            .fontWeight(.medium)
+                                    }
                                 }
                             }
 

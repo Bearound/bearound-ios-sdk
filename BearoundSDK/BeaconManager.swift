@@ -32,6 +32,16 @@ class BeaconManager: NSObject {
     var onScanningStateChanged: ((Bool) -> Void)?
 
     var onBackgroundRangingComplete: (() -> Void)?
+    
+    /// Called when first beacon is detected in background (for immediate sync)
+    var onFirstBackgroundBeaconDetected: (() -> Void)?
+    
+    /// Called when significant location change is detected (can be used to trigger sync)
+    var onSignificantLocationChange: (() -> Void)?
+    
+    private var hasNotifiedFirstBackgroundBeacon = false
+    
+    private var isMonitoringSignificantLocationChanges = false
 
     private var detectedBeacons: [String: Beacon] = [:]
     private var beaconLastSeen: [String: Date] = [:]
@@ -54,6 +64,9 @@ class BeaconManager: NSObject {
     private var lastBeaconUpdate: Date?
 
     private var isInBeaconRegion = false
+    
+    /// Flag to prevent duplicate processing when didDetermineState calls didEnterRegion
+    private var isProcessingRegionEntry = false
 
     private var rangingRefreshTimer: DispatchSourceTimer?
 
@@ -103,13 +116,6 @@ class BeaconManager: NSObject {
     private func configureBackgroundUpdates(enabled: Bool) {
         if enabled {
             guard hasBackgroundModes else {
-                print(
-                    "BeAroundSDK: Cannot enable background location updates - 'location' background mode not configured in Info.plist"
-                )
-                print(
-                    "BeAroundSDK: Add 'location' to UIBackgroundModes array in Info.plist to enable continuous background scanning"
-                )
-
                 let error = NSError(
                     domain: "BeAroundSDK",
                     code: 4,
@@ -123,10 +129,8 @@ class BeaconManager: NSObject {
             }
 
             locationManager.allowsBackgroundLocationUpdates = true
-            print("[BeAroundSDK] Enabled background location updates (background modes configured)")
         } else {
             locationManager.allowsBackgroundLocationUpdates = false
-            print("[BeAroundSDK] Disabled background location updates")
         }
     }
 
@@ -148,8 +152,7 @@ class BeaconManager: NSObject {
 
     @objc private func appDidEnterForeground() {
         isInForeground = true
-        print(
-            "BeAroundSDK: App entered foreground (scanning: \(isScanning), ranging: \(isRanging))")
+        hasNotifiedFirstBackgroundBeacon = false  // Reset for next background session
 
         stopRangingRefreshTimer()
 
@@ -158,7 +161,6 @@ class BeaconManager: NSObject {
         }
 
         if isScanning, let region = beaconRegion, !isRanging {
-            print("BeAroundSDK: Starting ranging in foreground")
             locationManager.startRangingBeacons(satisfying: region.beaconIdentityConstraint)
             isRanging = true
             startWatchdog()
@@ -167,15 +169,11 @@ class BeaconManager: NSObject {
 
     @objc private func appDidEnterBackground() {
         isInForeground = false
-        print(
-            "BeAroundSDK: App entered background (scanning: \(isScanning), ranging: \(isRanging))")
 
         if isScanning {
-            print("BeAroundSDK: Maintaining continuous operation in background")
             configureBackgroundUpdates(enabled: true)
 
             if !isRanging, let region = beaconRegion {
-                print("BeAroundSDK: Starting ranging for background mode")
                 locationManager.startRangingBeacons(satisfying: region.beaconIdentityConstraint)
                 isRanging = true
                 startWatchdog()
@@ -187,7 +185,6 @@ class BeaconManager: NSObject {
 
     func startScanning() {
         guard !isScanning else {
-            print("BeAroundSDK: Already scanning")
             return
         }
 
@@ -199,7 +196,6 @@ class BeaconManager: NSObject {
             }
 
         guard status == .authorizedWhenInUse || status == .authorizedAlways else {
-            print("BeAroundSDK: Location authorization required (current: \(status.rawValue))")
             let error = NSError(
                 domain: "BeAroundSDK",
                 code: 1,
@@ -212,19 +208,13 @@ class BeaconManager: NSObject {
             return
         }
 
-        print(
-            "BeAroundSDK: Starting beacon scanning (permission: \(status == .authorizedAlways ? "Always" : "When In Use"))"
-        )
         startMonitoring()
     }
 
     func stopScanning() {
         guard isScanning else {
-            print("BeAroundSDK: Not scanning")
             return
         }
-
-        print("BeAroundSDK: Stopping beacon scanning")
         stopWatchdog()
         stopRangingRefreshTimer()
         stopBackgroundRangingTimer()
@@ -255,18 +245,12 @@ class BeaconManager: NSObject {
 
     func startRanging() {
         guard isScanning else {
-            print("BeAroundSDK: Ignoring startRanging because scanning is stopped")
             return
         }
 
         guard let region = beaconRegion, !isRanging else {
-            if isRanging {
-                print("BeAroundSDK: Already ranging")
-            }
             return
         }
-
-        print("BeAroundSDK: Starting ranging")
         locationManager.startRangingBeacons(satisfying: region.beaconIdentityConstraint)
         isRanging = true
         startWatchdog()
@@ -283,12 +267,8 @@ class BeaconManager: NSObject {
         }
 
         if !isInForeground {
-            print(
-                "BeAroundSDK: Ignoring stopRanging in background to maintain continuous operation")
             return
         }
-
-        print("BeAroundSDK: Stopping ranging (monitoring continues)")
         locationManager.stopRangingBeacons(satisfying: region.beaconIdentityConstraint)
         isRanging = false
         stopWatchdog()
@@ -302,8 +282,43 @@ class BeaconManager: NSObject {
 
         onBeaconsUpdated?([])
     }
+    
+    // MARK: - Significant Location Changes
+    
+    /// Starts monitoring significant location changes
+    /// This can wake up the app even when terminated and trigger a sync opportunity
+    func startSignificantLocationMonitoring() {
+        guard CLLocationManager.significantLocationChangeMonitoringAvailable() else {
+            NSLog("[BeAroundSDK] Significant location changes not available on this device")
+            return
+        }
+        
+        guard !isMonitoringSignificantLocationChanges else {
+            NSLog("[BeAroundSDK] Already monitoring significant location changes")
+            return
+        }
+        
+        locationManager.startMonitoringSignificantLocationChanges()
+        isMonitoringSignificantLocationChanges = true
+        NSLog("[BeAroundSDK] Started significant location change monitoring")
+    }
+    
+    /// Stops monitoring significant location changes
+    func stopSignificantLocationMonitoring() {
+        guard isMonitoringSignificantLocationChanges else { return }
+        
+        locationManager.stopMonitoringSignificantLocationChanges()
+        isMonitoringSignificantLocationChanges = false
+        NSLog("[BeAroundSDK] Stopped significant location change monitoring")
+    }
 
     private func startMonitoring() {
+        // Avoid duplicate region monitoring when relaunched in background
+        if beaconRegion != nil && isScanning {
+            NSLog("[BeAroundSDK] Region already being monitored, skipping duplicate setup")
+            return
+        }
+        
         let constraint = CLBeaconIdentityConstraint(uuid: beaconUUID)
         let region = CLBeaconRegion(
             beaconIdentityConstraint: constraint, identifier: "BeAroundRegion")
@@ -331,9 +346,6 @@ class BeaconManager: NSObject {
             if !isInForeground {
                 startRangingRefreshTimer()
             }
-        } else {
-            print(
-                "BeAroundSDK: Periodic scanning enabled - ranging will be controlled by sync timer")
         }
 
         isScanning = true
@@ -347,9 +359,6 @@ class BeaconManager: NSObject {
             emptyBeaconCount += 1
 
             if emptyBeaconCount > 5, isInBeaconRegion {
-                print(
-                    "[BeAroundSDK] Too many empty beacon arrays (\(emptyBeaconCount)), refreshing ranging..."
-                )
                 emptyBeaconCount = 0
                 restartRanging()
                 return
@@ -395,21 +404,11 @@ class BeaconManager: NSObject {
 
                     let currentTimeout = beaconTimeout
                     if timeSinceLastSeen < currentTimeout {
-                        print(
-                            "BeAroundSDK: Beacon \(major).\(minor) has invalid RSSI (\(clBeacon.rssi)), using cached value (age: \(String(format: "%.1f", timeSinceLastSeen))s, timeout: \(String(format: "%.0f", currentTimeout))s)"
-                        )
                         updatedBeacons.append(cachedBeacon)
                     } else {
-                        print(
-                            "BeAroundSDK: Beacon \(major).\(minor) cache expired (age: \(String(format: "%.1f", timeSinceLastSeen))s > timeout: \(String(format: "%.0f", currentTimeout))s)"
-                        )
                         detectedBeacons.removeValue(forKey: identifier)
                         beaconLastSeen.removeValue(forKey: identifier)
                     }
-                } else {
-                    print(
-                        "BeAroundSDK: Skipping new beacon \(major).\(minor) with invalid RSSI (\(clBeacon.rssi))"
-                    )
                 }
             }
         }
@@ -417,19 +416,19 @@ class BeaconManager: NSObject {
         let currentBeaconIds = Set(beacons.map { "\($0.major.intValue).\($0.minor.intValue)" })
         for identifier in Array(beaconLastSeen.keys) {
             if !currentBeaconIds.contains(identifier) {
-                print("BeAroundSDK: Beacon \(identifier) left range (not in scan)")
                 detectedBeacons.removeValue(forKey: identifier)
                 beaconLastSeen.removeValue(forKey: identifier)
             }
         }
 
         if !updatedBeacons.isEmpty {
-            let beaconList = updatedBeacons.map { "\($0.major).\($0.minor)" }.joined(
-                separator: ", ")
-            print(
-                "BeAroundSDK: Detected \(updatedBeacons.count) beacon\(updatedBeacons.count == 1 ? "" : "s"): [\(beaconList)]"
-            )
             onBeaconsUpdated?(updatedBeacons)
+            
+            // Notify first beacon detection in background for immediate sync
+            if !isInForeground && !hasNotifiedFirstBackgroundBeacon {
+                hasNotifiedFirstBackgroundBeacon = true
+                onFirstBackgroundBeaconDetected?()
+            }
         }
 
         startWatchdog()
@@ -472,9 +471,6 @@ class BeaconManager: NSObject {
     private func startBackgroundRangingTimer(duration: TimeInterval) {
         stopBackgroundRangingTimer()
 
-        print(
-            "[BeAroundSDK] Starting temporary background ranging for \(String(format: "%.0f", duration))s"
-        )
         isBackgroundTemporaryRanging = true
 
         let timer = DispatchSource.makeTimerSource(queue: DispatchQueue.global(qos: .utility))
@@ -494,7 +490,6 @@ class BeaconManager: NSObject {
     private func stopBackgroundTemporaryRanging() {
         guard isBackgroundTemporaryRanging else { return }
 
-        print("[BeAroundSDK] Temporary background ranging complete - stopping ranging")
         isBackgroundTemporaryRanging = false
         stopBackgroundRangingTimer()
 
@@ -510,8 +505,6 @@ class BeaconManager: NSObject {
 
     private func refreshRanging() {
         guard isScanning, isRanging, !isInForeground else { return }
-
-        print("[BeAroundSDK] Background refresh: restarting ranging to prevent iOS throttling...")
         restartRanging()
     }
 
@@ -522,15 +515,9 @@ class BeaconManager: NSObject {
             let timeSinceLastUpdate = Date().timeIntervalSince(lastUpdate)
 
             if timeSinceLastUpdate > 30 {
-                print(
-                    "[BeAroundSDK] Ranging stuck detected: No beacon updates for \(String(format: "%.1f", timeSinceLastUpdate))s"
-                )
-                print("[BeAroundSDK] Metrics: Total restarts: \(rangingRestartCount)")
                 restartRanging()
             }
         } else if isRanging {
-            print("[BeAroundSDK] Ranging stuck detected: Active but no updates ever received")
-            print("[BeAroundSDK] Metrics: Total restarts: \(rangingRestartCount)")
             restartRanging()
         }
     }
@@ -547,10 +534,6 @@ class BeaconManager: NSObject {
             }
 
             if timeSinceLastRestart < 60, rangingRestartCount >= maxRestartsPerMinute {
-                print(
-                    "[BeAroundSDK] Exponential backoff: Too many restarts (\(rangingRestartCount) in last minute), waiting 60s before next restart"
-                )
-
                 let error = NSError(
                     domain: "BeAroundSDK",
                     code: 5,
@@ -576,10 +559,6 @@ class BeaconManager: NSObject {
 
         let baseDelay = 0.5
         let backoffDelay = min(baseDelay * Double(rangingRestartCount), 5.0)
-
-        print(
-            "[BeAroundSDK] Restarting ranging in \(String(format: "%.1f", backoffDelay))s (restart #\(rangingRestartCount))"
-        )
 
         DispatchQueue.main.asyncAfter(deadline: .now() + backoffDelay) { [weak self] in
             guard let self, self.isScanning, let region = self.beaconRegion else { return }
@@ -621,15 +600,24 @@ extension BeaconManager: CLLocationManagerDelegate {
     }
 
     func locationManager(_: CLLocationManager, didEnterRegion region: CLRegion) {
-        guard let beaconRegion = region as? CLBeaconRegion else { return }
+        guard let clBeaconRegion = region as? CLBeaconRegion else { return }
+        
+        // Prevent duplicate processing
+        guard !isProcessingRegionEntry else {
+            NSLog("[BeAroundSDK] Already processing region entry, skipping duplicate")
+            return
+        }
+        isProcessingRegionEntry = true
+        defer { isProcessingRegionEntry = false }
 
-        print("[BeAroundSDK] Entered beacon region")
+        NSLog("[BeAroundSDK] Entered beacon region (isInForeground=%d, isScanning=%d, isRanging=%d)", isInForeground ? 1 : 0, isScanning ? 1 : 0, isRanging ? 1 : 0)
         isInBeaconRegion = true
 
-        guard !isRanging else { return }
+        guard !isRanging else {
+            return
+        }
 
         guard !enablePeriodicScanning else {
-            print("[BeAroundSDK] Periodic mode - ranging will start at next sync cycle")
             return
         }
 
@@ -637,30 +625,29 @@ extension BeaconManager: CLLocationManagerDelegate {
             configureBackgroundUpdates(enabled: true)
 
             if !isScanning {
-                print(
-                    "[BeAroundSDK] App relaunched by beacon monitoring - starting temporary ranging"
-                )
+                NSLog("[BeAroundSDK] App relaunched by beacon monitoring - starting temporary ranging for 10s")
+                isScanning = true  // Mark as scanning for background relaunch
+                onScanningStateChanged?(true)
+                
                 locationManager.startRangingBeacons(
-                    satisfying: beaconRegion.beaconIdentityConstraint)
+                    satisfying: clBeaconRegion.beaconIdentityConstraint)
                 isRanging = true
                 startWatchdog()
 
-                startBackgroundRangingTimer(duration: 30.0)
+                startBackgroundRangingTimer(duration: 10.0)
                 return
             }
 
             startRangingRefreshTimer()
         }
 
-        locationManager.startRangingBeacons(satisfying: beaconRegion.beaconIdentityConstraint)
+        locationManager.startRangingBeacons(satisfying: clBeaconRegion.beaconIdentityConstraint)
         isRanging = true
         startWatchdog()
     }
 
     func locationManager(_: CLLocationManager, didExitRegion region: CLRegion) {
         guard let beaconRegion = region as? CLBeaconRegion else { return }
-
-        print("[BeAroundSDK] Exited beacon region")
         isInBeaconRegion = false
         stopWatchdog()
         stopRangingRefreshTimer()
@@ -684,9 +671,9 @@ extension BeaconManager: CLLocationManagerDelegate {
     func locationManager(
         _ manager: CLLocationManager, didDetermineState state: CLRegionState, for region: CLRegion
     ) {
-        guard let beaconRegion = region as? CLBeaconRegion else { return }
-
-        print("[BeAroundSDK] Determined region state: \(state.rawValue)")
+        guard let beaconRegion = region as? CLBeaconRegion else {
+            return
+        }
 
         if state == .inside {
             locationManager(manager, didEnterRegion: beaconRegion)
@@ -696,7 +683,6 @@ extension BeaconManager: CLLocationManagerDelegate {
     }
 
     func locationManager(_: CLLocationManager, didFailWithError error: Error) {
-        print("[BeAroundSDK] Location manager error: \(error.localizedDescription)")
         onError?(error)
     }
 
@@ -706,9 +692,13 @@ extension BeaconManager: CLLocationManagerDelegate {
         let age = -location.timestamp.timeIntervalSinceNow
         if age < 15 && location.horizontalAccuracy >= 0 && location.horizontalAccuracy < 100 {
             lastLocation = location
-            print(
-                "[BeAroundSDK] Updated location: lat=\(location.coordinate.latitude), lng=\(location.coordinate.longitude), accuracy=\(location.horizontalAccuracy)m"
-            )
+        }
+        
+        // Detect if app was woken by significant location change
+        // This happens when the app is in background/terminated and location changes significantly
+        if !isInForeground && isMonitoringSignificantLocationChanges {
+            NSLog("[BeAroundSDK] Location update in background - may be significant location change")
+            onSignificantLocationChange?()
         }
     }
 }

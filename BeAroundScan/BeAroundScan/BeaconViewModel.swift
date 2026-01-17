@@ -156,10 +156,10 @@ class BeaconViewModel: NSObject, ObservableObject, BeAroundSDKDelegate {
     }
 
     var scanMode: String {
-        if enablePeriodicScanning && pauseDuration > 0 {
+        if enablePeriodicScanning {
             return "Periódico (economiza bateria)"
         }
-        return "Contínuo"
+        return "Contínuo (sempre ativo)"
     }
 
     deinit {}
