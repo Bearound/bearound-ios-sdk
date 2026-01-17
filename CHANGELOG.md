@@ -5,6 +5,81 @@ All notable changes to BearoundSDK for iOS will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.1.1] - 2026-01-17
+
+### 🐛 Fixed - Background Execution (Critical)
+
+This release fixes critical issues preventing the SDK from working when the app is completely closed (terminated).
+
+#### Problems Fixed
+
+1. **Configuration Persistence**: Added `SDKConfigStorage` to persist SDK configuration
+   - When iOS relaunches the app via Region Monitoring, the SDK now auto-configures from saved settings
+   - Configuration is saved to `UserDefaults` when `configure()` is called
+   - SDK automatically loads configuration on init when launched in background
+
+2. **Background Ranging Timeout**: Reduced background ranging timer from 30s to 10s
+   - iOS only allows ~30 seconds of background execution
+   - Previous 30-second ranging caused background task expiration before sync
+   - Now ranging completes well within iOS time limits
+
+3. **Beacon Region Storage**: Fixed `beaconRegion` being nil when app is relaunched
+   - Region is now stored from `didEnterRegion` callback
+   - `onBackgroundRangingComplete` callback now works correctly
+
+4. **Immediate Background Sync**: Added immediate sync when first beacon is detected in background
+   - New `onFirstBackgroundBeaconDetected` callback triggers sync immediately
+   - Ensures beacons are sent before iOS terminates the app
+   - Final sync still occurs when ranging completes
+
+### ✨ Added
+
+- `SDKConfigStorage` class for persistent configuration storage
+- Auto-configuration on background relaunch
+- `onFirstBackgroundBeaconDetected` callback for immediate sync
+- `CaseIterable` conformance to all scan interval enums
+
+### Changed
+
+- `ForegroundScanInterval`, `BackgroundScanInterval`, and `MaxQueuedPayloads` enums now use `rawValue`
+- Background ranging timer reduced from 30s to 10s
+- SDK now marks `isScanning = true` when relaunched by beacon monitoring
+
+### Technical Details
+
+#### Background Execution Flow (Fixed)
+
+```
+1. App terminated by user (swipe up)
+2. User enters beacon region
+3. iOS relaunches app via Region Monitoring
+4. SDK auto-configures from UserDefaults ← NEW
+5. didEnterRegion triggers 10-second ranging ← REDUCED from 30s
+6. First beacon detected → immediate sync ← NEW
+7. 10 seconds later → final sync
+8. Background task ends properly ← FIXED
+9. iOS suspends app (not terminated)
+```
+
+#### Configuration Persistence
+
+```swift
+// Configuration is automatically saved when you call configure()
+BeAroundSDK.shared.configure(businessToken: "your-token")
+
+// When app is relaunched in background, SDK loads saved config
+// No code changes required - it's automatic!
+```
+
+### Requirements
+
+- iOS 13.0+
+- `location` in UIBackgroundModes
+- `fetch` in UIBackgroundModes (recommended for background refresh)
+- "Always" location permission for best results
+
+---
+
 ## [2.1.0] - 2026-01-12
 
 ### ✨ Added

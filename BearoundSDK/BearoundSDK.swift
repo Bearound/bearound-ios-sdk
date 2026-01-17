@@ -74,14 +74,51 @@ public class BeAroundSDK {
     }
 
     private init() {
-        wasLaunchedInBackground = UIApplication.shared.applicationState != .active
+        let appState = UIApplication.shared.applicationState
+        wasLaunchedInBackground = appState != .active
+        
         if wasLaunchedInBackground {
             isInBackground = true
-            print("[BeAroundSDK] App launched in background (likely by beacon monitoring)")
+            // Use NSLog for background launches (print() doesn't work in background)
+            NSLog("[BeAroundSDK] App launched in background (appState=%ld)", appState.rawValue)
         }
 
         setupCallbacks()
         setupAppStateObservers()
+        
+        // Auto-configure from saved settings if app was launched in background
+        if wasLaunchedInBackground {
+            autoConfigureFromStorage()
+        }
+    }
+    
+    /// Auto-configures the SDK from saved settings (used when app is relaunched in background)
+    private func autoConfigureFromStorage() {
+        guard configuration == nil else {
+            NSLog("[BeAroundSDK] SDK already configured, skipping auto-configure")
+            return
+        }
+        
+        guard let savedConfig = SDKConfigStorage.load() else {
+            NSLog("[BeAroundSDK] No saved configuration found for auto-configure")
+            return
+        }
+        
+        configuration = savedConfig
+        apiClient = APIClient(configuration: savedConfig)
+        
+        let buildNumber = Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "1"
+        let build = Int(buildNumber) ?? 1
+        sdkInfo = SDKInfo(appId: savedConfig.appId, build: build)
+        
+        // In background mode, disable periodic scanning to use continuous ranging
+        beaconManager.enablePeriodicScanning = false
+        
+        // CRITICAL: Auto-start scanning when relaunched in background
+        // This ensures Region Monitoring is active
+        beaconManager.startScanning()
+        
+        NSLog("[BeAroundSDK] Auto-configured and started scanning from storage")
     }
 
     deinit {
@@ -132,7 +169,12 @@ public class BeAroundSDK {
 
         beaconManager.onBackgroundRangingComplete = { [weak self] in
             guard let self else { return }
-            print("[BeAroundSDK] Background ranging complete - syncing collected beacons")
+            self.syncBeacons()
+        }
+        
+        beaconManager.onFirstBackgroundBeaconDetected = { [weak self] in
+            guard let self else { return }
+            NSLog("[BeAroundSDK] First background beacon detected - syncing immediately (collectedBeacons=%d)", self.collectedBeacons.count)
             self.syncBeacons()
         }
 
@@ -157,7 +199,6 @@ public class BeAroundSDK {
 
     @objc private func appDidEnterBackground() {
         isInBackground = true
-        print("[BeAroundSDK] App entered background - switching to continuous ranging mode")
 
         if let config = configuration, config.enablePeriodicScanning {
             beaconManager.enablePeriodicScanning = false
@@ -165,11 +206,15 @@ public class BeAroundSDK {
                 beaconManager.startRanging()
             }
         }
+        
+        // Restart sync timer with background interval
+        if isScanning {
+            startSyncTimer()
+        }
     }
 
     @objc private func appWillEnterForeground() {
         isInBackground = false
-        print("[BeAroundSDK] App entered foreground - restoring periodic mode if configured")
 
         if let config = configuration {
             beaconManager.enablePeriodicScanning = config.enablePeriodicScanning
@@ -203,6 +248,9 @@ public class BeAroundSDK {
         let build = Int(buildNumber) ?? 1
 
         sdkInfo = SDKInfo(appId: config.appId, build: build)
+        
+        // Save configuration for background relaunch
+        SDKConfigStorage.save(config)
 
         if isScanning {
             startSyncTimer()
@@ -211,14 +259,10 @@ public class BeAroundSDK {
 
     public func setUserProperties(_ properties: UserProperties) {
         userProperties = properties
-        print(
-            "[BeAroundSDK] User properties updated: internalId=\(properties.internalId ?? "nil"), email=\(properties.email ?? "nil"), name=\(properties.name ?? "nil"), custom=\(properties.customProperties.count) properties"
-        )
     }
 
     public func clearUserProperties() {
         userProperties = nil
-        print("[BeAroundSDK] User properties cleared")
     }
 
     public func setBluetoothScanning(enabled: Bool) {
@@ -226,7 +270,7 @@ public class BeAroundSDK {
 
         if enabled, isScanning {
             bluetoothManager.startScanning()
-        } else if !enabled {
+        } else {
             bluetoothManager.stopScanning()
             metadataCache.removeAll()
         }
@@ -308,7 +352,6 @@ public class BeAroundSDK {
 
                 self.beaconManager.stopRanging()
                 self.syncBeacons()
-                print("BeAroundSDK: Synced beacons to API")
 
                 self.nextSyncTime = Date().addingTimeInterval(syncInterval)
 
@@ -318,9 +361,6 @@ public class BeAroundSDK {
                 ) { [weak self] in
                     guard let self else { return }
                     guard self.beaconManager.isScanning else { return }
-                    print(
-                        "BeAroundSDK: Starting ranging \(String(format: "%.1f", scanDuration))s before next sync"
-                    )
                     self.beaconManager.startRanging()
                 }
             }
@@ -328,17 +368,11 @@ public class BeAroundSDK {
             let delayUntilFirstRanging = syncInterval - scanDuration
             nextSyncTime = Date().addingTimeInterval(syncInterval)
 
-            print(
-                "BeAroundSDK: First ranging will start in \(String(format: "%.1f", delayUntilFirstRanging))s (sync in \(String(format: "%.1f", syncInterval))s)"
-            )
             DispatchQueue.global(qos: .utility).asyncAfter(
                 deadline: .now() + delayUntilFirstRanging
             ) { [weak self] in
                 guard let self else { return }
                 guard self.beaconManager.isScanning else { return }
-                print(
-                    "BeAroundSDK: Starting initial ranging for \(String(format: "%.1f", scanDuration))s"
-                )
                 self.beaconManager.startRanging()
             }
 
@@ -403,7 +437,6 @@ public class BeAroundSDK {
             self.beginBackgroundTask()
 
             guard !isSyncing else {
-                print("BeAroundSDK: Skipping sync - previous sync still in progress")
                 self.endBackgroundTask()
                 return
             }
@@ -411,6 +444,7 @@ public class BeAroundSDK {
             guard let apiClient,
                 let sdkInfo
             else {
+                NSLog("[BeAroundSDK] Sync skipped - SDK not configured (apiClient: %d, sdkInfo: %d)", self.apiClient != nil ? 1 : 0, self.sdkInfo != nil ? 1 : 0)
                 self.endBackgroundTask()
                 return
             }
@@ -424,24 +458,16 @@ public class BeAroundSDK {
                 beaconsToSend = failedBatch
                 isRetry = true
                 failedBatches.removeFirst()
-                print(
-                    "BeAroundSDK: Retrying failed batch with \(beaconsToSend.count) beacon\(beaconsToSend.count == 1 ? "" : "s") (attempt after \(consecutiveFailures) failures)"
-                )
             } else if !collectedBeacons.isEmpty {
                 beaconsToSend = Array(collectedBeacons.values)
                 collectedBeacons.removeAll()
             } else {
+                self.endBackgroundTask()
                 return
             }
 
             isSyncing = true
             let count = beaconsToSend.count
-
-            if !isRetry {
-                print(
-                    "BeAroundSDK: Sending \(count) beacon\(count == 1 ? "" : "s") to \(configuration?.apiBaseURL ?? "unknown")/ingest"
-                )
-            }
 
             let locationPermission = Self.authorizationStatus()
             let bluetoothState = bluetoothManager.isPoweredOn ? "powered_on" : "powered_off"
@@ -468,24 +494,14 @@ public class BeAroundSDK {
 
                 switch result {
                 case .success:
-                    print(
-                        "BeAroundSDK: Successfully sent \(count) beacon\(count == 1 ? "" : "s") (HTTP 200)"
-                    )
                     self.endBackgroundTask()
 
                     beaconQueue.async {
                         self.consecutiveFailures = 0
                         self.lastFailureTime = nil
-
-                        if !self.failedBatches.isEmpty {
-                            print(
-                                "BeAroundSDK: Recovered from failures - \(self.failedBatches.count) batch\(self.failedBatches.count == 1 ? "" : "es") still queued for retry"
-                            )
-                        }
                     }
 
                 case .failure(let error):
-                    print("BeAroundSDK: Failed to send beacons - \(error.localizedDescription)")
                     self.endBackgroundTask()
 
                     beaconQueue.async {
@@ -496,21 +512,12 @@ public class BeAroundSDK {
                         
                         if self.failedBatches.count < maxQueueSize {
                             self.failedBatches.append(beaconsToSend)
-                            print(
-                                "BeAroundSDK: Queued \(count) beacon\(count == 1 ? "" : "s") for retry (queue size: \(self.failedBatches.count)/\(maxQueueSize), consecutive failures: \(self.consecutiveFailures))"
-                            )
                         } else {
                             let dropped = self.failedBatches.removeFirst()
                             self.failedBatches.append(beaconsToSend)
-                            print(
-                                "BeAroundSDK: Retry queue full - dropped \(dropped.count) oldest beacons (queue: \(self.failedBatches.count)/\(maxQueueSize))"
-                            )
                         }
 
                         if self.consecutiveFailures >= 10 {
-                            print(
-                                "BeAroundSDK: Circuit breaker triggered - \(self.consecutiveFailures) consecutive failures. API may be down."
-                            )
 
                             let circuitBreakerError = NSError(
                                 domain: "BeAroundSDK",
@@ -559,12 +566,7 @@ public class BeAroundSDK {
             backgroundTaskId = UIApplication.shared.beginBackgroundTask(
                 withName: "BeAroundSDK-Sync"
             ) { [weak self] in
-                print("[BeAroundSDK] Background task expiring - cleaning up")
                 self?.endBackgroundTask()
-            }
-
-            if backgroundTaskId != .invalid {
-                print("[BeAroundSDK] Background task started (id: \(backgroundTaskId.rawValue))")
             }
         }
     }
@@ -574,7 +576,6 @@ public class BeAroundSDK {
             guard let self else { return }
 
             if backgroundTaskId != .invalid {
-                print("[BeAroundSDK] Background task ended (id: \(backgroundTaskId.rawValue))")
                 UIApplication.shared.endBackgroundTask(backgroundTaskId)
                 backgroundTaskId = .invalid
             }
@@ -597,15 +598,10 @@ extension BeAroundSDK: BluetoothManagerDelegate {
         if let metadata {
             let key = "\(major).\(minor)"
             metadataCache[key] = metadata
-            print(
-                "[BeAroundSDK] Cached metadata for beacon \(major).\(minor): battery=\(metadata.batteryLevel)%, firmware=\(metadata.firmwareVersion), txPower=\(metadata.txPower ?? 0)dBm, rssi=\(metadata.rssiFromBLE ?? 0)dBm, connectable=\(isConnectable)"
-            )
         }
     }
 
     func didUpdateBluetoothState(isPoweredOn: Bool) {
-        if !isPoweredOn, configuration?.enableBluetoothScanning == true {
-            print("[BeAroundSDK] Bluetooth is off - metadata scanning unavailable")
-        }
+        // Bluetooth state change handled silently
     }
 }
