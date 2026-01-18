@@ -32,7 +32,10 @@ class BluetoothManager: NSObject {
     private var isScanning = false
 
     private var lastSeenBeacons: [String: Date] = [:]
+    private var lastSeenBeaconNames: [String: Date] = [:]
     private let deduplicationInterval: TimeInterval = 1.0
+
+    private var peripheralNameCache: [UUID: String] = [:]
 
     /// track if we should auto start scanning when bluetooth is on
     private var pendingAutoStart = false
@@ -54,10 +57,7 @@ class BluetoothManager: NSObject {
             return
         }
 
-        guard !isScanning else {
-            print("[BluetoothManager] Already scanning")
-            return
-        }
+        guard !isScanning else { return }
 
         isScanning = true
 
@@ -76,6 +76,8 @@ class BluetoothManager: NSObject {
         pendingAutoStart = false
         centralManager.stopScan()
         lastSeenBeacons.removeAll()
+        lastSeenBeaconNames.removeAll()
+        peripheralNameCache.removeAll()
 
         print("[BluetoothManager] Stopped BLE scanning")
     }
@@ -186,8 +188,6 @@ class BluetoothManager: NSObject {
 extension BluetoothManager: CBCentralManagerDelegate {
     func centralManagerDidUpdateState(_ central: CBCentralManager) {
         let isPoweredOn = central.state == .poweredOn
-
-        print("[BluetoothManager] Bluetooth state: \(central.state.rawValue)")
         delegate?.didUpdateBluetoothState(isPoweredOn: isPoweredOn)
 
         if isPoweredOn {
@@ -214,60 +214,97 @@ extension BluetoothManager: CBCentralManagerDelegate {
 
     func centralManager(
         _: CBCentralManager,
-        didDiscover _: CBPeripheral,
+        didDiscover peripheral: CBPeripheral,
         advertisementData: [String: Any],
         rssi RSSI: NSNumber
     ) {
         guard RSSI.intValue != 127, RSSI.intValue != 0 else { return }
 
-        guard
-            let manufacturerData = advertisementData[CBAdvertisementDataManufacturerDataKey]
-                as? Data
-        else {
-            return
-        }
+        // Get name from advertisement or peripheral
+        let deviceName = advertisementData[CBAdvertisementDataLocalNameKey] as? String ?? peripheral.name
+        let looksLikeBeacon = deviceName?.hasPrefix("B:") ?? false
 
-        guard let beaconData = parseIBeaconData(from: manufacturerData) else {
-            return
-        }
-
-        guard beaconData.uuid == targetUUID else {
-            return
-        }
-
-        guard
-            shouldProcessBeacon(
-                uuid: beaconData.uuid, major: beaconData.major, minor: beaconData.minor)
-        else {
-            return
-        }
-
-        let isConnectable = advertisementData[CBAdvertisementDataIsConnectable] as? Bool ?? false
-
-        var metadata: BeaconMetadata?
-        if let name = advertisementData[CBAdvertisementDataLocalNameKey] as? String {
-            if let parsedMetadata = parseBeaconMetadata(from: name) {
-                metadata = BeaconMetadata(
-                    firmwareVersion: parsedMetadata.firmwareVersion,
-                    batteryLevel: parsedMetadata.batteryLevel,
-                    movements: parsedMetadata.movements,
-                    temperature: parsedMetadata.temperature,
-                    txPower: beaconData.txPower,
-                    rssiFromBLE: RSSI.intValue,
-                    isConnectable: isConnectable
-                )
+        // CASE 1: Advertisement packet with beacon name (contains metadata)
+        // These packets typically DON'T have manufacturer data, but we can extract
+        // major.minor from the name itself and cache the metadata
+        if looksLikeBeacon, let name = deviceName {
+            if let (major, minor, metadata) = parseBeaconNameWithMetadata(from: name, rssi: RSSI.intValue) {
+                // Only notify if this is a new discovery (deduplication)
+                if shouldProcessBeaconName(major: major, minor: minor) {
+                    delegate?.didDiscoverBeacon(
+                        uuid: targetUUID,
+                        major: major,
+                        minor: minor,
+                        rssi: RSSI.intValue,
+                        txPower: metadata.txPower ?? -59,
+                        metadata: metadata,
+                        isConnectable: advertisementData[CBAdvertisementDataIsConnectable] as? Bool ?? false
+                    )
+                }
             }
         }
 
-        delegate?.didDiscoverBeacon(
-            uuid: beaconData.uuid,
-            major: beaconData.major,
-            minor: beaconData.minor,
-            rssi: RSSI.intValue,
-            txPower: beaconData.txPower,
-            metadata: metadata,
-            isConnectable: isConnectable
+        // CASE 2: Advertisement packet with iBeacon manufacturer data
+        // These packets contain UUID/major/minor but typically no name
+        if let manufacturerData = advertisementData[CBAdvertisementDataManufacturerDataKey] as? Data,
+           let beaconData = parseIBeaconData(from: manufacturerData),
+           beaconData.uuid == targetUUID {
+
+            // This is an iBeacon packet - we already got metadata from the name packet above
+            // Just update deduplication timestamp
+            _ = shouldProcessBeacon(uuid: beaconData.uuid, major: beaconData.major, minor: beaconData.minor)
+        }
+    }
+
+    /// Parse beacon name format: B:FIRMWARE_MAJOR.MINOR_BATTERY_MOVEMENTS_TEMPERATURE
+    /// Returns (major, minor, metadata) or nil if parsing fails
+    private func parseBeaconNameWithMetadata(from name: String, rssi: Int) -> (major: Int, minor: Int, metadata: BeaconMetadata)? {
+        guard name.hasPrefix("B:") else { return nil }
+
+        let components = name.dropFirst(2).split(separator: "_")
+        guard components.count >= 5 else { return nil }
+
+        let firmware = String(components[0])
+
+        // Parse major.minor from components[1] (e.g., "0.64" -> major=0, minor=64)
+        let majorMinorParts = components[1].split(separator: ".")
+        guard majorMinorParts.count == 2,
+              let major = Int(majorMinorParts[0]),
+              let minor = Int(majorMinorParts[1]) else {
+            return nil
+        }
+
+        guard let battery = Int(components[2]),
+              let movements = Int(components[3]),
+              let temperature = Int(components[4]) else {
+            return nil
+        }
+
+        let metadata = BeaconMetadata(
+            firmwareVersion: firmware,
+            batteryLevel: battery,
+            movements: movements,
+            temperature: temperature,
+            txPower: nil,
+            rssiFromBLE: rssi,
+            isConnectable: true
         )
+
+        return (major, minor, metadata)
+    }
+
+    private func shouldProcessBeaconName(major: Int, minor: Int) -> Bool {
+        let key = "\(major).\(minor)"
+
+        if let lastSeen = lastSeenBeaconNames[key] {
+            let timeSinceLastSeen = Date().timeIntervalSince(lastSeen)
+            if timeSinceLastSeen < deduplicationInterval {
+                return false
+            }
+        }
+
+        lastSeenBeaconNames[key] = Date()
+        return true
     }
 }
 

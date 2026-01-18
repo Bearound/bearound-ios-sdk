@@ -704,6 +704,6 @@ extension BeAroundSDK: BluetoothManagerDelegate {
     }
 
     func didUpdateBluetoothState(isPoweredOn: Bool) {
-        // Handled silently
+        // Bluetooth state handled silently
     }
 }
