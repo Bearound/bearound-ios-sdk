@@ -119,12 +119,15 @@ public class BeAroundSDK {
 
         offlineBatchStorage.maxBatchCount = savedConfig.maxQueuedPayloads.value
 
-        // Auto-start scanning for terminated app relaunch
-        beaconManager.startScanning()
-        
-        startSyncTimer()
+        // For terminated app relaunch, BeaconManager already started ranging
+        // Just configure the SDK - don't start scanning again (it's already running)
+        // Don't start sync timer here - the background ranging timer will trigger sync when complete
+        if !beaconManager.isScanning {
+            beaconManager.startScanning()
+            startSyncTimer()
+        }
 
-        NSLog("[BeAroundSDK] AUTO-CONFIGURED from storage - scanning started")
+        NSLog("[BeAroundSDK] AUTO-CONFIGURED from storage (isScanning=%d)", beaconManager.isScanning ? 1 : 0)
     }
 
     private func setupSDKInfo(from config: SDKConfiguration) {
@@ -184,8 +187,14 @@ public class BeAroundSDK {
         // Triggered on first beacon detection in background
         beaconManager.onFirstBackgroundBeaconDetected = { [weak self] in
             guard let self else { return }
-            NSLog("[BeAroundSDK] First background beacon - syncing NOW (beacons=%d)",
-                  self.collectedBeacons.count)
+            let beaconCount = self.collectedBeacons.count
+            NSLog("[BeAroundSDK] First background beacon - syncing NOW (beacons=%d)", beaconCount)
+
+            // Notify delegate of background beacon detection
+            DispatchQueue.main.async {
+                self.delegate?.didDetectBeaconInBackground(beaconCount: max(beaconCount, 1))
+            }
+
             self.syncBeaconsImmediately()
         }
 
@@ -395,15 +404,49 @@ public class BeAroundSDK {
             }
             timer.resume()
         } else {
-            if beaconManager.isScanning {
-                beaconManager.startRanging()
+            // BACKGROUND MODE: Implement proper scan/pause pattern
+            // The 1/3 rule: scan for scanDuration, pause for pauseDuration
+
+            if pauseDuration <= 0 {
+                // No pause needed - continuous scanning
+                if beaconManager.isScanning {
+                    beaconManager.startRanging()
+                }
+
+                timer.schedule(deadline: .now() + syncInterval, repeating: syncInterval)
+                timer.setEventHandler { [weak self] in
+                    self?.syncBeacons()
+                }
+                timer.resume()
+            } else {
+                // Start with pause, then scan at the end of each interval
+                NSLog("[BeAroundSDK] Background scan pattern: pause=%.0fs, scan=%.0fs, interval=%.0fs",
+                      pauseDuration, scanDuration, syncInterval)
+
+                // Schedule scan to start after pause duration (scan at END of interval)
+                DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + pauseDuration) { [weak self] in
+                    guard let self, self.beaconManager.isScanning else { return }
+                    self.beaconManager.resumeRanging()
+                }
+
+                timer.schedule(deadline: .now() + syncInterval, repeating: syncInterval)
+                timer.setEventHandler { [weak self] in
+                    guard let self, self.beaconManager.isScanning else { return }
+
+                    // Sync the beacons we just collected
+                    self.syncBeacons()
+
+                    // Pause ranging during the pause period
+                    self.beaconManager.pauseRanging()
+
+                    // Resume ranging after pause duration (to collect beacons before next sync)
+                    DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + pauseDuration) { [weak self] in
+                        guard let self, self.beaconManager.isScanning else { return }
+                        self.beaconManager.resumeRanging()
+                    }
+                }
+                timer.resume()
             }
-            
-            timer.schedule(deadline: .now() + syncInterval, repeating: syncInterval)
-            timer.setEventHandler { [weak self] in
-                self?.syncBeacons()
-            }
-            timer.resume()
         }
     }
 
@@ -456,6 +499,12 @@ public class BeAroundSDK {
             }
 
             isSyncing = true
+            let beaconCount = beaconsToSend.count
+
+            // Notify delegate that sync is starting
+            DispatchQueue.main.async {
+                self.delegate?.willStartSync(beaconCount: beaconCount)
+            }
 
             let locationPermission = Self.authorizationStatus()
             let bluetoothState = bluetoothManager.isPoweredOn ? "powered_on" : "powered_off"
@@ -485,6 +534,11 @@ public class BeAroundSDK {
                     NSLog("[BeAroundSDK] Sync SUCCESS")
                     self.endBackgroundTask()
 
+                    // Notify delegate of successful sync
+                    DispatchQueue.main.async {
+                        self.delegate?.didCompleteSync(beaconCount: beaconCount, success: true, error: nil)
+                    }
+
                     beaconQueue.async {
                         self.consecutiveFailures = 0
                         self.lastFailureTime = nil
@@ -497,6 +551,11 @@ public class BeAroundSDK {
                 case .failure(let error):
                     NSLog("[BeAroundSDK] Sync FAILED: %@", error.localizedDescription)
                     self.endBackgroundTask()
+
+                    // Notify delegate of failed sync
+                    DispatchQueue.main.async {
+                        self.delegate?.didCompleteSync(beaconCount: beaconCount, success: false, error: error)
+                    }
 
                     beaconQueue.async {
                         self.consecutiveFailures += 1
@@ -533,8 +592,16 @@ public class BeAroundSDK {
 
     // MARK: - Background Execution Support
 
+    /// Registers background tasks with the system
+    /// Must be called in application(_:didFinishLaunchingWithOptions:) BEFORE the app finishes launching
+    public func registerBackgroundTasks() {
+        if #available(iOS 13.0, *) {
+            BackgroundTaskManager.shared.registerTasks()
+        }
+    }
+
     /// Called by BackgroundTaskManager when BGTaskScheduler triggers
-    func performBackgroundSync(completion: @escaping (Bool) -> Void) {
+    public func performBackgroundSync(completion: @escaping (Bool) -> Void) {
         NSLog("[BeAroundSDK] Background task triggered")
 
         beaconQueue.async { [weak self] in

@@ -296,6 +296,7 @@ class BeaconManager: NSObject {
         guard let region = beaconRegion, isRanging else { return }
 
         // Don't stop ranging in background - critical for terminated app
+        // Use pauseRanging() instead for temporary pause during scan intervals
         if !isInForeground { return }
 
         locationManager.stopRangingBeacons(satisfying: region.beaconIdentityConstraint)
@@ -312,6 +313,42 @@ class BeaconManager: NSObject {
         beaconLock.unlock()
 
         onBeaconsUpdated?([])
+    }
+
+    /// Temporarily pause ranging (can be used in background for scan interval control)
+    /// Unlike stopRanging(), this works in background and doesn't clear beacon data
+    /// Also stops location updates to hide the location arrow indicator
+    func pauseRanging() {
+        guard let region = beaconRegion, isRanging else { return }
+
+        locationManager.stopRangingBeacons(satisfying: region.beaconIdentityConstraint)
+        isRanging = false
+        stopRangingRefreshTimer()
+
+        // Stop location updates to hide the location arrow (saves battery)
+        // Region monitoring stays active for terminated app support
+        locationManager.stopUpdatingLocation()
+        locationManager.allowsBackgroundLocationUpdates = false
+
+        NSLog("[BeAroundSDK] Ranging PAUSED - location updates stopped (background=%d)", !isInForeground ? 1 : 0)
+    }
+
+    /// Resume ranging after a pause
+    func resumeRanging() {
+        guard let region = beaconRegion, !isRanging, isScanning else { return }
+
+        // Re-enable location updates for ranging
+        configureBackgroundUpdates(enabled: !isInForeground)
+        locationManager.startUpdatingLocation()
+
+        locationManager.startRangingBeacons(satisfying: region.beaconIdentityConstraint)
+        isRanging = true
+
+        if !isInForeground {
+            startRangingRefreshTimer()
+        }
+
+        NSLog("[BeAroundSDK] Ranging RESUMED - location updates started (background=%d)", !isInForeground ? 1 : 0)
     }
 
     // MARK: - Significant Location Changes
@@ -708,6 +745,16 @@ extension BeaconManager: CLLocationManagerDelegate {
             if !isScanning {
                 NSLog("[BeAroundSDK] APP RELAUNCHED FROM TERMINATED STATE - starting ranging for %.0fs",
                       terminatedAppRangingDuration)
+
+                let constraint = CLBeaconIdentityConstraint(uuid: beaconUUID)
+                let region = CLBeaconRegion(
+                    beaconIdentityConstraint: constraint,
+                    identifier: "BeAroundRegion"
+                )
+                region.notifyOnEntry = true
+                region.notifyOnExit = true
+                region.notifyEntryStateOnDisplay = true
+                beaconRegion = region
 
                 isScanning = true
                 onScanningStateChanged?(true)

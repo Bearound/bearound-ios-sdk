@@ -160,36 +160,25 @@ enum ForegroundIntervalOption: CaseIterable {
     }
     
     var sdkValue: ForegroundScanInterval {
-        switch self {
-        case .seconds5: return .seconds5
-        case .seconds10: return .seconds10
-        case .seconds15: return .seconds15
-        case .seconds20: return .seconds20
-        case .seconds25: return .seconds25
-        case .seconds30: return .seconds30
-        case .seconds35: return .seconds35
-        case .seconds40: return .seconds40
-        case .seconds45: return .seconds45
-        case .seconds50: return .seconds50
-        case .seconds55: return .seconds55
-        case .seconds60: return .seconds60
-        }
+        ForegroundScanInterval(seconds: TimeInterval(seconds))
     }
-    
+
     static func from(sdkValue: ForegroundScanInterval) -> ForegroundIntervalOption {
-        switch sdkValue {
-        case .seconds5: return .seconds5
-        case .seconds10: return .seconds10
-        case .seconds15: return .seconds15
-        case .seconds20: return .seconds20
-        case .seconds25: return .seconds25
-        case .seconds30: return .seconds30
-        case .seconds35: return .seconds35
-        case .seconds40: return .seconds40
-        case .seconds45: return .seconds45
-        case .seconds50: return .seconds50
-        case .seconds55: return .seconds55
-        case .seconds60: return .seconds60
+        let seconds = Int(sdkValue.timeInterval)
+        switch seconds {
+        case 5: return .seconds5
+        case 10: return .seconds10
+        case 15: return .seconds15
+        case 20: return .seconds20
+        case 25: return .seconds25
+        case 30: return .seconds30
+        case 35: return .seconds35
+        case 40: return .seconds40
+        case 45: return .seconds45
+        case 50: return .seconds50
+        case 55: return .seconds55
+        case 60: return .seconds60
+        default: return .seconds15
         }
     }
 }
@@ -220,22 +209,18 @@ enum BackgroundIntervalOption: CaseIterable {
     }
     
     var sdkValue: BackgroundScanInterval {
-        switch self {
-        case .seconds15: return .seconds15
-        case .seconds30: return .seconds30
-        case .seconds60: return .seconds60
-        case .seconds90: return .seconds90
-        case .seconds120: return .seconds120
-        }
+        BackgroundScanInterval(seconds: TimeInterval(seconds))
     }
-    
+
     static func from(sdkValue: BackgroundScanInterval) -> BackgroundIntervalOption {
-        switch sdkValue {
-        case .seconds15: return .seconds15
-        case .seconds30: return .seconds30
-        case .seconds60: return .seconds60
-        case .seconds90: return .seconds90
-        case .seconds120: return .seconds120
+        let seconds = Int(sdkValue.timeInterval)
+        switch seconds {
+        case 15: return .seconds15
+        case 30: return .seconds30
+        case 60: return .seconds60
+        case 90: return .seconds90
+        case 120: return .seconds120
+        default: return .seconds30
         }
     }
 }

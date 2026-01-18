@@ -203,7 +203,7 @@ extension BeaconViewModel {
                     let timeSinceStart = Date().timeIntervalSince(startTime)
                     // Aguarda 2 segundos para evitar notificações imediatas ao iniciar já na zona
                     if timeSinceStart >= 2.0 {
-                        self.notificationManager.notifyBeaconRegionEntered(beaconCount: sortedBeacons.count)
+                        self.notificationManager.notifyBeaconDetected(beaconCount: sortedBeacons.count)
                     }
                 }
                 // Se scanStartTime é nil, significa que o scan já estava ativo antes,
@@ -267,10 +267,40 @@ extension BeaconViewModel {
             self.isScanning = isScanning
             if isScanning {
                 self.statusMessage = "Scaneando..."
+                self.notificationManager.notifyScanningStarted()
             } else {
                 self.statusMessage = "Parado"
+                self.notificationManager.notifyScanningStopped()
             }
         }
     }
 
+    // MARK: - Sync Lifecycle Delegate Methods
+
+    func willStartSync(beaconCount: Int) {
+        DispatchQueue.main.async {
+            NSLog("[BeaconViewModel] Sync starting with %d beacons", beaconCount)
+            self.notificationManager.notifyAPISyncStarted(beaconCount: beaconCount)
+        }
+    }
+
+    func didCompleteSync(beaconCount: Int, success: Bool, error: Error?) {
+        DispatchQueue.main.async {
+            if success {
+                NSLog("[BeaconViewModel] Sync completed successfully: %d beacons", beaconCount)
+            } else {
+                NSLog("[BeaconViewModel] Sync failed: %@", error?.localizedDescription ?? "unknown error")
+            }
+            self.notificationManager.notifyAPISyncCompleted(beaconCount: beaconCount, success: success)
+        }
+    }
+
+    // MARK: - Background Events Delegate Methods
+
+    func didDetectBeaconInBackground(beaconCount: Int) {
+        DispatchQueue.main.async {
+            NSLog("[BeaconViewModel] Beacon detected in background: %d beacons", beaconCount)
+            self.notificationManager.notifyBeaconDetected(beaconCount: beaconCount, isBackground: true)
+        }
+    }
 }
