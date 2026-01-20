@@ -17,7 +17,7 @@ BearoundSDK provides BLE beacon detection and indoor location technology for iOS
 - **Real-time Beacon Detection**: Continuous monitoring using CoreLocation and CoreBluetooth
 - **Delegate-Based Architecture**: Clean, protocol-based event handling with `BeAroundSDKDelegate`
 - **Automatic API Synchronization**: Configurable sync intervals for beacon data
-- **Periodic Scanning Mode**: Battery-efficient scanning with configurable scan/pause durations
+- **Smart Scanning Mode**: Automatic battery-efficient scanning with configurable intervals
 - **Background Support**: Seamless transition between foreground and background modes
 - **Bluetooth Metadata**: Optional enhanced beacon data (firmware, battery, temperature)
 - **User Properties**: Attach custom user data to all beacon events
@@ -46,7 +46,7 @@ https://github.com/Bearound/bearound-ios-sdk.git
 
 Add to your `Podfile`:
 ```ruby
-pod 'BearoundSDK', '~> 2.1'
+pod 'BearoundSDK', '~> 2.2'
 ```
 
 Then run:
@@ -280,8 +280,7 @@ BeAroundSDK.shared.configure(
     businessToken: "your-business-token-here",
     foregroundScanInterval: .seconds30,      // Scan every 30s when app is active
     backgroundScanInterval: .seconds90,      // Scan every 90s in background
-    maxQueuedPayloads: .large,               // Store up to 200 failed batches
-    enablePeriodicScanning: true             // Battery-efficient mode
+    maxQueuedPayloads: .large                // Store up to 200 failed batches
 )
 ```
 
@@ -292,7 +291,7 @@ BeAroundSDK.shared.configure(
   - Default: `.seconds15`
 
 - **Background Scan Interval** (`backgroundScanInterval`)
-  - Available values: `.seconds60`, `.seconds90`, `.seconds120`
+  - Available values: `.seconds15`, `.seconds30`, `.seconds45`, `.seconds60`, `.seconds90`, `.seconds120`
   - Default: `.seconds60`
 
 - **Retry Queue Size** (`maxQueuedPayloads`)
@@ -305,19 +304,14 @@ BeAroundSDK.shared.configure(
 - SDK automatically switches intervals based on app state (foreground/background)
 - Scan duration is calculated as `syncInterval / 3` (limited between 5-10 seconds)
 - Failed API requests are queued for retry based on `maxQueuedPayloads` setting (each batch contains all beacons from one sync)
-- Periodic scanning mode pauses between sync times to save battery
+- SDK automatically manages scanning intervals based on app state (foreground/background)
 
-#### Bluetooth Metadata Scanning
+#### Bluetooth Metadata
 
-Get enhanced beacon information (firmware, battery, temperature):
+Beacons automatically include metadata when available (firmware, battery, temperature):
 
 ```swift
-BeAroundSDK.shared.configure(
-    businessToken: "your-business-token-here",
-    enableBluetoothScanning: true  // Enable metadata
-)
-
-// Metadata is automatically attached to beacons
+// Metadata is automatically attached to beacons when detected via Bluetooth
 func didUpdateBeacons(_ beacons: [Beacon]) {
     beacons.forEach { beacon in
         if let metadata = beacon.metadata {
@@ -363,11 +357,6 @@ if BeAroundSDK.shared.isScanning {
 if let interval = BeAroundSDK.shared.currentSyncInterval {
     print("Syncing every \(interval)s")
 }
-
-// Check periodic mode
-if BeAroundSDK.shared.isPeriodicScanningEnabled {
-    print("Periodic scanning active")
-}
 ```
 
 ### Device Telemetry (Collected Automatically)
@@ -375,7 +364,7 @@ if BeAroundSDK.shared.isPeriodicScanningEnabled {
 The SDK automatically collects comprehensive device information:
 
 #### SDK Information
-- Version (2.1.0)
+- Version (2.2.0)
 - Platform (ios)
 - App ID (Bundle identifier)
 - Build number
@@ -476,7 +465,7 @@ The SDK uses CoreLocation Region Monitoring to detect beacons even when the app 
 The SDK includes robust error handling:
 
 - **Circuit Breaker**: After 10 consecutive API failures, triggers alert
-- **Retry Queue**: Stores up to 10 failed beacon batches for retry
+- **Retry Queue**: Stores failed beacon batches for retry (configurable via `maxQueuedPayloads`: 50-500 batches)
 - **Exponential Backoff**: Retries with delays: 5s, 10s, 20s, 40s (max 60s)
 - **Automatic Recovery**: Resumes normal operation when API recovers
 
@@ -515,7 +504,7 @@ The SDK logs important events with tag `[BeAroundSDK]`:
 - [ ] Foreground beacon detection
 - [ ] Background beacon detection
 - [ ] API synchronization
-- [ ] Periodic scanning mode
+- [ ] Smart scanning mode (foreground/background intervals)
 - [ ] Bluetooth metadata scanning
 - [ ] User properties attachment
 - [ ] Error handling and retries
@@ -631,7 +620,7 @@ The SDK automatically sends beacon data to your API endpoint in this structure:
     }
   ],
   "sdk": {
-    "version": "2.1.0",
+    "version": "2.2.0",
     "platform": "ios",
     "appId": "com.example.app",
     "build": 210
@@ -703,9 +692,7 @@ class BeaconViewController: UIViewController, BeAroundSDKDelegate {
             businessToken: "your-business-token-here",
             foregroundScanInterval: .seconds30,     // Scan every 30s when active
             backgroundScanInterval: .seconds90,     // Scan every 90s in background
-            maxQueuedPayloads: .large,              // Queue up to 200 failed batches
-            enableBluetoothScanning: true,          // Get battery, firmware, etc.
-            enablePeriodicScanning: true            // Save battery
+            maxQueuedPayloads: .large               // Queue up to 200 failed batches
         )
         // Note: appId automatically extracted from Bundle Identifier
         

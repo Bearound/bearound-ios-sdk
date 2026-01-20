@@ -11,6 +11,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 This release adds comprehensive background execution support with multiple fallback mechanisms to ensure beacon data is synced even when the app is completely closed.
 
+### ⚠️ Breaking Changes
+
+- **Removed `enableBluetoothScanning` parameter**: Bluetooth scanning is now always enabled when available
+- **Removed `enablePeriodicScanning` parameter**: Periodic scanning behavior is now automatic based on app state
+
+**Before (v2.1.x):**
+```swift
+BeAroundSDK.shared.configure(
+    businessToken: "token",
+    foregroundScanInterval: .seconds30,
+    backgroundScanInterval: .seconds90,
+    maxQueuedPayloads: .large,
+    enableBluetoothScanning: true,    // ❌ REMOVED
+    enablePeriodicScanning: true      // ❌ REMOVED
+)
+```
+
+**After (v2.2.0):**
+```swift
+BeAroundSDK.shared.configure(
+    businessToken: "token",
+    foregroundScanInterval: .seconds30,
+    backgroundScanInterval: .seconds90,
+    maxQueuedPayloads: .large
+)
+```
+
 ### ✨ Added
 
 #### BGTaskScheduler Support (iOS 13+)

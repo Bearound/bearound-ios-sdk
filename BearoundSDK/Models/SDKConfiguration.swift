@@ -19,8 +19,8 @@ public struct SDKConfiguration {
 
     public init(
         businessToken: String,
-        foregroundScanInterval: ForegroundScanInterval = ForegroundScanInterval(seconds: ForegroundScanInterval.default),
-        backgroundScanInterval: BackgroundScanInterval = BackgroundScanInterval(seconds: BackgroundScanInterval.default),
+        foregroundScanInterval: ForegroundScanInterval = .seconds15,
+        backgroundScanInterval: BackgroundScanInterval = .seconds60,
         maxQueuedPayloads: MaxQueuedPayloads = .medium
     ) {
         self.businessToken = businessToken

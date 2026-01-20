@@ -121,8 +121,8 @@ class OfflineBatchStorage {
     private let fileManager = FileManager.default
     private let storageQueue = DispatchQueue(label: "com.bearound.sdk.batchStorage", qos: .utility)
 
-    /// Maximum number of batches to store
-    var maxBatchCount: Int = 100
+    /// Maximum number of batches to store (default from MaxQueuedPayloads.medium)
+    var maxBatchCount: Int = MaxQueuedPayloads.medium.value
 
     /// Storage directory URL
     private var storageDirectory: URL? {
