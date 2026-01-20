@@ -145,14 +145,14 @@ class APIClient {
     }
 
     private func buildDevicePayload(_ device: UserDevice) -> [String: Any] {
-        var hardware: [String: Any] = [
+        let hardware: [String: Any] = [
             "manufacturer": device.manufacturer,
             "model": device.model,
             "os": device.os ?? "iOS",
             "osVersion": device.osVersion,
         ]
 
-        var screen: [String: Any] = [
+        let screen: [String: Any] = [
             "width": device.screenWidth,
             "height": device.screenHeight,
         ]
@@ -188,12 +188,12 @@ class APIClient {
         }
         permissions["adTrackingEnabled"] = device.adTrackingEnabled
 
-        var memory: [String: Any] = [
+        let memory: [String: Any] = [
             "totalMb": device.ramTotalMb,
             "availableMb": device.ramAvailableMb,
         ]
 
-        var appState: [String: Any] = [
+        let appState: [String: Any] = [
             "inForeground": device.appInForeground,
             "uptimeMs": device.appUptimeMs,
             "coldStart": device.coldStart,

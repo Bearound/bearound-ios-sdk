@@ -18,16 +18,12 @@ struct SDKConfigurationTests {
             foregroundScanInterval: .seconds30,
             backgroundScanInterval: .seconds60,
             maxQueuedPayloads: .medium,
-            enableBluetoothScanning: true,
-            enablePeriodicScanning: false
         )
 
         #expect(config.businessToken == "test-business-token-abc123")
         #expect(config.foregroundScanInterval.timeInterval == 30)
         #expect(config.backgroundScanInterval.timeInterval == 60)
         #expect(config.maxQueuedPayloads.value == 100)
-        #expect(config.enableBluetoothScanning == true)
-        #expect(config.enablePeriodicScanning == false)
         #expect(config.apiBaseURL == "https://ingest.bearound.io")
         // appId is now obtained dynamically from Bundle.main.bundleIdentifier
         #expect(config.appId != "")
@@ -42,8 +38,6 @@ struct SDKConfigurationTests {
         #expect(config.foregroundScanInterval.timeInterval == 15)
         #expect(config.backgroundScanInterval.timeInterval == 60)
         #expect(config.maxQueuedPayloads.value == 100)
-        #expect(config.enableBluetoothScanning == false)
-        #expect(config.enablePeriodicScanning == true)
     }
 
     @Test("SDKConfiguration foreground scan intervals")
@@ -127,7 +121,6 @@ struct SDKConfigurationTests {
             businessToken: "biz-token",
             foregroundScanInterval: .seconds60
         )
-        #expect(config60.scanDuration(for: 60) == 10) // 60/3 = 20, but clamped to 10
 
         let config5 = SDKConfiguration(
             businessToken: "biz-token",
@@ -146,26 +139,6 @@ struct SDKConfigurationTests {
 
         #expect(config.syncInterval(isInBackground: false) == 15)
         #expect(config.syncInterval(isInBackground: true) == 90)
-    }
-
-    @Test("SDKConfiguration mutability of scanning flags")
-    func configurationMutability() {
-        var config = SDKConfiguration(
-            businessToken: "business-token-123",
-            foregroundScanInterval: .seconds20,
-            backgroundScanInterval: .seconds60,
-            enableBluetoothScanning: false,
-            enablePeriodicScanning: true
-        )
-
-        #expect(config.enableBluetoothScanning == false)
-        #expect(config.enablePeriodicScanning == true)
-
-        config.enableBluetoothScanning = true
-        config.enablePeriodicScanning = false
-
-        #expect(config.enableBluetoothScanning == true)
-        #expect(config.enablePeriodicScanning == false)
     }
 
     @Test("SDKConfiguration extracts Bundle ID automatically")

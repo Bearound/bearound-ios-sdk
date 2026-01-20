@@ -6,7 +6,7 @@ Swift SDK for iOS — secure BLE beacon detection and indoor positioning by Bear
 
 BearoundSDK provides BLE beacon detection and indoor location technology for iOS applications. The SDK offers real-time beacon monitoring, delegate-based event callbacks, automatic API synchronization, and comprehensive device telemetry.
 
-**Current Version:** 2.2.0
+**Current Version:** 2.2.1
 
 > **Version 2.0.1 Breaking Changes**: Complete SDK rewrite with new architecture. See migration guide below.
 
@@ -620,7 +620,7 @@ The SDK automatically sends beacon data to your API endpoint in this structure:
     }
   ],
   "sdk": {
-    "version": "2.2.0",
+    "version": "2.2.1",
     "platform": "ios",
     "appId": "com.example.app",
     "build": 210
