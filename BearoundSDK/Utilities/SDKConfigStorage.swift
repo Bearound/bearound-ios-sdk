@@ -32,8 +32,8 @@ public class SDKConfigStorage {
         }
 
         defaults.set(config.businessToken, forKey: keyBusinessToken)
-        defaults.set(config.foregroundScanInterval.timeInterval, forKey: keyForegroundInterval)
-        defaults.set(config.backgroundScanInterval.timeInterval, forKey: keyBackgroundInterval)
+        defaults.set(Int(config.foregroundScanInterval.timeInterval), forKey: keyForegroundInterval)
+        defaults.set(Int(config.backgroundScanInterval.timeInterval), forKey: keyBackgroundInterval)
         defaults.set(config.maxQueuedPayloads.rawValue, forKey: keyMaxQueuedPayloads)
         defaults.set(true, forKey: keyIsConfigured)
 
@@ -60,20 +60,16 @@ public class SDKConfigStorage {
             return nil
         }
 
-        let foregroundRaw = defaults.double(forKey: keyForegroundInterval)
-        let backgroundRaw = defaults.double(forKey: keyBackgroundInterval)
+        let foregroundRaw = defaults.integer(forKey: keyForegroundInterval)
+        let backgroundRaw = defaults.integer(forKey: keyBackgroundInterval)
         let maxQueuedRaw = defaults.integer(forKey: keyMaxQueuedPayloads)
 
-        let foregroundInterval = ForegroundScanInterval(
-            seconds: foregroundRaw > 0 ? foregroundRaw : ForegroundScanInterval.default
-        )
-        let backgroundInterval = BackgroundScanInterval(
-            seconds: backgroundRaw > 0 ? backgroundRaw : BackgroundScanInterval.default
-        )
-        let maxQueuedPayloads = MaxQueuedPayloads(rawValue: maxQueuedRaw > 0 ? maxQueuedRaw : 100) ?? .medium
+        let foregroundInterval = ForegroundScanInterval(rawValue: foregroundRaw) ?? .seconds15
+        let backgroundInterval = BackgroundScanInterval(rawValue: backgroundRaw) ?? .seconds60
+        let maxQueuedPayloads = MaxQueuedPayloads(rawValue: maxQueuedRaw) ?? .medium
 
-        NSLog("[BeAroundSDK] Loaded configuration from storage (foreground: %.0fs, background: %.0fs)",
-              foregroundInterval.timeInterval, backgroundInterval.timeInterval)
+        NSLog("[BeAroundSDK] Loaded configuration from storage (foreground: %ds, background: %ds)",
+              foregroundRaw, backgroundRaw)
 
         return SDKConfiguration(
             businessToken: businessToken,
