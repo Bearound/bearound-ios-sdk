@@ -70,21 +70,21 @@ struct SDKConfigStorageTests {
     @Test("Save and load scanning state")
     func saveAndLoadScanningState() {
         // Save scanning state as true
-        SDKConfigStorage.saveScanningState(true)
-        #expect(SDKConfigStorage.loadScanningState() == true)
+        SDKConfigStorage.saveIsScanning(true)
+        #expect(SDKConfigStorage.loadIsScanning() == true)
         
         // Save scanning state as false
-        SDKConfigStorage.saveScanningState(false)
-        #expect(SDKConfigStorage.loadScanningState() == false)
+        SDKConfigStorage.saveIsScanning(false)
+        #expect(SDKConfigStorage.loadIsScanning() == false)
     }
     
     @Test("Default scanning state is false")
     func defaultScanningState() {
-        // Clear any existing state
-        SDKConfigStorage.clearScanningState()
+        // Clear config (which clears scanning state too)
+        SDKConfigStorage.clear()
         
         // Load should return false by default
-        #expect(SDKConfigStorage.loadScanningState() == false)
+        #expect(SDKConfigStorage.loadIsScanning() == false)
     }
     
     @Test("Persist all enum values")

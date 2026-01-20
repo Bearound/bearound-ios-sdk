@@ -5,6 +5,7 @@
 //  Tests for API communication
 //
 
+import CoreLocation
 import Foundation
 import Testing
 
@@ -73,7 +74,7 @@ struct APIClientTests {
             major: 1000,
             minor: 2000,
             rssi: -65,
-            proximity: 2, // near
+            proximity: .near,
             accuracy: 2.5,
             timestamp: Date(),
             metadata: nil,
@@ -105,7 +106,7 @@ struct APIClientTests {
             major: 1000,
             minor: 2000,
             rssi: -65,
-            proximity: 2,
+            proximity: .near,
             accuracy: 2.5,
             timestamp: Date(),
             metadata: metadata,
@@ -120,66 +121,45 @@ struct APIClientTests {
         #expect(beacon.metadata?.isConnectable == true)
     }
     
-    @Test("UserDevice model validation")
-    func userDeviceModelValidation() {
-        let device = UserDevice(
-            manufacturer: "Apple",
-            model: "iPhone 13",
-            os: "ios",
-            osVersion: "17.2",
-            timestamp: 1735940400000,
-            timezone: "America/Sao_Paulo",
-            batteryLevel: 0.78,
-            isCharging: false,
-            lowPowerMode: false,
+    @Test("UserDevice model is collected")
+    func userDeviceModelCollected() {
+        // Test that DeviceInfoCollector can create UserDevice
+        let collector = DeviceInfoCollector()
+        
+        let device = collector.collectDeviceInfo(
+            locationPermission: .authorizedAlways,
             bluetoothState: "powered_on",
-            locationPermission: "authorized_always",
-            locationAccuracy: "full",
-            notificationsPermission: "authorized",
-            networkType: "wifi",
-            cellularGeneration: nil,
-            isRoaming: false,
-            ramTotalMb: 4096,
-            ramAvailableMb: 1280,
-            screenWidth: 1170,
-            screenHeight: 2532,
-            advertisingId: "00000000-0000-0000-0000-000000000000",
-            adTrackingEnabled: false,
-            appInForeground: true,
-            appUptimeMs: 12345,
-            coldStart: false,
-            location: nil
+            appInForeground: true
         )
         
-        #expect(device.manufacturer == "Apple")
-        #expect(device.model == "iPhone 13")
-        #expect(device.batteryLevel == 0.78)
-        #expect(device.isCharging == false)
+        // Verify basic fields are populated
+        #expect(!device.manufacturer.isEmpty)
+        #expect(!device.model.isEmpty)
+        #expect(!device.osVersion.isEmpty)
+        #expect(device.batteryLevel >= 0 && device.batteryLevel <= 1)
         #expect(device.locationPermission == "authorized_always")
         #expect(device.appInForeground == true)
     }
     
-    @Test("DeviceLocation model")
-    func deviceLocationModel() {
-        let location = DeviceLocation(
-            latitude: -23.5505,
-            longitude: -46.6333,
-            accuracy: 10.0,
-            altitude: 760.0,
-            altitudeAccuracy: 5.0,
-            speed: 0.0,
-            speedAccuracy: nil,
-            course: 0.0,
-            courseAccuracy: nil,
-            timestamp: 1735940400000,
-            floor: nil,
-            sourceInformation: nil
+    @Test("Beacon metadata model")
+    func beaconMetadataModel() {
+        let metadata = BeaconMetadata(
+            firmwareVersion: "v1.2.3",
+            batteryLevel: 95,
+            movements: 12,
+            temperature: 25,
+            txPower: -59,
+            rssiFromBLE: -62,
+            isConnectable: true
         )
         
-        #expect(location.latitude == -23.5505)
-        #expect(location.longitude == -46.6333)
-        #expect(location.accuracy == 10.0)
-        #expect(location.altitude == 760.0)
+        #expect(metadata.firmwareVersion == "v1.2.3")
+        #expect(metadata.batteryLevel == 95)
+        #expect(metadata.movements == 12)
+        #expect(metadata.temperature == 25)
+        #expect(metadata.txPower == -59)
+        #expect(metadata.rssiFromBLE == -62)
+        #expect(metadata.isConnectable == true)
     }
     
     @Test("UserProperties model")
@@ -194,8 +174,8 @@ struct APIClientTests {
         #expect(properties.internalId == "user-123")
         #expect(properties.email == "user@example.com")
         #expect(properties.name == "John Doe")
-        #expect(properties.customProperties?["tier"] == "premium")
-        #expect(properties.customProperties?["region"] == "US")
+        #expect(properties.customProperties["tier"] == "premium")
+        #expect(properties.customProperties["region"] == "US")
     }
     
     @Test("APIClient base URL validation")

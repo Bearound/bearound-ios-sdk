@@ -20,11 +20,11 @@ struct KeychainHelperTests {
         let testValue = "test-device-id-123"
         
         // Save value
-        let saveResult = KeychainHelper.save(key: testKey, data: testValue)
+        let saveResult = KeychainHelper.save(testValue, forKey: testKey)
         #expect(saveResult == true)
         
         // Retrieve value
-        if let retrievedValue: String = KeychainHelper.load(key: testKey) {
+        if let retrievedValue = KeychainHelper.retrieve(forKey: testKey) {
             #expect(retrievedValue == testValue)
         } else {
             Issue.record("Failed to retrieve value from keychain")
@@ -37,14 +37,14 @@ struct KeychainHelperTests {
         let updatedValue = "updated-value"
         
         // Save initial value
-        _ = KeychainHelper.save(key: testKey, data: initialValue)
+        _ = KeychainHelper.save(initialValue, forKey: testKey)
         
         // Update with new value
-        let updateResult = KeychainHelper.save(key: testKey, data: updatedValue)
+        let updateResult = KeychainHelper.save(updatedValue, forKey: testKey)
         #expect(updateResult == true)
         
         // Verify updated value
-        if let retrievedValue: String = KeychainHelper.load(key: testKey) {
+        if let retrievedValue = KeychainHelper.retrieve(forKey: testKey) {
             #expect(retrievedValue == updatedValue)
         } else {
             Issue.record("Failed to retrieve updated value")
@@ -56,18 +56,18 @@ struct KeychainHelperTests {
         let testValue = "value-to-delete"
         
         // Save value
-        _ = KeychainHelper.save(key: testKey, data: testValue)
+        _ = KeychainHelper.save(testValue, forKey: testKey)
         
         // Verify it exists
-        let loadedValue: String? = KeychainHelper.load(key: testKey)
+        let loadedValue = KeychainHelper.retrieve(forKey: testKey)
         #expect(loadedValue != nil)
         
         // Delete value
-        let deleteResult = KeychainHelper.delete(key: testKey)
+        let deleteResult = KeychainHelper.delete(forKey: testKey)
         #expect(deleteResult == true)
         
         // Verify it's gone
-        let afterDelete: String? = KeychainHelper.load(key: testKey)
+        let afterDelete = KeychainHelper.retrieve(forKey: testKey)
         #expect(afterDelete == nil)
     }
     
@@ -76,10 +76,10 @@ struct KeychainHelperTests {
         let nonExistentKey = "com.bearound.test.nonexistent.key"
         
         // Delete if exists (cleanup)
-        _ = KeychainHelper.delete(key: nonExistentKey)
+        _ = KeychainHelper.delete(forKey: nonExistentKey)
         
         // Try to load
-        let result: String? = KeychainHelper.load(key: nonExistentKey)
+        let result = KeychainHelper.retrieve(forKey: nonExistentKey)
         
         #expect(result == nil)
     }
@@ -89,7 +89,7 @@ struct KeychainHelperTests {
         let nonExistentKey = "com.bearound.test.another.nonexistent"
         
         // Delete non-existent key should succeed (no-op)
-        let result = KeychainHelper.delete(key: nonExistentKey)
+        let result = KeychainHelper.delete(forKey: nonExistentKey)
         
         // Should return true even if key doesn't exist
         #expect(result == true)
@@ -99,10 +99,10 @@ struct KeychainHelperTests {
     func saveEmptyString() {
         let emptyValue = ""
         
-        let saveResult = KeychainHelper.save(key: testKey, data: emptyValue)
+        let saveResult = KeychainHelper.save(emptyValue, forKey: testKey)
         #expect(saveResult == true)
         
-        if let retrievedValue: String = KeychainHelper.load(key: testKey) {
+        if let retrievedValue = KeychainHelper.retrieve(forKey: testKey) {
             #expect(retrievedValue == "")
         } else {
             Issue.record("Failed to retrieve empty string")
@@ -114,10 +114,10 @@ struct KeychainHelperTests {
         // Create a long string (10KB)
         let longValue = String(repeating: "A", count: 10_000)
         
-        let saveResult = KeychainHelper.save(key: testKey, data: longValue)
+        let saveResult = KeychainHelper.save(longValue, forKey: testKey)
         #expect(saveResult == true)
         
-        if let retrievedValue: String = KeychainHelper.load(key: testKey) {
+        if let retrievedValue = KeychainHelper.retrieve(forKey: testKey) {
             #expect(retrievedValue.count == 10_000)
             #expect(retrievedValue == longValue)
         } else {
@@ -129,10 +129,10 @@ struct KeychainHelperTests {
     func saveSpecialCharacters() {
         let specialValue = "Test™ 特殊 🎉 @#$%^&*()"
         
-        let saveResult = KeychainHelper.save(key: testKey, data: specialValue)
+        let saveResult = KeychainHelper.save(specialValue, forKey: testKey)
         #expect(saveResult == true)
         
-        if let retrievedValue: String = KeychainHelper.load(key: testKey) {
+        if let retrievedValue = KeychainHelper.retrieve(forKey: testKey) {
             #expect(retrievedValue == specialValue)
         } else {
             Issue.record("Failed to retrieve special characters")

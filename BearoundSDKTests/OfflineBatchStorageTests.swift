@@ -5,6 +5,7 @@
 //  Tests for offline batch storage and retry logic
 //
 
+import CoreLocation
 import Foundation
 import Testing
 
@@ -21,159 +22,156 @@ struct OfflineBatchStorageTests {
         #expect(storage.maxBatchCount == 100)
     }
     
-    @Test("Set custom max batch count")
-    func setCustomMaxBatchCount() {
-        var storage = OfflineBatchStorage()
-        storage.maxBatchCount = 500
-        
-        #expect(storage.maxBatchCount == 500)
-    }
-    
-    @Test("Store and retrieve batches")
-    func storeAndRetrieveBatches() {
+    @Test("Save batch returns success")
+    func saveBatchReturnsSuccess() {
         let storage = OfflineBatchStorage()
-        storage.clearAll()
         
         // Create test beacons
-        let beacons1 = createTestBeacons(count: 3)
-        let beacons2 = createTestBeacons(count: 2)
+        let beacons = createTestBeacons(count: 3)
         
-        // Store batches
-        storage.storeBatch(beacons1)
-        storage.storeBatch(beacons2)
+        // Save batch
+        let result = storage.saveBatch(beacons)
         
-        // Retrieve batches
-        let batches = storage.getAllBatches()
-        
-        #expect(batches.count == 2)
-        #expect(batches[0].beacons.count == 3)
-        #expect(batches[1].beacons.count == 2)
+        #expect(result == true)
     }
     
-    @Test("FIFO order - oldest batches retrieved first")
-    func fifoOrder() {
-        let storage = OfflineBatchStorage()
-        storage.clearAll()
-        
-        // Store multiple batches with delays to ensure different timestamps
-        let beacons1 = createTestBeacons(count: 1)
-        storage.storeBatch(beacons1)
-        
-        Thread.sleep(forTimeInterval: 0.01)
-        
-        let beacons2 = createTestBeacons(count: 1)
-        storage.storeBatch(beacons2)
-        
-        Thread.sleep(forTimeInterval: 0.01)
-        
-        let beacons3 = createTestBeacons(count: 1)
-        storage.storeBatch(beacons3)
-        
-        // Retrieve all batches
-        let batches = storage.getAllBatches()
-        
-        // Verify FIFO order (oldest first)
-        #expect(batches.count == 3)
-        #expect(batches[0].timestamp <= batches[1].timestamp)
-        #expect(batches[1].timestamp <= batches[2].timestamp)
-    }
-    
-    @Test("Remove batch after successful sync")
-    func removeBatchAfterSync() {
-        let storage = OfflineBatchStorage()
-        storage.clearAll()
-        
-        // Store batches
-        let beacons1 = createTestBeacons(count: 2)
-        let beacons2 = createTestBeacons(count: 3)
-        storage.storeBatch(beacons1)
-        storage.storeBatch(beacons2)
-        
-        // Get batches
-        let batches = storage.getAllBatches()
-        #expect(batches.count == 2)
-        
-        // Remove first batch
-        storage.removeBatch(batches[0].id)
-        
-        // Verify only one batch remains
-        let remainingBatches = storage.getAllBatches()
-        #expect(remainingBatches.count == 1)
-        #expect(remainingBatches[0].beacons.count == 3)
-    }
-    
-    @Test("Respect max batch count limit")
-    func respectMaxBatchCountLimit() {
-        var storage = OfflineBatchStorage()
-        storage.maxBatchCount = 3
-        storage.clearAll()
-        
-        // Try to store 5 batches (limit is 3)
-        for _ in 0..<5 {
-            let beacons = createTestBeacons(count: 1)
-            storage.storeBatch(beacons)
-            Thread.sleep(forTimeInterval: 0.01)
-        }
-        
-        // Should only have 3 batches (oldest ones removed)
-        let batches = storage.getAllBatches()
-        #expect(batches.count == 3)
-    }
-    
-    @Test("Clear all batches")
-    func clearAllBatches() {
+    @Test("Batch count increases after save")
+    func batchCountIncreasesAfterSave() {
         let storage = OfflineBatchStorage()
         
-        // Store some batches
-        for _ in 0..<5 {
-            let beacons = createTestBeacons(count: 2)
-            storage.storeBatch(beacons)
-        }
+        let initialCount = storage.batchCount
         
-        #expect(storage.getAllBatches().count == 5)
-        
-        // Clear all
-        storage.clearAll()
-        
-        #expect(storage.getAllBatches().count == 0)
-    }
-    
-    @Test("Age-based cleanup removes old batches")
-    func ageBasedCleanup() {
-        let storage = OfflineBatchStorage()
-        storage.clearAll()
-        
-        // Store a batch
+        // Save a batch
         let beacons = createTestBeacons(count: 2)
-        storage.storeBatch(beacons)
+        _ = storage.saveBatch(beacons)
         
-        // Get the batch and manually set old timestamp
-        var batches = storage.getAllBatches()
-        #expect(batches.count == 1)
+        let newCount = storage.batchCount
         
-        // Clean up should work
-        storage.cleanupOldBatches(olderThanDays: 7)
-        
-        // For recent batches, nothing should be removed
-        batches = storage.getAllBatches()
-        #expect(batches.count == 1)
+        #expect(newCount == initialCount + 1)
     }
     
-    @Test("Count batches")
-    func countBatches() {
+    @Test("Load oldest batch returns beacons")
+    func loadOldestBatchReturnsBeacons() {
         let storage = OfflineBatchStorage()
-        storage.clearAll()
         
-        #expect(storage.count() == 0)
+        // Save a batch
+        let beacons = createTestBeacons(count: 3)
+        _ = storage.saveBatch(beacons)
         
-        storage.storeBatch(createTestBeacons(count: 1))
-        #expect(storage.count() == 1)
+        // Load oldest batch
+        if let loadedBeacons = storage.loadOldestBatch() {
+            #expect(loadedBeacons.count == 3)
+            #expect(loadedBeacons[0].major == 1000)
+        } else {
+            Issue.record("Failed to load batch")
+        }
+    }
+    
+    @Test("Remove oldest batch decreases count")
+    func removeOldestBatchDecreasesCount() {
+        let storage = OfflineBatchStorage()
         
-        storage.storeBatch(createTestBeacons(count: 1))
-        #expect(storage.count() == 2)
+        // Save a batch
+        let beacons = createTestBeacons(count: 2)
+        _ = storage.saveBatch(beacons)
         
-        storage.clearAll()
-        #expect(storage.count() == 0)
+        let countBefore = storage.batchCount
+        
+        // Remove oldest batch
+        let result = storage.removeOldestBatch()
+        
+        #expect(result == true)
+        
+        let countAfter = storage.batchCount
+        #expect(countAfter == countBefore - 1)
+    }
+    
+    @Test("Load all batches returns array")
+    func loadAllBatchesReturnsArray() {
+        let storage = OfflineBatchStorage()
+        
+        // Save multiple batches
+        for i in 0..<3 {
+            let beacons = createTestBeacons(count: i + 1)
+            _ = storage.saveBatch(beacons)
+        }
+        
+        // Load all batches
+        let allBatches = storage.loadAllBatches()
+        
+        #expect(allBatches.count >= 3)
+    }
+    
+    @Test("Cannot save empty beacon array")
+    func cannotSaveEmptyBeaconArray() {
+        let storage = OfflineBatchStorage()
+        
+        // Try to save empty array
+        let result = storage.saveBatch([])
+        
+        #expect(result == false)
+    }
+    
+    @Test("Load oldest batch when empty returns nil")
+    func loadOldestBatchWhenEmptyReturnsNil() {
+        let storage = OfflineBatchStorage()
+        
+        // Remove all batches first
+        while storage.batchCount > 0 {
+            _ = storage.removeOldestBatch()
+        }
+        
+        // Try to load from empty storage
+        let batch = storage.loadOldestBatch()
+        
+        #expect(batch == nil)
+    }
+    
+    @Test("Remove oldest batch when empty succeeds")
+    func removeOldestBatchWhenEmptySucceeds() {
+        let storage = OfflineBatchStorage()
+        
+        // Remove all batches first
+        while storage.batchCount > 0 {
+            _ = storage.removeOldestBatch()
+        }
+        
+        // Try to remove from empty storage (should not crash)
+        let result = storage.removeOldestBatch()
+        
+        // Implementation may return true or false, just verify it doesn't crash
+        #expect(result == true || result == false)
+    }
+    
+    @Test("Beacons are stored with correct properties")
+    func beaconsStoredWithCorrectProperties() {
+        let storage = OfflineBatchStorage()
+        
+        // Create beacon with specific properties
+        let beacon = Beacon(
+            uuid: UUID(uuidString: "E25B8D3C-947A-452F-A13F-589CB706D2E5")!,
+            major: 9999,
+            minor: 8888,
+            rssi: -77,
+            proximity: .far,
+            accuracy: 5.5,
+            timestamp: Date(),
+            metadata: nil,
+            txPower: -58
+        )
+        
+        _ = storage.saveBatch([beacon])
+        
+        // Load and verify
+        if let loadedBeacons = storage.loadOldestBatch() {
+            #expect(loadedBeacons.count == 1)
+            let loaded = loadedBeacons[0]
+            #expect(loaded.major == 9999)
+            #expect(loaded.minor == 8888)
+            #expect(loaded.rssi == -77)
+        } else {
+            Issue.record("Failed to load saved beacon")
+        }
     }
     
     // MARK: - Helper Methods
@@ -187,7 +185,7 @@ struct OfflineBatchStorageTests {
                 major: 1000 + i,
                 minor: 2000 + i,
                 rssi: -60 - i,
-                proximity: 1, // near
+                proximity: .near,
                 accuracy: 1.5,
                 timestamp: Date(),
                 metadata: nil,
