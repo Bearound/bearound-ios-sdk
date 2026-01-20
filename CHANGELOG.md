@@ -5,6 +5,27 @@ All notable changes to BearoundSDK for iOS will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.2.1] - 2026-01-20
+
+### 🔧 Code Quality Improvements
+
+This patch release fixes compiler warnings and improves code quality.
+
+### 🐛 Fixed
+
+- **APIClient.swift**: Changed `var` to `let` for immutable variables (`hardware`, `screen`, `memory`, `appState`)
+- **DeviceInfoCollector.swift**: Fixed `NSLock` usage in async contexts (Swift 6 compatibility)
+- **DeviceInfoCollector.swift**: Updated deprecated `subscriberCellularProvider` API
+
+### 📚 Documentation
+
+- Updated README.md to reflect v2.2.0 changes
+- Fixed BackgroundScanInterval enum documentation (added `.seconds15`, `.seconds30`, `.seconds45`)
+- Removed references to deprecated `enableBluetoothScanning` and `enablePeriodicScanning` parameters
+- Updated SDK version references from 2.1.0 to 2.2.0 in examples
+
+---
+
 ## [2.2.0] - 2026-01-17
 
 ### 🚀 Major Background Improvements
