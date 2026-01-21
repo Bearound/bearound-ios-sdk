@@ -46,7 +46,7 @@ https://github.com/Bearound/bearound-ios-sdk.git
 
 Add to your `Podfile`:
 ```ruby
-pod 'BearoundSDK', '~> 2.1'
+pod 'BearoundSDK', '~> 2.2'
 ```
 
 Then run:

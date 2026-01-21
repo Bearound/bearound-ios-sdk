@@ -15,108 +15,67 @@ struct SettingsView: View {
     var body: some View {
         NavigationView {
             Form {
-                // SDK Info Section
                 Section {
                     HStack {
-                        Text("SDK Version")
+                        Text("Versão do SDK")
                         Spacer()
-                        Text("2.2.0")
+                        Text(viewModel.sdkVersion)
                             .foregroundColor(.secondary)
+                            .font(.system(.body, design: .monospaced))
                     }
-                } header: {
-                    Text("Informações")
                 }
-                
-                // Scan Intervals Section
-                Section {
+
+                Section("Intervalos de Sync") {
                     Picker("Foreground", selection: $viewModel.foregroundInterval) {
                         ForEach(ForegroundIntervalOption.allCases, id: \.self) { option in
                             Text(option.displayText).tag(option)
                         }
                     }
-                    
+
                     Picker("Background", selection: $viewModel.backgroundInterval) {
                         ForEach(BackgroundIntervalOption.allCases, id: \.self) { option in
                             Text(option.displayText).tag(option)
                         }
                     }
-                } header: {
-                    Text("Intervalos de Sync")
-                } footer: {
-                    Text("Controla a frequência de envio de dados para a API.\n\nForeground: quando o app está ativo\nBackground: quando em segundo plano (ranging é contínuo, interval controla sync)")
                 }
-                
-                // Queue Settings Section
-                Section {
+
+                Section("Fila de Retry") {
                     Picker("Tamanho da Fila", selection: $viewModel.queueSize) {
                         ForEach(QueueSizeOption.allCases, id: \.self) { option in
                             Text(option.displayText).tag(option)
                         }
                     }
-                } header: {
-                    Text("Fila de Retry")
-                } footer: {
-                    Text("Número máximo de batches de requisições guardados quando a API falha. Cada batch contém múltiplos beacons.")
                 }
-                
-                // Features Section
-                Section {
-                    Text("Bluetooth Scanning: Sempre ativo")
-                        .foregroundColor(.secondary)
 
-                    Text("Periodic Scanning: Sempre ativo (economiza bateria)")
-                        .foregroundColor(.secondary)
-                } header: {
-                    Text("Funcionalidades")
-                } footer: {
-                    Text("O SDK agora sempre ativa Bluetooth scanning e periodic scanning para otimização de bateria.\n\nEm background o ranging é sempre contínuo (limitação do iOS)")
+                Section("Propriedades do Usuário") {
+                    TextField("ID do usuário", text: $viewModel.userPropertyInternalId)
+                        .textInputAutocapitalization(.never)
+                        .disableAutocorrection(true)
+
+                    TextField("E-Mail do usuário", text: $viewModel.userPropertyEmail)
+                        .textInputAutocapitalization(.never)
+                        .disableAutocorrection(true)
+                        .keyboardType(.emailAddress)
+
+                    TextField("Nome do usuário", text: $viewModel.userPropertyName)
+                        .textInputAutocapitalization(.words)
+                        .disableAutocorrection(false)
+
+                    TextField("Propriedade customizada", text: $viewModel.userPropertyCustom)
+                        .textInputAutocapitalization(.never)
+                        .disableAutocorrection(true)
                 }
-                
-                // Current Configuration Display
-                Section {
-                    VStack(alignment: .leading, spacing: 8) {
-                        HStack {
-                            Text("Sync Interval Atual:")
-                                .font(.caption)
-                                .foregroundColor(.secondary)
-                            Spacer()
-                            Text("\(viewModel.currentDisplayInterval)s")
-                                .font(.caption)
-                                .fontWeight(.medium)
-                        }
-                        
-                        HStack {
-                            Text("Scan Duration:")
-                                .font(.caption)
-                                .foregroundColor(.secondary)
-                            Spacer()
-                            Text("\(viewModel.scanDuration)s")
-                                .font(.caption)
-                                .fontWeight(.medium)
-                        }
-                    }
-                } header: {
-                    Text("Configuração Atual")
-                } footer: {
-                    Text("Valores calculados baseados nas configurações selecionadas")
-                }
-                
-                // Apply Button
+
                 Section {
                     Button(action: {
                         viewModel.applySettings()
                         dismiss()
                     }) {
-                        HStack {
-                            Spacer()
-                            Text("Aplicar Configurações")
-                                .fontWeight(.semibold)
-                            Spacer()
-                        }
+                        Text("Aplicar Configurações")
+                            .fontWeight(.semibold)
+                            .frame(maxWidth: .infinity)
                     }
                     .buttonStyle(.borderedProminent)
-                    .listRowInsets(EdgeInsets())
-                    .listRowBackground(Color.clear)
                 }
             }
             .navigationTitle("Configurações")
@@ -134,9 +93,9 @@ struct SettingsView: View {
 
 // MARK: - Helper Enums for UI
 
-enum ForegroundIntervalOption: CaseIterable {
-    case seconds5, seconds10, seconds15, seconds20, seconds25, seconds30
-    case seconds35, seconds40, seconds45, seconds50, seconds55, seconds60
+enum ForegroundIntervalOption: String, CaseIterable {
+    case seconds5 = "5", seconds10 = "10", seconds15 = "15", seconds20 = "20", seconds25 = "25", seconds30 = "30"
+    case seconds35 = "35", seconds40 = "40", seconds45 = "45", seconds50 = "50", seconds55 = "55", seconds60 = "60"
     
     var displayText: String {
         "\(seconds)s"
@@ -183,8 +142,8 @@ enum ForegroundIntervalOption: CaseIterable {
     }
 }
 
-enum BackgroundIntervalOption: CaseIterable {
-    case seconds15, seconds30, seconds60, seconds90, seconds120
+enum BackgroundIntervalOption: String, CaseIterable {
+    case seconds15 = "15", seconds30 = "30", seconds60 = "60", seconds90 = "90", seconds120 = "120"
     
     var displayText: String {
         if seconds < 60 {
@@ -225,8 +184,8 @@ enum BackgroundIntervalOption: CaseIterable {
     }
 }
 
-enum QueueSizeOption: CaseIterable {
-    case small, medium, large, xlarge
+enum QueueSizeOption: String, CaseIterable {
+    case small = "small", medium = "medium", large = "large", xlarge = "xlarge"
     
     var displayText: String {
         switch self {

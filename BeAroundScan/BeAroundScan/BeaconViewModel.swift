@@ -19,11 +19,25 @@ class BeaconViewModel: NSObject, ObservableObject, BeAroundSDKDelegate {
     @Published var sortOption: BeaconSortOption = .proximity
     @Published var bluetoothStatus: String = "Verificando..."
     @Published var notificationStatus: String = "Verificando..."
-    
+
     // SDK Configuration Settings
     @Published var foregroundInterval: ForegroundIntervalOption = .seconds15
     @Published var backgroundInterval: BackgroundIntervalOption = .seconds30
     @Published var queueSize: QueueSizeOption = .medium
+    @Published var userPropertyInternalId: String = ""
+    @Published var userPropertyEmail: String = ""
+    @Published var userPropertyName: String = ""
+    @Published var userPropertyCustom: String = ""
+
+    private enum UserDefaultsKeys {
+        static let foregroundInterval = "beAroundForegroundInterval"
+        static let backgroundInterval = "beAroundBackgroundInterval"
+        static let queueSize = "beAroundQueueSize"
+        static let userPropertyInternalId = "beAroundUserInternalId"
+        static let userPropertyEmail = "beAroundUserEmail"
+        static let userPropertyName = "beAroundUserName"
+        static let userPropertyCustom = "beAroundUserCustom"
+    }
     
     private let locationManager = CLLocationManager()
     private var wasInBeaconRegion = false
@@ -34,6 +48,8 @@ class BeaconViewModel: NSObject, ObservableObject, BeAroundSDKDelegate {
     override init() {
         super.init()
         locationManager.delegate = self
+
+        loadSavedSettings()
 
         locationManager.requestAlwaysAuthorization()
         notificationManager.requestAuthorization()
@@ -64,6 +80,45 @@ class BeaconViewModel: NSObject, ObservableObject, BeAroundSDKDelegate {
         }
     }
 
+    private func loadSavedSettings() {
+        let defaults = UserDefaults.standard
+
+        if let foregroundIntervalRaw = defaults.string(forKey: UserDefaultsKeys.foregroundInterval),
+           let foregroundInterval = ForegroundIntervalOption(rawValue: foregroundIntervalRaw) {
+            self.foregroundInterval = foregroundInterval
+        }
+
+        if let backgroundIntervalRaw = defaults.string(forKey: UserDefaultsKeys.backgroundInterval),
+           let backgroundInterval = BackgroundIntervalOption(rawValue: backgroundIntervalRaw) {
+            self.backgroundInterval = backgroundInterval
+        }
+
+        if let queueSizeRaw = defaults.string(forKey: UserDefaultsKeys.queueSize),
+           let queueSize = QueueSizeOption(rawValue: queueSizeRaw) {
+            self.queueSize = queueSize
+        }
+
+        self.userPropertyInternalId = defaults.string(forKey: UserDefaultsKeys.userPropertyInternalId) ?? ""
+        self.userPropertyEmail = defaults.string(forKey: UserDefaultsKeys.userPropertyEmail) ?? ""
+        self.userPropertyName = defaults.string(forKey: UserDefaultsKeys.userPropertyName) ?? ""
+        self.userPropertyCustom = defaults.string(forKey: UserDefaultsKeys.userPropertyCustom) ?? ""
+    }
+
+    private func saveCurrentSettings() {
+        let defaults = UserDefaults.standard
+
+        defaults.set(foregroundInterval.rawValue, forKey: UserDefaultsKeys.foregroundInterval)
+        defaults.set(backgroundInterval.rawValue, forKey: UserDefaultsKeys.backgroundInterval)
+        defaults.set(queueSize.rawValue, forKey: UserDefaultsKeys.queueSize)
+
+        defaults.set(userPropertyInternalId, forKey: UserDefaultsKeys.userPropertyInternalId)
+        defaults.set(userPropertyEmail, forKey: UserDefaultsKeys.userPropertyEmail)
+        defaults.set(userPropertyName, forKey: UserDefaultsKeys.userPropertyName)
+        defaults.set(userPropertyCustom, forKey: UserDefaultsKeys.userPropertyCustom)
+
+        defaults.synchronize()
+    }
+
     private func updatePermissionStatus() {
         let locationAuth = locationManager.authorizationStatus
 
@@ -87,6 +142,19 @@ class BeaconViewModel: NSObject, ObservableObject, BeAroundSDKDelegate {
 
         BeAroundSDK.shared.delegate = self
 
+        if !userPropertyInternalId.isEmpty || !userPropertyEmail.isEmpty ||
+           !userPropertyName.isEmpty || !userPropertyCustom.isEmpty {
+            let properties = UserProperties(
+                internalId: userPropertyInternalId,
+                email: userPropertyEmail,
+                name: userPropertyName,
+                customProperties: [
+                    "custom": userPropertyCustom,
+                ]
+            )
+            BeAroundSDK.shared.setUserProperties(properties)
+        }
+
         statusMessage = "Configurado"
 
         startScanning()
@@ -95,11 +163,11 @@ class BeaconViewModel: NSObject, ObservableObject, BeAroundSDKDelegate {
     @MainActor
     func applySettings() {
         let wasScanning = isScanning
-        
+
         if wasScanning {
             stopScanning()
         }
-        
+
         BeAroundSDK.shared.configure(
             businessToken: "CLIENT_TOKEN",
             foregroundScanInterval: foregroundInterval.sdkValue,
@@ -107,8 +175,22 @@ class BeaconViewModel: NSObject, ObservableObject, BeAroundSDKDelegate {
             maxQueuedPayloads: queueSize.sdkValue
         )
         
+        let properties = UserProperties(
+            internalId: userPropertyInternalId,
+            email: userPropertyEmail,
+            name: userPropertyName,
+            customProperties: [
+                "custom": userPropertyCustom,
+            ]
+        )
+
+        BeAroundSDK.shared.setUserProperties(properties)
+
+        // Save settings to UserDefaults
+        saveCurrentSettings()
+
         statusMessage = "Configurações aplicadas"
-        
+
         if wasScanning {
             startScanning()
         }
@@ -149,6 +231,10 @@ class BeaconViewModel: NSObject, ObservableObject, BeAroundSDKDelegate {
 
     var scanMode: String {
         return "Periódico (economiza bateria)"
+    }
+
+    var sdkVersion: String {
+        return BeAroundSDK.version
     }
 
     deinit {}

@@ -60,7 +60,7 @@ struct APIClientTests {
 
         #expect(sdkInfo.appId == "test-app")
         #expect(sdkInfo.build == 100)
-        #expect(sdkInfo.version == "2.0.0")
+        #expect(sdkInfo.version == "2.2.0")
         #expect(sdkInfo.platform == "ios")
     }
 }

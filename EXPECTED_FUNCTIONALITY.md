@@ -1,0 +1,13 @@
+Features que precisam ter no SDK
+- Funcionar em foreground, com uma frequência de scan maior. O intervalo padrão deve ser 10 segundos, mas configurável via constante, com máximo de 10 minutos.
+- Funcionar em background, com uma frequência de scan menor. O intervalo padrão deve ser de 30 segundos, mas configurável via constante, com máximo de 10 minutos.
+- Funcionar quando o aplicativo está fechado. Precisa ter um scan definido.
+- Consumir pouca bateria, o mínimo possível
+- Se o dispositivo estiver sem sinal de internet, armazenar os eventos em algum lugar persistente para quando estiver conectado novamente, enviar tudo (não de uma vez, mas de alguma forma enviar de maneira eficaz)
+- Não ficar escaneando 100% do tempo, utilizar isso: se o escaneamento estiver configurado para 30 em 30 segundos, sendo agora t=0, em t=20 começa a escanear e t=30 envia para a api de ingest. t>30 e t<50 não escanear, mas se t>50 e t<60, escanear e em t=60 enviar, e assim por diante. O tempo mínimo para escaneamento é de 5 segundos, não pode ser menor que isso, então se o escaneamneto estiver configurado para 5 segundos, ele vai ser constante, não vai parar. O máximo de tempo para escanear é 20 segundos.
+- Tomar cuidado, principalmente no iOS, por falsas não detecções, ou seja, geralmente o beacon pode estar na sua frente e o iOS não detectar ele por um breve momento, caso isso ocorra, não contar que o beacon foi removido. Remover ele após X segundos apenas. Tipo um grace period de 10 a 30 segundos, teria que usar um lastSeenAt e um moving average de RSSI. Nunca usar apenas 1 scan para decidir quantos beacons tem.
+- O funcionamento com app fechado deve ser bem definido
+- O bluetooth deve ser habilitado automaticamente, não é uma configuração. Se tiver a permissão de bluetooth. Precisamos do bluetooth apenas para pegar o nome do beacon e as informações de temperatura, bateria e movimentos.
+- O id do device deve ser único, de alguma forma. Independente do aplicativo que utilizar o SDK, o id do device deve ser o mesmo.
+- Precisamos de precisão nos dados enviados e no tempo que é enviado, principalmente em background e quando está fechado, pesquise sobre background mode no iOS. Precisamos de suportar todas as versões iOS desde 2018.
+- O aplicativo precisa apenas receber eventos do SDK, nada além disso. Eventos importantes apenas, não queremos desperdiçar resources.

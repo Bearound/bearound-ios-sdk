@@ -8,7 +8,7 @@ BearoundSDK provides BLE beacon detection and indoor location technology for iOS
 
 **Current Version:** 2.2.0
 
-> **Version 2.0.0 Breaking Changes**: Complete SDK rewrite with new architecture. See migration guide below.
+> **Version 2.0.1 Breaking Changes**: Complete SDK rewrite with new architecture. See migration guide below.
 
 ## Topics
 
@@ -46,7 +46,7 @@ https://github.com/Bearound/bearound-ios-sdk.git
 
 Add to your `Podfile`:
 ```ruby
-pod 'BearoundSDK', '~> 2.0.0'
+pod 'BearoundSDK', '~> 2.2'
 ```
 
 Then run:
@@ -523,7 +523,7 @@ The SDK automatically sends beacon data to your API endpoint in this structure:
     }
   ],
   "sdk": {
-    "version": "2.0.0",
+    "version": "2.2.0",
     "platform": "ios",
     "appId": "com.example.app",
     "build": 210

@@ -16,6 +16,10 @@ public class BeAroundSDK {
 
     public static let shared = BeAroundSDK()
 
+    public static var version: String {
+        return "2.2.0"
+    }
+
     // MARK: - Public Properties
 
     public weak var delegate: BeAroundSDKDelegate?
