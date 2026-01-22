@@ -490,7 +490,7 @@ public class BeAroundSDK {
                 NSLog("[BeAroundSDK] Retrying failed batch with %d beacons", beaconsToSend.count)
             } else if !collectedBeacons.isEmpty {
                 beaconsToSend = Array(collectedBeacons.values)
-                collectedBeacons.removeAll()
+                // DON'T clear - keep beacons for continuous updates
                 NSLog("[BeAroundSDK] Syncing %d collected beacons", beaconsToSend.count)
             } else {
                 NSLog("[BeAroundSDK] Nothing to sync")
