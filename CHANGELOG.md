@@ -5,6 +5,20 @@ All notable changes to BearoundSDK for iOS will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.2.2] - 2026-01-22
+
+### Changed
+
+- **5s Interval Continuous Mode**: When `foregroundScanInterval` is set to `.seconds5`, the SDK now operates in continuous mode (scanDuration = 5s, pauseDuration = 0s) for real-time beacon detection without pauses.
+- **Beacon Persistence**: Collected beacons are no longer cleared after sync. This allows continuous tracking of beacon presence and prevents gaps in detection during rapid scans.
+
+### Technical Details
+
+- Modified `SDKConfiguration.scanDuration(for:)` to return full interval when interval == 5s
+- Removed `collectedBeacons.removeAll()` from sync operations to maintain beacon state
+
+---
+
 ## [2.2.1] - 2026-01-20
 
 ### 🔧 Code Quality Improvements
