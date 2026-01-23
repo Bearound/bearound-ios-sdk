@@ -305,14 +305,8 @@ class BeaconManager: NSObject {
         stopRangingRefreshTimer()
         configureBackgroundUpdates(enabled: false)
 
-        beaconLock.lock()
-        detectedBeacons.removeAll()
-        beaconLastSeen.removeAll()
-        beaconRSSIHistory.removeAll()
-        beaconMissCount.removeAll()
-        beaconLock.unlock()
-
-        onBeaconsUpdated?([])
+        // DON'T clear beacon data or notify empty list - keep beacons visible for continuous mode
+        // Beacon data will be updated on next ranging cycle
     }
 
     /// Temporarily pause ranging (can be used in background for scan interval control)

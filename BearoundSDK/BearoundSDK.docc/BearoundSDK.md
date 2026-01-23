@@ -287,11 +287,6 @@ if BeAroundSDK.shared.isScanning {
 if let interval = BeAroundSDK.shared.currentSyncInterval {
     print("Syncing every \(interval)s")
 }
-
-// Check periodic mode
-if BeAroundSDK.shared.isPeriodicScanningEnabled {
-    print("Periodic scanning active")
-}
 ```
 
 ### Device Telemetry (Collected Automatically)
@@ -299,7 +294,7 @@ if BeAroundSDK.shared.isPeriodicScanningEnabled {
 The SDK automatically collects comprehensive device information:
 
 #### SDK Information
-- Version (2.0.0)
+- Version (2.2.0)
 - Platform (ios)
 - App ID (Bundle identifier)
 - Build number

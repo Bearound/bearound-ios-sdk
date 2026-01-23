@@ -10,12 +10,13 @@ import AppTrackingTransparency
 import CoreLocation
 import CoreTelephony
 import Foundation
+import Network
 import SystemConfiguration
 import SystemConfiguration.CaptiveNetwork
 import UIKit
 import UserNotifications
 
-class DeviceInfoCollector {
+final class DeviceInfoCollector: @unchecked Sendable {
 	private let appStartTime: Date
 	private let isColdStart: Bool
 
@@ -54,6 +55,14 @@ class DeviceInfoCollector {
 				"unknown"
 			}
 
+		// Dispatch to sync context to safely use NSLock (Swift 6 compatibility)
+		DispatchQueue.main.async { [weak self] in
+			self?.updateCachedPermission(status)
+		}
+	}
+	
+	/// Thread-safe update of cached permission (must be called from sync context)
+	private func updateCachedPermission(_ status: String) {
 		permissionLock.lock()
 		cachedNotificationPermission = status
 		permissionCacheReady = true
@@ -80,10 +89,7 @@ class DeviceInfoCollector {
 					"unknown"
 				}
 
-			permissionLock.lock()
-			cachedNotificationPermission = status
-			permissionCacheReady = true
-			permissionLock.unlock()
+			self.updateCachedPermission(status)
 		}
 	}
 
@@ -236,40 +242,71 @@ class DeviceInfoCollector {
 	}
 
 	private func networkType() -> String {
-		var zeroAddress = sockaddr_in()
-		zeroAddress.sin_len = UInt8(MemoryLayout.size(ofValue: zeroAddress))
-		zeroAddress.sin_family = sa_family_t(AF_INET)
-
-		guard
-			let defaultRouteReachability = withUnsafePointer(
-				to: &zeroAddress,
-				{
-					$0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
-						SCNetworkReachabilityCreateWithAddress(nil, $0)
+		if #available(iOS 12.0, *) {
+			let monitor = NWPathMonitor()
+			let semaphore = DispatchSemaphore(value: 0)
+			var result = "none"
+			
+			monitor.pathUpdateHandler = { path in
+				if path.status == .satisfied {
+					if path.usesInterfaceType(.cellular) {
+						result = "cellular"
+					} else if path.usesInterfaceType(.wifi) {
+						result = "wifi"
+					} else if path.usesInterfaceType(.wiredEthernet) {
+						result = "wifi"
+					} else {
+						result = "wifi"
 					}
-				})
-		else {
-			return "none"
+				} else {
+					result = "none"
+				}
+				semaphore.signal()
+			}
+			
+			let queue = DispatchQueue(label: "com.bearound.network.monitor")
+			monitor.start(queue: queue)
+			_ = semaphore.wait(timeout: .now() + 0.5)
+			monitor.cancel()
+			
+			return result
+		} else {
+			// Fallback for iOS < 12.0
+			var zeroAddress = sockaddr_in()
+			zeroAddress.sin_len = UInt8(MemoryLayout.size(ofValue: zeroAddress))
+			zeroAddress.sin_family = sa_family_t(AF_INET)
+
+			guard
+				let defaultRouteReachability = withUnsafePointer(
+					to: &zeroAddress,
+					{
+						$0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+							SCNetworkReachabilityCreateWithAddress(nil, $0)
+						}
+					})
+			else {
+				return "none"
+			}
+
+			var flags: SCNetworkReachabilityFlags = []
+			if !SCNetworkReachabilityGetFlags(defaultRouteReachability, &flags) {
+				return "none"
+			}
+
+			let isReachable = flags.contains(.reachable)
+			let needsConnection = flags.contains(.connectionRequired)
+			let isNetworkReachable = isReachable && !needsConnection
+
+			if !isNetworkReachable {
+				return "none"
+			}
+
+			if flags.contains(.isWWAN) {
+				return "cellular"
+			}
+
+			return "wifi"
 		}
-
-		var flags: SCNetworkReachabilityFlags = []
-		if !SCNetworkReachabilityGetFlags(defaultRouteReachability, &flags) {
-			return "none"
-		}
-
-		let isReachable = flags.contains(.reachable)
-		let needsConnection = flags.contains(.connectionRequired)
-		let isNetworkReachable = isReachable && !needsConnection
-
-		if !isNetworkReachable {
-			return "none"
-		}
-
-		if flags.contains(.isWWAN) {
-			return "cellular"
-		}
-
-		return "wifi"
 	}
 
 	private func cellularGeneration() -> String? {
@@ -405,19 +442,26 @@ class DeviceInfoCollector {
 		let networkInfo = CTTelephonyNetworkInfo()
 
 		if #available(iOS 12.0, *) {
-			if let carriers = networkInfo.serviceSubscriberCellularProviders {
-				for carrier in carriers.values {
-					if let carrierName = carrier.carrierName, !carrierName.isEmpty {
-						return carrierName
+			// Note: serviceSubscriberCellularProviders is deprecated in iOS 16.0+
+			// with no replacement due to privacy changes and eSIM prevalence
+			if #available(iOS 16.0, *) {
+				// Carrier information is no longer reliably available on iOS 16+
+				// Fall through to legacy API attempt
+			} else {
+				if let carriers = networkInfo.serviceSubscriberCellularProviders {
+					for carrier in carriers.values {
+						if let carrierName = carrier.carrierName, !carrierName.isEmpty {
+							return carrierName
+						}
 					}
 				}
 			}
-		}
-
-		if let carrier = networkInfo.subscriberCellularProvider,
-			let carrierName = carrier.carrierName, !carrierName.isEmpty
-		{
-			return carrierName
+		} else {
+			if let carrier = networkInfo.subscriberCellularProvider,
+				let carrierName = carrier.carrierName, !carrierName.isEmpty
+			{
+				return carrierName
+			}
 		}
 
 		return nil
@@ -438,7 +482,11 @@ class DeviceInfoCollector {
 	}
 
 	private func systemLanguage() -> String {
-		Locale.current.languageCode ?? "unknown"
+		if #available(iOS 16.0, *) {
+			return Locale.current.language.languageCode?.identifier ?? "unknown"
+		} else {
+			return Locale.current.languageCode ?? "unknown"
+		}
 	}
 
 	private func thermalState() -> String {

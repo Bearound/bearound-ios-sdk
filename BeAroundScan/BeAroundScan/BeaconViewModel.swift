@@ -21,23 +21,9 @@ class BeaconViewModel: NSObject, ObservableObject, BeAroundSDKDelegate {
     @Published var notificationStatus: String = "Verificando..."
 
     // SDK Configuration Settings
-    @Published var foregroundInterval: ForegroundIntervalOption = .seconds15
-    @Published var backgroundInterval: BackgroundIntervalOption = .seconds30
-    @Published var queueSize: QueueSizeOption = .medium
-    @Published var userPropertyInternalId: String = ""
-    @Published var userPropertyEmail: String = ""
-    @Published var userPropertyName: String = ""
-    @Published var userPropertyCustom: String = ""
-
-    private enum UserDefaultsKeys {
-        static let foregroundInterval = "beAroundForegroundInterval"
-        static let backgroundInterval = "beAroundBackgroundInterval"
-        static let queueSize = "beAroundQueueSize"
-        static let userPropertyInternalId = "beAroundUserInternalId"
-        static let userPropertyEmail = "beAroundUserEmail"
-        static let userPropertyName = "beAroundUserName"
-        static let userPropertyCustom = "beAroundUserCustom"
-    }
+    @Published var foregroundInterval: ForegroundScanInterval = .seconds15
+    @Published var backgroundInterval: BackgroundScanInterval = .seconds60
+    @Published var queueSize: MaxQueuedPayloads = .medium
     
     private let locationManager = CLLocationManager()
     private var wasInBeaconRegion = false
@@ -134,10 +120,10 @@ class BeaconViewModel: NSObject, ObservableObject, BeAroundSDKDelegate {
     @MainActor
     private func initializeSDK() {
         BeAroundSDK.shared.configure(
-            businessToken: "CLIENT_TOKEN",
-            foregroundScanInterval: foregroundInterval.sdkValue,
-            backgroundScanInterval: backgroundInterval.sdkValue,
-            maxQueuedPayloads: queueSize.sdkValue
+            businessToken: "BUSINESS_TOKEN",
+            foregroundScanInterval: foregroundInterval,
+            backgroundScanInterval: backgroundInterval,
+            maxQueuedPayloads: queueSize
         )
 
         BeAroundSDK.shared.delegate = self
@@ -169,10 +155,10 @@ class BeaconViewModel: NSObject, ObservableObject, BeAroundSDKDelegate {
         }
 
         BeAroundSDK.shared.configure(
-            businessToken: "CLIENT_TOKEN",
-            foregroundScanInterval: foregroundInterval.sdkValue,
-            backgroundScanInterval: backgroundInterval.sdkValue,
-            maxQueuedPayloads: queueSize.sdkValue
+            businessToken: "BUSINESS_TOKEN",
+            foregroundScanInterval: foregroundInterval,
+            backgroundScanInterval: backgroundInterval,
+            maxQueuedPayloads: queueSize
         )
         
         let properties = UserProperties(

@@ -5,11 +5,73 @@ All notable changes to BearoundSDK for iOS will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.2.2] - 2026-01-22
+
+### Changed
+
+- **5s Interval Continuous Mode**: When `foregroundScanInterval` is set to `.seconds5`, the SDK now operates in continuous mode (scanDuration = 5s, pauseDuration = 0s) for real-time beacon detection without pauses.
+- **Beacon Persistence**: Collected beacons are no longer cleared after sync. This allows continuous tracking of beacon presence and prevents gaps in detection during rapid scans.
+
+### Technical Details
+
+- Modified `SDKConfiguration.scanDuration(for:)` to return full interval when interval == 5s
+- Removed `collectedBeacons.removeAll()` from sync operations to maintain beacon state
+
+---
+
+## [2.2.1] - 2026-01-20
+
+### 🔧 Code Quality Improvements
+
+This patch release fixes compiler warnings and improves code quality.
+
+### 🐛 Fixed
+
+- **APIClient.swift**: Changed `var` to `let` for immutable variables (`hardware`, `screen`, `memory`, `appState`)
+- **DeviceInfoCollector.swift**: Fixed `NSLock` usage in async contexts (Swift 6 compatibility)
+- **DeviceInfoCollector.swift**: Updated deprecated `subscriberCellularProvider` API
+
+### 📚 Documentation
+
+- Updated README.md to reflect v2.2.0 changes
+- Fixed BackgroundScanInterval enum documentation (added `.seconds15`, `.seconds30`, `.seconds45`)
+- Removed references to deprecated `enableBluetoothScanning` and `enablePeriodicScanning` parameters
+- Updated SDK version references from 2.1.0 to 2.2.0 in examples
+
+---
+
 ## [2.2.0] - 2026-01-17
 
 ### 🚀 Major Background Improvements
 
 This release adds comprehensive background execution support with multiple fallback mechanisms to ensure beacon data is synced even when the app is completely closed.
+
+### ⚠️ Breaking Changes
+
+- **Removed `enableBluetoothScanning` parameter**: Bluetooth scanning is now always enabled when available
+- **Removed `enablePeriodicScanning` parameter**: Periodic scanning behavior is now automatic based on app state
+
+**Before (v2.1.x):**
+```swift
+BeAroundSDK.shared.configure(
+    businessToken: "token",
+    foregroundScanInterval: .seconds30,
+    backgroundScanInterval: .seconds90,
+    maxQueuedPayloads: .large,
+    enableBluetoothScanning: true,    // ❌ REMOVED
+    enablePeriodicScanning: true      // ❌ REMOVED
+)
+```
+
+**After (v2.2.0):**
+```swift
+BeAroundSDK.shared.configure(
+    businessToken: "token",
+    foregroundScanInterval: .seconds30,
+    backgroundScanInterval: .seconds90,
+    maxQueuedPayloads: .large
+)
+```
 
 ### ✨ Added
 

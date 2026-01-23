@@ -19,8 +19,8 @@ public struct SDKConfiguration {
 
     public init(
         businessToken: String,
-        foregroundScanInterval: ForegroundScanInterval = ForegroundScanInterval(seconds: ForegroundScanInterval.default),
-        backgroundScanInterval: BackgroundScanInterval = BackgroundScanInterval(seconds: BackgroundScanInterval.default),
+        foregroundScanInterval: ForegroundScanInterval = .seconds15,
+        backgroundScanInterval: BackgroundScanInterval = .seconds60,
         maxQueuedPayloads: MaxQueuedPayloads = .medium
     ) {
         self.businessToken = businessToken
@@ -33,7 +33,14 @@ public struct SDKConfiguration {
 
     /// Calculates scan duration for a given interval
     /// Max: 20s, Min: 5s, Calculated as interval / 3
+    ///
+    /// Special case: For 5s interval, returns full 5s (continuous mode)
     func scanDuration(for interval: TimeInterval) -> TimeInterval {
+        // Special case: 5s interval = continuous mode (no pause)
+        if interval == 5 {
+            return interval
+        }
+        
         let calculatedDuration = interval / 3
         return max(5, min(calculatedDuration, 20))
     }
