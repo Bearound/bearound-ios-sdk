@@ -1,5 +1,4 @@
 import BearoundSDK
-import CoreLocation
 import SwiftUI
 
 struct ContentView: View {
@@ -295,8 +294,8 @@ struct BeaconRow: View {
         case .immediate: "Imediato"
         case .near: "Perto"
         case .far: "Longe"
+        case .bt: "Bluetooth"
         case .unknown: "Desconhecido"
-        @unknown default: "Desconhecido"
         }
     }
 
@@ -305,8 +304,8 @@ struct BeaconRow: View {
         case .immediate: .green
         case .near: .orange
         case .far: .red
+        case .bt: .blue
         case .unknown: .gray
-        @unknown default: .gray
         }
     }
 }

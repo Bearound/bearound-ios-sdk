@@ -19,7 +19,7 @@ struct SettingsView: View {
                     HStack {
                         Text("Versão do SDK")
                         Spacer()
-                        Text("2.2.1")
+                        Text(BeAroundSDK.version)
                             .foregroundColor(.secondary)
                             .font(.system(.body, design: .monospaced))
                     }

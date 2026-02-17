@@ -298,7 +298,7 @@ extension BeaconViewModel {
         switch option {
         case .proximity:
             return beacons.sorted { beacon1, beacon2 in
-                let proximityOrder: [CLProximity] = [.immediate, .near, .far, .unknown]
+                let proximityOrder: [BeaconProximity] = [.immediate, .near, .far, .bt, .unknown]
                 if let index1 = proximityOrder.firstIndex(of: beacon1.proximity),
                    let index2 = proximityOrder.firstIndex(of: beacon2.proximity),
                    index1 != index2 {
