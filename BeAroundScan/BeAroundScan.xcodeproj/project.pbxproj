@@ -293,7 +293,7 @@
 				CODE_SIGN_ENTITLEMENTS = BeAroundScan/BeAroundScan.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
-				DEVELOPMENT_TEAM = 2F225FWN5Q;
+				DEVELOPMENT_TEAM = 959FS3SWPA;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = "App-Info.plist";
@@ -332,7 +332,7 @@
 				CODE_SIGN_ENTITLEMENTS = BeAroundScan/BeAroundScan.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
-				DEVELOPMENT_TEAM = 2F225FWN5Q;
+				DEVELOPMENT_TEAM = 959FS3SWPA;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = "App-Info.plist";
@@ -387,9 +387,6 @@
 			defaultConfigurationName = Release;
 		};
 /* End XCConfigurationList section */
-
-/* Begin XCLocalSwiftPackageReference section */
-/* End XCLocalSwiftPackageReference section */
 	};
 	rootObject = D05732282EFF295000EEAE6E /* Project object */;
 }

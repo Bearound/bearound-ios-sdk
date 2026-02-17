@@ -5,6 +5,16 @@ import CoreLocation
 import SwiftUI
 import UserNotifications
 
+private enum UserDefaultsKeys {
+    static let foregroundInterval = "foregroundInterval"
+    static let backgroundInterval = "backgroundInterval"
+    static let queueSize = "queueSize"
+    static let userPropertyInternalId = "userPropertyInternalId"
+    static let userPropertyEmail = "userPropertyEmail"
+    static let userPropertyName = "userPropertyName"
+    static let userPropertyCustom = "userPropertyCustom"
+}
+
 enum BeaconSortOption: String, CaseIterable {
     case proximity = "Proximidade"
     case name = "ID"
@@ -24,7 +34,13 @@ class BeaconViewModel: NSObject, ObservableObject, BeAroundSDKDelegate {
     @Published var foregroundInterval: ForegroundScanInterval = .seconds15
     @Published var backgroundInterval: BackgroundScanInterval = .seconds60
     @Published var queueSize: MaxQueuedPayloads = .medium
-    
+
+    // User Properties
+    @Published var userPropertyInternalId: String = ""
+    @Published var userPropertyEmail: String = ""
+    @Published var userPropertyName: String = ""
+    @Published var userPropertyCustom: String = ""
+
     private let locationManager = CLLocationManager()
     private var wasInBeaconRegion = false
     private var scanStartTime: Date?
@@ -69,19 +85,19 @@ class BeaconViewModel: NSObject, ObservableObject, BeAroundSDKDelegate {
     private func loadSavedSettings() {
         let defaults = UserDefaults.standard
 
-        if let foregroundIntervalRaw = defaults.string(forKey: UserDefaultsKeys.foregroundInterval),
-           let foregroundInterval = ForegroundIntervalOption(rawValue: foregroundIntervalRaw) {
-            self.foregroundInterval = foregroundInterval
+        if let foregroundRaw = defaults.object(forKey: UserDefaultsKeys.foregroundInterval) as? Int,
+           let interval = ForegroundScanInterval(rawValue: foregroundRaw) {
+            self.foregroundInterval = interval
         }
 
-        if let backgroundIntervalRaw = defaults.string(forKey: UserDefaultsKeys.backgroundInterval),
-           let backgroundInterval = BackgroundIntervalOption(rawValue: backgroundIntervalRaw) {
-            self.backgroundInterval = backgroundInterval
+        if let backgroundRaw = defaults.object(forKey: UserDefaultsKeys.backgroundInterval) as? Int,
+           let interval = BackgroundScanInterval(rawValue: backgroundRaw) {
+            self.backgroundInterval = interval
         }
 
-        if let queueSizeRaw = defaults.string(forKey: UserDefaultsKeys.queueSize),
-           let queueSize = QueueSizeOption(rawValue: queueSizeRaw) {
-            self.queueSize = queueSize
+        if let queueRaw = defaults.object(forKey: UserDefaultsKeys.queueSize) as? Int,
+           let queue = MaxQueuedPayloads(rawValue: queueRaw) {
+            self.queueSize = queue
         }
 
         self.userPropertyInternalId = defaults.string(forKey: UserDefaultsKeys.userPropertyInternalId) ?? ""
@@ -101,8 +117,6 @@ class BeaconViewModel: NSObject, ObservableObject, BeAroundSDKDelegate {
         defaults.set(userPropertyEmail, forKey: UserDefaultsKeys.userPropertyEmail)
         defaults.set(userPropertyName, forKey: UserDefaultsKeys.userPropertyName)
         defaults.set(userPropertyCustom, forKey: UserDefaultsKeys.userPropertyCustom)
-
-        defaults.synchronize()
     }
 
     private func updatePermissionStatus() {
