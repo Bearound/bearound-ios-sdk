@@ -326,7 +326,7 @@ struct Beacon {
     let major: Int              // Major value
     let minor: Int              // Minor value
     let rssi: Int               // Signal strength (dBm)
-    let proximity: CLProximity  // .immediate, .near, .far, .unknown
+    let proximity: BeaconProximity  // .immediate, .near, .far, .bt, .unknown
     let accuracy: Double        // Estimated distance in meters
     let timestamp: Date         // Detection timestamp
     let metadata: BeaconMetadata?  // Optional BLE metadata

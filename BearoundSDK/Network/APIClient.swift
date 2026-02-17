@@ -49,8 +49,8 @@ class APIClient {
                 case .immediate: "immediate"
                 case .near: "near"
                 case .far: "far"
+                case .bt: "bt"
                 case .unknown: "unknown"
-                @unknown default: "unknown"
                 }
 
             var beaconData: [String: Any] = [

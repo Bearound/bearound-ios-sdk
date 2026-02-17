@@ -6,6 +6,7 @@
 //  Created by Bearound on 29/12/25.
 //
 
+import CoreBluetooth
 import CoreLocation
 import Foundation
 import UIKit
@@ -25,7 +26,7 @@ public class BeAroundSDK {
     public weak var delegate: BeAroundSDKDelegate?
 
     public var isScanning: Bool {
-        beaconManager.isScanning
+        isBluetoothOnlyMode ? bluetoothManager.isScanning : beaconManager.isScanning
     }
 
     public var currentSyncInterval: TimeInterval? {
@@ -67,6 +68,7 @@ public class BeAroundSDK {
     private var backgroundTaskId: UIBackgroundTaskIdentifier = .invalid
     private var isInBackground = false
     private var wasLaunchedInBackground = false
+    private var isBluetoothOnlyMode = false
 
     // MARK: - Initialization
 
@@ -218,6 +220,37 @@ public class BeAroundSDK {
         }
 
         bluetoothManager.delegate = self
+
+        bluetoothManager.onBeaconsUpdated = { [weak self] trackedBeacons in
+            guard let self, self.isBluetoothOnlyMode else { return }
+
+            beaconQueue.async {
+                // Build current set of tracked beacon keys
+                let trackedKeys = Set(trackedBeacons.map { "\($0.major).\($0.minor)" })
+
+                // Remove beacons that are no longer tracked (expired by grace period)
+                for key in self.collectedBeacons.keys where !trackedKeys.contains(key) {
+                    self.collectedBeacons.removeValue(forKey: key)
+                }
+            }
+
+            let beacons = trackedBeacons.map { tracked in
+                Beacon(
+                    uuid: UUID(uuidString: "E25B8D3C-947A-452F-A13F-589CB706D2E5")!,
+                    major: tracked.major,
+                    minor: tracked.minor,
+                    rssi: tracked.rssi,
+                    proximity: .bt,
+                    accuracy: -1,
+                    metadata: tracked.metadata,
+                    txPower: tracked.txPower
+                )
+            }
+
+            DispatchQueue.main.async {
+                self.delegate?.didUpdateBeacons(beacons)
+            }
+        }
     }
 
     private func setupAppStateObservers() {
@@ -239,7 +272,7 @@ public class BeAroundSDK {
     @objc private func appDidEnterBackground() {
         isInBackground = true
 
-        if isScanning {
+        if isScanning || isBluetoothOnlyMode {
             startSyncTimer()
         }
     }
@@ -247,7 +280,7 @@ public class BeAroundSDK {
     @objc private func appWillEnterForeground() {
         isInBackground = false
 
-        if isScanning {
+        if isScanning || isBluetoothOnlyMode {
             startSyncTimer()
         }
     }
@@ -306,10 +339,46 @@ public class BeAroundSDK {
         let actualAppState = UIApplication.shared.applicationState
         isInBackground = (actualAppState == .background)
 
-        beaconManager.startScanning()
-        startSyncTimer()
+        // Check if Location is authorized
+        let locationStatus = Self.authorizationStatus()
+        let locationAuthorized = (locationStatus == .authorizedWhenInUse || locationStatus == .authorizedAlways)
 
-        bluetoothManager.autoStartIfAuthorized()
+        if locationAuthorized {
+            // Normal flow: Location + Bluetooth for metadata
+            isBluetoothOnlyMode = false
+            beaconManager.startScanning()
+            startSyncTimer()
+            bluetoothManager.autoStartIfAuthorized()
+
+            // Start significant location monitoring for additional wake triggers
+            beaconManager.startSignificantLocationMonitoring()
+        } else {
+            // Fallback: Bluetooth-only mode
+            isBluetoothOnlyMode = true
+
+            // Check if Bluetooth is available
+            if #available(iOS 13.1, *) {
+                let btAuth = CBCentralManager.authorization
+                if btAuth == .denied || btAuth == .restricted {
+                    let error = NSError(
+                        domain: "BeAroundSDK",
+                        code: 7,
+                        userInfo: [
+                            NSLocalizedDescriptionKey:
+                                "Both Location and Bluetooth permissions are denied. Cannot scan for beacons."
+                        ]
+                    )
+                    delegate?.didFailWithError(error)
+                    return
+                }
+            }
+
+            bluetoothManager.autoStartIfAuthorized()
+            startSyncTimer()
+            delegate?.didChangeScanning(isScanning: true)
+
+            NSLog("[BeAroundSDK] Started in BLUETOOTH-ONLY mode (Location not authorized)")
+        }
 
         // Persist scanning state for terminated app relaunch
         SDKConfigStorage.saveIsScanning(true)
@@ -318,17 +387,20 @@ public class BeAroundSDK {
         if #available(iOS 13.0, *) {
             BackgroundTaskManager.shared.scheduleSync()
         }
-
-        // Start significant location monitoring for additional wake triggers
-        beaconManager.startSignificantLocationMonitoring()
     }
 
     public func stopScanning() {
-        beaconManager.stopScanning()
-        beaconManager.stopSignificantLocationMonitoring()
-        bluetoothManager.stopScanning()
-        stopSyncTimer()
+        if isBluetoothOnlyMode {
+            bluetoothManager.stopScanning()
+            isBluetoothOnlyMode = false
+            delegate?.didChangeScanning(isScanning: false)
+        } else {
+            beaconManager.stopScanning()
+            beaconManager.stopSignificantLocationMonitoring()
+            bluetoothManager.stopScanning()
+        }
 
+        stopSyncTimer()
         syncBeaconsImmediately()
 
         SDKConfigStorage.saveIsScanning(false)
@@ -366,6 +438,16 @@ public class BeAroundSDK {
 
         let timer = DispatchSource.makeTimerSource(queue: DispatchQueue.global(qos: .utility))
         syncTimer = timer
+
+        // Bluetooth-only mode: continuous BLE scanning, just sync periodically
+        if isBluetoothOnlyMode {
+            timer.schedule(deadline: .now() + syncInterval, repeating: syncInterval)
+            timer.setEventHandler { [weak self] in
+                self?.syncBeacons()
+            }
+            timer.resume()
+            return
+        }
 
         if !isInBackground {
             if pauseDuration <= 0 {
@@ -696,18 +778,38 @@ extension BeAroundSDK: BluetoothManagerDelegate {
         uuid _: UUID,
         major: Int,
         minor: Int,
-        rssi _: Int,
+        rssi: Int,
         txPower: Int,
         metadata: BeaconMetadata?,
         isConnectable: Bool
     ) {
+        let key = "\(major).\(minor)"
+
         if let metadata {
-            let key = "\(major).\(minor)"
             metadataCache[key] = metadata
+        }
+
+        if isBluetoothOnlyMode {
+            let beacon = Beacon(
+                uuid: UUID(uuidString: "E25B8D3C-947A-452F-A13F-589CB706D2E5")!,
+                major: major,
+                minor: minor,
+                rssi: rssi,
+                proximity: .bt,
+                accuracy: -1,
+                metadata: metadata,
+                txPower: txPower
+            )
+
+            beaconQueue.async {
+                self.collectedBeacons[key] = beacon
+            }
         }
     }
 
     func didUpdateBluetoothState(isPoweredOn: Bool) {
-        // Bluetooth state handled silently
+        if isBluetoothOnlyMode && !isPoweredOn {
+            NSLog("[BeAroundSDK] Bluetooth powered off in bluetooth-only mode")
+        }
     }
 }

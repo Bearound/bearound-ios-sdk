@@ -21,6 +21,16 @@ protocol BluetoothManagerDelegate: AnyObject {
     func didUpdateBluetoothState(isPoweredOn: Bool)
 }
 
+struct TrackedBLEBeacon {
+    let major: Int
+    let minor: Int
+    var rssi: Int
+    var metadata: BeaconMetadata?
+    var txPower: Int
+    var lastSeen: Date
+    var isConnectable: Bool
+}
+
 class BluetoothManager: NSObject {
     weak var delegate: BluetoothManagerDelegate?
 
@@ -29,7 +39,7 @@ class BluetoothManager: NSObject {
     }()
 
     private let targetUUID = UUID(uuidString: "E25B8D3C-947A-452F-A13F-589CB706D2E5")!
-    private var isScanning = false
+    private(set) var isScanning = false
 
     private var lastSeenBeacons: [String: Date] = [:]
     private var lastSeenBeaconNames: [String: Date] = [:]
@@ -39,6 +49,23 @@ class BluetoothManager: NSObject {
 
     /// track if we should auto start scanning when bluetooth is on
     private var pendingAutoStart = false
+
+    // MARK: - Beacon Tracking
+
+    /// Grace period before removing a beacon (seconds)
+    private let beaconGracePeriod: TimeInterval = 10.0
+
+    /// Cleanup interval for expired beacons
+    private let cleanupInterval: TimeInterval = 5.0
+
+    /// Tracked beacons with last-seen timestamps
+    private(set) var trackedBeacons: [String: TrackedBLEBeacon] = [:]
+
+    /// Timer to periodically clean up expired beacons
+    private var cleanupTimer: DispatchSourceTimer?
+
+    /// Called when tracked beacons list changes (add/remove/update)
+    var onBeaconsUpdated: (([TrackedBLEBeacon]) -> Void)?
 
     var isPoweredOn: Bool {
         centralManager.state == .poweredOn
@@ -66,6 +93,7 @@ class BluetoothManager: NSObject {
             options: [CBCentralManagerScanOptionAllowDuplicatesKey: true]
         )
 
+        startCleanupTimer()
         print("[BluetoothManager] Started BLE scanning")
     }
 
@@ -75,9 +103,11 @@ class BluetoothManager: NSObject {
         isScanning = false
         pendingAutoStart = false
         centralManager.stopScan()
+        stopCleanupTimer()
         lastSeenBeacons.removeAll()
         lastSeenBeaconNames.removeAll()
         peripheralNameCache.removeAll()
+        trackedBeacons.removeAll()
 
         print("[BluetoothManager] Stopped BLE scanning")
     }
@@ -119,6 +149,65 @@ class BluetoothManager: NSObject {
                 pendingAutoStart = true
                 print("[BluetoothManager] Auto-start pending - waiting for Bluetooth to power on (iOS 12)")
             }
+        }
+    }
+
+    // MARK: - Beacon Tracking
+
+    private func trackBeacon(major: Int, minor: Int, rssi: Int, txPower: Int, metadata: BeaconMetadata?, isConnectable: Bool) {
+        let key = "\(major).\(minor)"
+        var tracked = trackedBeacons[key] ?? TrackedBLEBeacon(
+            major: major,
+            minor: minor,
+            rssi: rssi,
+            metadata: metadata,
+            txPower: txPower,
+            lastSeen: Date(),
+            isConnectable: isConnectable
+        )
+
+        tracked.rssi = rssi
+        tracked.lastSeen = Date()
+        tracked.isConnectable = isConnectable
+        if let metadata {
+            tracked.metadata = metadata
+        }
+        tracked.txPower = txPower
+
+        trackedBeacons[key] = tracked
+        onBeaconsUpdated?(Array(trackedBeacons.values))
+    }
+
+    private func startCleanupTimer() {
+        stopCleanupTimer()
+
+        let timer = DispatchSource.makeTimerSource(queue: DispatchQueue.global(qos: .utility))
+        timer.schedule(deadline: .now() + cleanupInterval, repeating: cleanupInterval)
+        timer.setEventHandler { [weak self] in
+            self?.cleanupExpiredBeacons()
+        }
+        cleanupTimer = timer
+        timer.resume()
+    }
+
+    private func stopCleanupTimer() {
+        cleanupTimer?.cancel()
+        cleanupTimer = nil
+    }
+
+    private func cleanupExpiredBeacons() {
+        let now = Date()
+        var didRemove = false
+
+        for (key, beacon) in trackedBeacons {
+            if now.timeIntervalSince(beacon.lastSeen) > beaconGracePeriod {
+                trackedBeacons.removeValue(forKey: key)
+                didRemove = true
+            }
+        }
+
+        if didRemove {
+            onBeaconsUpdated?(Array(trackedBeacons.values))
         }
     }
 
@@ -229,16 +318,22 @@ extension BluetoothManager: CBCentralManagerDelegate {
         // major.minor from the name itself and cache the metadata
         if looksLikeBeacon, let name = deviceName {
             if let (major, minor, metadata) = parseBeaconNameWithMetadata(from: name, rssi: RSSI.intValue) {
-                // Only notify if this is a new discovery (deduplication)
+                let connectable = advertisementData[CBAdvertisementDataIsConnectable] as? Bool ?? false
+                let txPower = metadata.txPower ?? -59
+
+                // Always track for grace period management
+                trackBeacon(major: major, minor: minor, rssi: RSSI.intValue, txPower: txPower, metadata: metadata, isConnectable: connectable)
+
+                // Only notify delegate if this is a new discovery (deduplication)
                 if shouldProcessBeaconName(major: major, minor: minor) {
                     delegate?.didDiscoverBeacon(
                         uuid: targetUUID,
                         major: major,
                         minor: minor,
                         rssi: RSSI.intValue,
-                        txPower: metadata.txPower ?? -59,
+                        txPower: txPower,
                         metadata: metadata,
-                        isConnectable: advertisementData[CBAdvertisementDataIsConnectable] as? Bool ?? false
+                        isConnectable: connectable
                     )
                 }
             }

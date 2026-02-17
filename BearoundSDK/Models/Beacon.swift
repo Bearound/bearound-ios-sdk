@@ -8,6 +8,23 @@
 import CoreLocation
 import Foundation
 
+public enum BeaconProximity: Int, Codable {
+    case unknown = 0
+    case immediate = 1
+    case near = 2
+    case far = 3
+    case bt = 4  // Detected via Bluetooth-only (no CoreLocation)
+
+    init(fromCL clProximity: CLProximity) {
+        switch clProximity {
+        case .immediate: self = .immediate
+        case .near: self = .near
+        case .far: self = .far
+        default: self = .unknown
+        }
+    }
+}
+
 public struct Beacon {
     public let uuid: UUID
 
@@ -17,7 +34,7 @@ public struct Beacon {
 
     public let rssi: Int
 
-    public let proximity: CLProximity
+    public let proximity: BeaconProximity
 
     public let accuracy: Double
 
@@ -32,7 +49,7 @@ public struct Beacon {
         major: Int,
         minor: Int,
         rssi: Int,
-        proximity: CLProximity,
+        proximity: BeaconProximity,
         accuracy: Double,
         timestamp: Date = Date(),
         metadata: BeaconMetadata? = nil,

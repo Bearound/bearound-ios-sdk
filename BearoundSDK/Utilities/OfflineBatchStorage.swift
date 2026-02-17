@@ -6,7 +6,6 @@
 //  Persistent storage for failed beacon batches that survives app restarts
 //
 
-import CoreLocation
 import Foundation
 
 /// Manages persistent storage of failed beacon batches
@@ -38,7 +37,7 @@ class OfflineBatchStorage {
         let major: Int
         let minor: Int
         let rssi: Int
-        let proximity: Int  // CLProximity raw value
+        let proximity: Int  // BeaconProximity raw value
         let accuracy: Double
         let timestamp: Date
         let metadata: StoredBeaconMetadata?
@@ -63,7 +62,7 @@ class OfflineBatchStorage {
 
         func toBeacon() -> Beacon {
             let beaconUUID = UUID(uuidString: uuid) ?? UUID()
-            let clProximity = CLProximity(rawValue: proximity) ?? .unknown
+            let beaconProximity = BeaconProximity(rawValue: proximity) ?? .unknown
 
             var beaconMetadata: BeaconMetadata?
             if let meta = metadata {
@@ -75,7 +74,7 @@ class OfflineBatchStorage {
                 major: major,
                 minor: minor,
                 rssi: rssi,
-                proximity: clProximity,
+                proximity: beaconProximity,
                 accuracy: accuracy,
                 timestamp: timestamp,
                 metadata: beaconMetadata,

@@ -475,7 +475,7 @@ class BeaconManager: NSObject {
                     major: major,
                     minor: minor,
                     rssi: averagedRSSI,
-                    proximity: clBeacon.proximity,
+                    proximity: BeaconProximity(fromCL: clBeacon.proximity),
                     accuracy: clBeacon.accuracy
                 )
 
