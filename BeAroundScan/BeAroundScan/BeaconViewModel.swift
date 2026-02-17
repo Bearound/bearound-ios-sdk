@@ -111,7 +111,7 @@ class BeaconViewModel: NSObject, ObservableObject, BeAroundSDKDelegate {
         permissionStatus = switch locationAuth {
         case .authorizedAlways: "Sempre (Background habilitado)"
         case .authorizedWhenInUse: "Quando em uso (Background não funciona)"
-        case .denied, .restricted: "Negada (SDK não funcionará)"
+        case .denied, .restricted: "Negada"
         case .notDetermined: "Aguardando resposta..."
         @unknown default: "Status desconhecido"
         }
