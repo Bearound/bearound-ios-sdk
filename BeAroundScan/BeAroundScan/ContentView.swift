@@ -122,6 +122,55 @@ struct ContentView: View {
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(.horizontal)
+
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("Informações do Sync")
+                            .font(.headline)
+
+                        VStack(alignment: .leading, spacing: 4) {
+                            HStack {
+                                Text("Último sync:")
+                                    .font(.caption)
+                                    .foregroundColor(.secondary)
+                                Spacer()
+                                if let syncTime = viewModel.lastSyncTime {
+                                    Text(syncTime.formatted(date: .omitted, time: .standard))
+                                        .font(.caption)
+                                        .fontWeight(.medium)
+                                } else {
+                                    Text("--")
+                                        .font(.caption)
+                                        .fontWeight(.medium)
+                                }
+                            }
+
+                            HStack {
+                                Text("Beacons sincronizados:")
+                                    .font(.caption)
+                                    .foregroundColor(.secondary)
+                                Spacer()
+                                Text("\(viewModel.lastSyncBeaconCount)")
+                                    .font(.caption)
+                                    .fontWeight(.medium)
+                            }
+
+                            HStack {
+                                Text("Resposta do ingest:")
+                                    .font(.caption)
+                                    .foregroundColor(.secondary)
+                                Spacer()
+                                Text(viewModel.lastSyncResult)
+                                    .font(.caption)
+                                    .fontWeight(.medium)
+                                    .foregroundColor(syncResultColor)
+                            }
+                        }
+                        .padding(12)
+                        .background(Color.gray.opacity(0.1))
+                        .cornerRadius(8)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal)
                 }
 
                 Button(action: {
@@ -227,6 +276,13 @@ struct ContentView: View {
         if status.contains("Desligado") || status.contains("Não autorizado") { return .red }
         if status.contains("Não suportado") { return .red }
         return .orange
+    }
+
+    private var syncResultColor: Color {
+        let result = viewModel.lastSyncResult
+        if result.contains("Sucesso") { return .green }
+        if result.contains("Falha") { return .red }
+        return .secondary
     }
 
     private var notificationPermissionColor: Color {

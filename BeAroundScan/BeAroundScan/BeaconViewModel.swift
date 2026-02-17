@@ -35,6 +35,11 @@ class BeaconViewModel: NSObject, ObservableObject, BeAroundSDKDelegate {
     @Published var backgroundInterval: BackgroundScanInterval = .seconds60
     @Published var queueSize: MaxQueuedPayloads = .medium
 
+    // Sync Info
+    @Published var lastSyncTime: Date?
+    @Published var lastSyncBeaconCount: Int = 0
+    @Published var lastSyncResult: String = "Aguardando..."
+
     // User Properties
     @Published var userPropertyInternalId: String = ""
     @Published var userPropertyEmail: String = ""
@@ -366,16 +371,23 @@ extension BeaconViewModel {
     func willStartSync(beaconCount: Int) {
         DispatchQueue.main.async {
             NSLog("[BeaconViewModel] Sync starting with %d beacons", beaconCount)
+            self.lastSyncBeaconCount = beaconCount
+            self.lastSyncResult = "Enviando..."
             self.notificationManager.notifyAPISyncStarted(beaconCount: beaconCount)
         }
     }
 
     func didCompleteSync(beaconCount: Int, success: Bool, error: Error?) {
         DispatchQueue.main.async {
+            self.lastSyncTime = Date()
+            self.lastSyncBeaconCount = beaconCount
             if success {
                 NSLog("[BeaconViewModel] Sync completed successfully: %d beacons", beaconCount)
+                self.lastSyncResult = "Sucesso"
             } else {
-                NSLog("[BeaconViewModel] Sync failed: %@", error?.localizedDescription ?? "unknown error")
+                let errorMsg = error?.localizedDescription ?? "Erro desconhecido"
+                NSLog("[BeaconViewModel] Sync failed: %@", errorMsg)
+                self.lastSyncResult = "Falha: \(errorMsg)"
             }
             self.notificationManager.notifyAPISyncCompleted(beaconCount: beaconCount, success: success)
         }
