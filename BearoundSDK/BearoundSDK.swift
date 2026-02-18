@@ -416,9 +416,10 @@ public class BeAroundSDK {
         // Persist scanning state for terminated app relaunch
         SDKConfigStorage.saveIsScanning(true)
 
-        // Schedule background tasks
+        // Schedule background tasks (BGTaskScheduler)
         if #available(iOS 13.0, *) {
             BackgroundTaskManager.shared.scheduleSync()
+            BackgroundTaskManager.shared.scheduleProcessingTask()
         }
     }
 
@@ -823,6 +824,29 @@ public class BeAroundSDK {
         }
     }
 
+    /// Called by BGTaskScheduler — refreshes BLE scan, collects Service Data, then syncs
+    public func performBackgroundBLERefreshAndSync(bleScanDuration: TimeInterval = 3.0, completion: @escaping (Bool) -> Void) {
+        NSLog("[BeAroundSDK] BGTask: refreshing BLE scan for Service Data")
+
+        // Ensure BLE is scanning
+        if !bluetoothManager.isScanning {
+            bluetoothManager.autoStartIfAuthorized()
+            NSLog("[BeAroundSDK] BGTask: BLE scan started")
+        } else {
+            bluetoothManager.refreshScan()
+            NSLog("[BeAroundSDK] BGTask: BLE scan refreshed")
+        }
+
+        // Wait for BLE to collect fresh Service Data from nearby beacons
+        DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + bleScanDuration) { [weak self] in
+            guard let self else {
+                completion(false)
+                return
+            }
+            self.performBackgroundSync(completion: completion)
+        }
+    }
+
     /// Called by app's performFetchWithCompletionHandler
     public func performBackgroundFetch(completion: @escaping (Bool) -> Void) {
         NSLog("[BeAroundSDK] Background fetch triggered")
@@ -841,7 +865,7 @@ public class BeAroundSDK {
             }
         }
 
-        performBackgroundSync(completion: completion)
+        performBackgroundBLERefreshAndSync(bleScanDuration: 3.0, completion: completion)
     }
 
     // MARK: - Private Helpers

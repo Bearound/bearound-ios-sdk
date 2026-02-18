@@ -114,42 +114,44 @@ public class BackgroundTaskManager {
         NSLog("[BeAroundSDK] Cancelled pending background tasks")
     }
 
-    /// Handles the sync task when executed by the system (short execution)
+    /// Handles the sync task when executed by the system (short execution ~30s)
+    /// Refreshes BLE scan for 3s to collect Service Data, then syncs
     private func handleSyncTask(_ task: BGAppRefreshTask) {
-        NSLog("[BeAroundSDK] Background sync task started")
+        NSLog("[BeAroundSDK] BGAppRefreshTask started — refreshing BLE + sync")
 
         // Schedule the next sync before processing
         scheduleSync()
 
         // Set expiration handler
         task.expirationHandler = {
-            NSLog("[BeAroundSDK] Background sync task expired")
+            NSLog("[BeAroundSDK] BGAppRefreshTask expired")
             task.setTaskCompleted(success: false)
         }
 
-        // Perform the sync
-        BeAroundSDK.shared.performBackgroundSync { success in
-            NSLog("[BeAroundSDK] Background sync task completed (success=%d)", success ? 1 : 0)
+        // Refresh BLE scan (3s collection) then sync
+        BeAroundSDK.shared.performBackgroundBLERefreshAndSync(bleScanDuration: 3.0) { success in
+            NSLog("[BeAroundSDK] BGAppRefreshTask completed (success=%d)", success ? 1 : 0)
             task.setTaskCompleted(success: success)
         }
     }
 
-    /// Handles the processing task when executed by the system (longer execution)
+    /// Handles the processing task when executed by the system (longer execution, minutes)
+    /// Refreshes BLE scan for 5s to collect Service Data, then syncs
     private func handleProcessingTask(_ task: BGProcessingTask) {
-        NSLog("[BeAroundSDK] Background processing task started")
+        NSLog("[BeAroundSDK] BGProcessingTask started — refreshing BLE + sync")
 
         // Schedule the next processing task before starting
         scheduleProcessingTask()
 
         // Set expiration handler
         task.expirationHandler = {
-            NSLog("[BeAroundSDK] Background processing task expired")
+            NSLog("[BeAroundSDK] BGProcessingTask expired")
             task.setTaskCompleted(success: false)
         }
 
-        // Perform the sync with extended time available
-        BeAroundSDK.shared.performBackgroundSync { success in
-            NSLog("[BeAroundSDK] Background processing task completed (success=%d)", success ? 1 : 0)
+        // Refresh BLE scan (5s collection — more time available) then sync
+        BeAroundSDK.shared.performBackgroundBLERefreshAndSync(bleScanDuration: 5.0) { success in
+            NSLog("[BeAroundSDK] BGProcessingTask completed (success=%d)", success ? 1 : 0)
             task.setTaskCompleted(success: success)
         }
     }
