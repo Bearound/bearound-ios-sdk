@@ -15,6 +15,11 @@ class AppDelegate: NSObject, UIApplicationDelegate {
             NotificationManager.shared.notifyAppRelaunchedInBackground()
         }
 
+        if launchOptions?[.bluetoothCentrals] != nil {
+            NSLog("[BeAroundScan] App launched due to BLUETOOTH event (state restoration)")
+            NotificationManager.shared.notifyAppRelaunchedInBackground()
+        }
+
         UNUserNotificationCenter.current().requestAuthorization(
             options: [.alert, .sound, .badge]
         ) { granted, error in

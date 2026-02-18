@@ -39,8 +39,20 @@ struct TrackedBLEBeacon {
 class BluetoothManager: NSObject {
     weak var delegate: BluetoothManagerDelegate?
 
+    /// Dedicated background queue for CBCentralManager — ensures callbacks are delivered
+    /// even when the app is suspended (with bluetooth-central background mode)
+    private let bleQueue = DispatchQueue(label: "com.bearound.sdk.bleQueue", qos: .utility)
+
+    private static let restoreIdentifier = "com.bearound.sdk.centralManager"
+
     private lazy var centralManager: CBCentralManager = {
-        CBCentralManager(delegate: self, queue: nil)
+        CBCentralManager(
+            delegate: self,
+            queue: bleQueue,
+            options: [
+                CBCentralManagerOptionRestoreIdentifierKey: BluetoothManager.restoreIdentifier
+            ]
+        )
     }()
 
     private let targetUUID = UUID(uuidString: "E25B8D3C-947A-452F-A13F-589CB706D2E5")!
@@ -251,7 +263,7 @@ class BluetoothManager: NSObject {
     private func startCleanupTimer() {
         stopCleanupTimer()
 
-        let timer = DispatchSource.makeTimerSource(queue: DispatchQueue.global(qos: .utility))
+        let timer = DispatchSource.makeTimerSource(queue: bleQueue)
         timer.schedule(deadline: .now() + cleanupInterval, repeating: cleanupInterval)
         timer.setEventHandler { [weak self] in
             self?.cleanupExpiredBeacons()
@@ -352,6 +364,21 @@ class BluetoothManager: NSObject {
 }
 
 extension BluetoothManager: CBCentralManagerDelegate {
+
+    /// Called by iOS when the app is relaunched into background after being terminated.
+    /// Restores the CBCentralManager state so BLE scanning can resume automatically.
+    func centralManager(_ central: CBCentralManager, willRestoreState dict: [String: Any]) {
+        NSLog("[BluetoothManager] State restoration triggered")
+
+        // Check if we were scanning when the app was terminated
+        if let services = dict[CBCentralManagerRestoredStateScanServicesKey] as? [CBUUID],
+           services.contains(beadServiceUUID) {
+            isScanning = true
+            pendingAutoStart = true
+            NSLog("[BluetoothManager] Restored: was scanning for BEAD service UUID")
+        }
+    }
+
     func centralManagerDidUpdateState(_ central: CBCentralManager) {
         let isPoweredOn = central.state == .poweredOn
         delegate?.didUpdateBluetoothState(isPoweredOn: isPoweredOn)

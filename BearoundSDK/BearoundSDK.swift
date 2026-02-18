@@ -125,15 +125,30 @@ public class BeAroundSDK {
 
         offlineBatchStorage.maxBatchCount = savedConfig.maxQueuedPayloads.value
 
-        // For terminated app relaunch, BeaconManager already started ranging
-        // Just configure the SDK - don't start scanning again (it's already running)
-        // Don't start sync timer here - the background ranging timer will trigger sync when complete
-        if !beaconManager.isScanning {
-            beaconManager.startScanning()
-            startSyncTimer()
-        }
+        // Check if Location is authorized to decide which scanning mode to use
+        let locationStatus = Self.authorizationStatus()
+        let locationAuthorized = (locationStatus == .authorizedWhenInUse || locationStatus == .authorizedAlways)
 
-        NSLog("[BeAroundSDK] AUTO-CONFIGURED from storage (isScanning=%d)", beaconManager.isScanning ? 1 : 0)
+        if locationAuthorized {
+            // For terminated app relaunch via Location, BeaconManager already started ranging
+            // Just configure the SDK - don't start scanning again (it's already running)
+            isBluetoothOnlyMode = false
+            if !beaconManager.isScanning {
+                beaconManager.startScanning()
+                startSyncTimer()
+            }
+            // Also start BLE for metadata enrichment
+            bluetoothManager.autoStartIfAuthorized()
+            NSLog("[BeAroundSDK] AUTO-CONFIGURED from storage (Location mode, isScanning=%d)", beaconManager.isScanning ? 1 : 0)
+        } else {
+            // For terminated app relaunch via Bluetooth state restoration
+            // Start in bluetooth-only mode
+            isBluetoothOnlyMode = true
+            bluetoothManager.autoStartIfAuthorized()
+            startSyncTimer()
+            delegate?.didChangeScanning(isScanning: true)
+            NSLog("[BeAroundSDK] AUTO-CONFIGURED from storage (Bluetooth-only mode)")
+        }
     }
 
     private func setupSDKInfo(from config: SDKConfiguration) {
