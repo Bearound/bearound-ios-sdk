@@ -13,55 +13,93 @@ import UIKit
 class DeviceIdentifier {
     private static let keychainKey = "io.bearound.sdk.deviceId"
 
+    // MARK: - Cache (1-hour TTL)
+
+    private static let cacheTTL: TimeInterval = 3600
+    private static var cachedDeviceId: String?
+    private static var cachedDeviceIdType: String?
+    private static var cachedAdvertisingId: String?
+    private static var cachedAdTrackingEnabled: Bool = false
+    private static var cacheTimestamp: Date?
+    private static let cacheLock = NSLock()
+
+    private static var isCacheValid: Bool {
+        guard let timestamp = cacheTimestamp else { return false }
+        return Date().timeIntervalSince(timestamp) < cacheTTL
+    }
+
+    /// Refreshes the identity cache if expired (thread-safe)
+    private static func refreshCacheIfNeeded() {
+        cacheLock.lock()
+        defer { cacheLock.unlock() }
+
+        guard !isCacheValid else { return }
+
+        // Compute ad tracking status and IDFA
+        let adTrackingEnabled: Bool
+        if #available(iOS 14, *) {
+            adTrackingEnabled = ATTrackingManager.trackingAuthorizationStatus == .authorized
+        } else {
+            adTrackingEnabled = ASIdentifierManager.shared().isAdvertisingTrackingEnabled
+        }
+
+        var idfa: String?
+        if adTrackingEnabled {
+            let idfaUUID = ASIdentifierManager.shared().advertisingIdentifier
+            let idfaString = idfaUUID.uuidString
+            if idfaString != "00000000-0000-0000-0000-000000000000" {
+                idfa = idfaString
+            }
+        }
+
+        // Compute device ID (priority: IDFA > Keychain > IDFV)
+        let deviceId: String
+        let deviceIdType: String
+
+        if let idfa {
+            deviceId = idfa
+            deviceIdType = "idfa"
+        } else if let keychainId = getKeychainUUID() {
+            deviceId = keychainId
+            deviceIdType = "keychain_uuid"
+        } else {
+            deviceId = getIDFV()
+            deviceIdType = "idfv"
+            KeychainHelper.save(deviceId, forKey: keychainKey)
+        }
+
+        cachedDeviceId = deviceId
+        cachedDeviceIdType = deviceIdType
+        cachedAdvertisingId = idfa
+        cachedAdTrackingEnabled = adTrackingEnabled
+        cacheTimestamp = Date()
+
+        NSLog("[BeAroundSDK] Device identity cached for 1h: type=%@, adTracking=%d", deviceIdType, adTrackingEnabled ? 1 : 0)
+    }
+
+    // MARK: - Public API
+
     static func getDeviceId() -> String {
-        if let idfa = getIDFA() {
-            print("[BeAroundSDK] Using IDFA as device ID")
-            return idfa
-        }
-
-        if let keychainId = getKeychainUUID() {
-            print("[BeAroundSDK] Using Keychain UUID as device ID")
-            return keychainId
-        }
-
-        let idfv = getIDFV()
-        print("[BeAroundSDK] Using IDFV as device ID")
-
-        KeychainHelper.save(idfv, forKey: keychainKey)
-
-        return idfv
+        refreshCacheIfNeeded()
+        return cachedDeviceId ?? getIDFV()
     }
 
     static func getDeviceIdType() -> String {
-        if getIDFA() != nil {
-            "idfa"
-        } else if getKeychainUUID() != nil {
-            "keychain_uuid"
-        } else {
-            "idfv"
-        }
+        refreshCacheIfNeeded()
+        return cachedDeviceIdType ?? "idfv"
     }
 
-    private static func getIDFA() -> String? {
-        if #available(iOS 14, *) {
-            guard ATTrackingManager.trackingAuthorizationStatus == .authorized else {
-                return nil
-            }
-        } else {
-            guard ASIdentifierManager.shared().isAdvertisingTrackingEnabled else {
-                return nil
-            }
-        }
-
-        let idfa = ASIdentifierManager.shared().advertisingIdentifier
-        let idfaString = idfa.uuidString
-
-        guard idfaString != "00000000-0000-0000-0000-000000000000" else {
-            return nil
-        }
-
-        return idfaString
+    static func getAdvertisingId() -> String? {
+        refreshCacheIfNeeded()
+        return cachedAdvertisingId
     }
+
+    static func isAdTrackingEnabled() -> Bool {
+        refreshCacheIfNeeded()
+        return cachedAdTrackingEnabled
+    }
+
+    // MARK: - Private Helpers
 
     private static func getKeychainUUID() -> String? {
         if let existingId = KeychainHelper.retrieve(forKey: keychainKey) {
@@ -80,4 +118,3 @@ class DeviceIdentifier {
         UIDevice.current.identifierForVendor?.uuidString ?? UUID().uuidString
     }
 }
-

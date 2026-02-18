@@ -414,20 +414,11 @@ final class DeviceInfoCollector: @unchecked Sendable {
 	}
 
 	private func isAdTrackingEnabled() -> Bool {
-		if #available(iOS 14, *) {
-			ATTrackingManager.trackingAuthorizationStatus == .authorized
-		} else {
-			ASIdentifierManager.shared().isAdvertisingTrackingEnabled
-		}
+		DeviceIdentifier.isAdTrackingEnabled()
 	}
 
 	private func advertisingId() -> String? {
-		guard isAdTrackingEnabled() else {
-			return nil
-		}
-
-		let idfa = ASIdentifierManager.shared().advertisingIdentifier
-		return idfa.uuidString != "00000000-0000-0000-0000-000000000000" ? idfa.uuidString : nil
+		DeviceIdentifier.getAdvertisingId()
 	}
 
 	private func appUptimeMs() -> Int {
