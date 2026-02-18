@@ -243,7 +243,8 @@ public class BeAroundSDK {
                     proximity: .bt,
                     accuracy: -1,
                     metadata: tracked.metadata,
-                    txPower: tracked.txPower
+                    txPower: tracked.txPower,
+                    discoverySource: tracked.discoverySource
                 )
             }
 
@@ -781,7 +782,8 @@ extension BeAroundSDK: BluetoothManagerDelegate {
         rssi: Int,
         txPower: Int,
         metadata: BeaconMetadata?,
-        isConnectable: Bool
+        isConnectable: Bool,
+        discoverySource: BeaconDiscoverySource
     ) {
         let key = "\(major).\(minor)"
 
@@ -798,7 +800,8 @@ extension BeAroundSDK: BluetoothManagerDelegate {
                 proximity: .bt,
                 accuracy: -1,
                 metadata: metadata,
-                txPower: txPower
+                txPower: txPower,
+                discoverySource: discoverySource
             )
 
             beaconQueue.async {

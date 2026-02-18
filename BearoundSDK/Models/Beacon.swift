@@ -8,6 +8,12 @@
 import CoreLocation
 import Foundation
 
+public enum BeaconDiscoverySource: String, Codable {
+    case serviceUUID = "Service UUID"
+    case name = "Name"
+    case coreLocation = "CoreLocation"
+}
+
 public enum BeaconProximity: Int, Codable {
     case unknown = 0
     case immediate = 1
@@ -44,6 +50,8 @@ public struct Beacon {
 
     public let txPower: Int?
 
+    public let discoverySource: BeaconDiscoverySource
+
     public init(
         uuid: UUID,
         major: Int,
@@ -53,7 +61,8 @@ public struct Beacon {
         accuracy: Double,
         timestamp: Date = Date(),
         metadata: BeaconMetadata? = nil,
-        txPower: Int? = nil
+        txPower: Int? = nil,
+        discoverySource: BeaconDiscoverySource = .coreLocation
     ) {
         self.uuid = uuid
         self.major = major
@@ -64,6 +73,7 @@ public struct Beacon {
         self.timestamp = timestamp
         self.metadata = metadata
         self.txPower = txPower
+        self.discoverySource = discoverySource
     }
 }
 

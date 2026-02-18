@@ -323,6 +323,15 @@ struct BeaconRow: View {
                                 .font(.caption2)
                                 .foregroundColor(.secondary)
                         }
+
+                        Text(discoverySourceText)
+                            .font(.caption2)
+                            .fontWeight(.medium)
+                            .foregroundColor(.white)
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 2)
+                            .background(discoverySourceColor)
+                            .cornerRadius(4)
                     }
                 }
 
@@ -362,6 +371,22 @@ struct BeaconRow: View {
         case .far: .red
         case .bt: .blue
         case .unknown: .gray
+        }
+    }
+
+    private var discoverySourceText: String {
+        switch beacon.discoverySource {
+        case .serviceUUID: "Service UUID"
+        case .name: "Name"
+        case .coreLocation: "iBeacon"
+        }
+    }
+
+    private var discoverySourceColor: Color {
+        switch beacon.discoverySource {
+        case .serviceUUID: .purple
+        case .name: .teal
+        case .coreLocation: .indigo
         }
     }
 }
