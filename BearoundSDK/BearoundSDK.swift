@@ -150,7 +150,13 @@ public class BeAroundSDK {
 
             let enrichedBeacons = beacons.map { beacon -> Beacon in
                 let key = "\(beacon.major).\(beacon.minor)"
-                let metadata = self.metadataCache[key]
+                let bleTracked = self.bluetoothManager.trackedBeacons[key]
+                let metadata = bleTracked?.metadata ?? self.metadataCache[key]
+
+                var sources: Set<BeaconDiscoverySource> = [.coreLocation]
+                if bleTracked != nil {
+                    sources.insert(.serviceUUID)
+                }
 
                 return Beacon(
                     uuid: beacon.uuid,
@@ -161,7 +167,8 @@ public class BeAroundSDK {
                     accuracy: beacon.accuracy,
                     timestamp: beacon.timestamp,
                     metadata: metadata,
-                    txPower: metadata?.txPower ?? beacon.txPower
+                    txPower: metadata?.txPower ?? beacon.txPower,
+                    discoverySources: sources
                 )
             }
 
@@ -193,12 +200,12 @@ public class BeAroundSDK {
         // Triggered on first beacon detection in background
         beaconManager.onFirstBackgroundBeaconDetected = { [weak self] in
             guard let self else { return }
-            let beaconCount = self.collectedBeacons.count
-            NSLog("[BeAroundSDK] First background beacon - syncing NOW (beacons=%d)", beaconCount)
+            NSLog("[BeAroundSDK] First background beacon - syncing NOW (beacons=%d)", self.collectedBeacons.count)
 
-            // Notify delegate of background beacon detection
+            // Notify delegate of background beacon detection with full beacon data
+            let backgroundBeacons = Array(self.collectedBeacons.values)
             DispatchQueue.main.async {
-                self.delegate?.didDetectBeaconInBackground(beaconCount: max(beaconCount, 1))
+                self.delegate?.didDetectBeaconInBackground(beacons: backgroundBeacons)
             }
 
             self.syncBeaconsImmediately()
@@ -244,7 +251,7 @@ public class BeAroundSDK {
                     accuracy: -1,
                     metadata: tracked.metadata,
                     txPower: tracked.txPower,
-                    discoverySource: tracked.discoverySource
+                    discoverySources: [tracked.discoverySource]
                 )
             }
 
@@ -801,7 +808,7 @@ extension BeAroundSDK: BluetoothManagerDelegate {
                 accuracy: -1,
                 metadata: metadata,
                 txPower: txPower,
-                discoverySource: discoverySource
+                discoverySources: [discoverySource]
             )
 
             beaconQueue.async {

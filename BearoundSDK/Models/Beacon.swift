@@ -50,7 +50,7 @@ public struct Beacon {
 
     public let txPower: Int?
 
-    public let discoverySource: BeaconDiscoverySource
+    public let discoverySources: Set<BeaconDiscoverySource>
 
     public init(
         uuid: UUID,
@@ -62,7 +62,7 @@ public struct Beacon {
         timestamp: Date = Date(),
         metadata: BeaconMetadata? = nil,
         txPower: Int? = nil,
-        discoverySource: BeaconDiscoverySource = .coreLocation
+        discoverySources: Set<BeaconDiscoverySource> = [.coreLocation]
     ) {
         self.uuid = uuid
         self.major = major
@@ -73,7 +73,7 @@ public struct Beacon {
         self.timestamp = timestamp
         self.metadata = metadata
         self.txPower = txPower
-        self.discoverySource = discoverySource
+        self.discoverySources = discoverySources
     }
 }
 

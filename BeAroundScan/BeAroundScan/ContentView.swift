@@ -324,14 +324,16 @@ struct BeaconRow: View {
                                 .foregroundColor(.secondary)
                         }
 
-                        Text(discoverySourceText)
-                            .font(.caption2)
-                            .fontWeight(.medium)
-                            .foregroundColor(.white)
-                            .padding(.horizontal, 6)
-                            .padding(.vertical, 2)
-                            .background(discoverySourceColor)
-                            .cornerRadius(4)
+                        ForEach(sortedDiscoverySources, id: \.self) { source in
+                            Text(sourceText(for: source))
+                                .font(.caption2)
+                                .fontWeight(.medium)
+                                .foregroundColor(.white)
+                                .padding(.horizontal, 6)
+                                .padding(.vertical, 2)
+                                .background(sourceColor(for: source))
+                                .cornerRadius(4)
+                        }
                     }
                 }
 
@@ -374,16 +376,21 @@ struct BeaconRow: View {
         }
     }
 
-    private var discoverySourceText: String {
-        switch beacon.discoverySource {
+    private var sortedDiscoverySources: [BeaconDiscoverySource] {
+        let order: [BeaconDiscoverySource] = [.serviceUUID, .coreLocation, .name]
+        return order.filter { beacon.discoverySources.contains($0) }
+    }
+
+    private func sourceText(for source: BeaconDiscoverySource) -> String {
+        switch source {
         case .serviceUUID: "Service UUID"
         case .name: "Name"
         case .coreLocation: "iBeacon"
         }
     }
 
-    private var discoverySourceColor: Color {
-        switch beacon.discoverySource {
+    private func sourceColor(for source: BeaconDiscoverySource) -> Color {
+        switch source {
         case .serviceUUID: .purple
         case .name: .teal
         case .coreLocation: .indigo

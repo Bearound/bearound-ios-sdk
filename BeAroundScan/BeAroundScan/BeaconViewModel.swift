@@ -294,7 +294,7 @@ extension BeaconViewModel {
                     let timeSinceStart = Date().timeIntervalSince(startTime)
                     // Aguarda 2 segundos para evitar notificações imediatas ao iniciar já na zona
                     if timeSinceStart >= 2.0 {
-                        self.notificationManager.notifyBeaconDetected(beaconCount: sortedBeacons.count)
+                        self.notificationManager.notifyBeaconDetectedWithDetails(beacons: sortedBeacons)
                     }
                 }
                 // Se scanStartTime é nil, significa que o scan já estava ativo antes,
@@ -395,10 +395,10 @@ extension BeaconViewModel {
 
     // MARK: - Background Events Delegate Methods
 
-    func didDetectBeaconInBackground(beaconCount: Int) {
+    func didDetectBeaconInBackground(beacons: [Beacon]) {
         DispatchQueue.main.async {
-            NSLog("[BeaconViewModel] Beacon detected in background: %d beacons", beaconCount)
-            self.notificationManager.notifyBeaconDetected(beaconCount: beaconCount, isBackground: true)
+            NSLog("[BeaconViewModel] Beacon detected in background: %d beacons", beacons.count)
+            self.notificationManager.notifyBeaconDetectedWithDetails(beacons: beacons, isBackground: true)
         }
     }
 }

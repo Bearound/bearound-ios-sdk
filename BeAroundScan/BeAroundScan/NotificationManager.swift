@@ -1,3 +1,4 @@
+import BearoundSDK
 import UserNotifications
 import Foundation
 
@@ -87,6 +88,38 @@ class NotificationManager {
             body: body,
             sound: .default,
             badge: beaconCount
+        )
+    }
+
+    func notifyBeaconDetectedWithDetails(beacons: [Beacon], isBackground: Bool = false) {
+        guard enableBeaconNotifications else { return }
+
+        let identifier: NotificationIdentifier = isBackground ? .beaconDetectedBackground : .beaconDetected
+        guard canSendNotification(for: identifier) else { return }
+
+        let title = isBackground ? "Beacon Detectado (Background)" : "Beacon Detectado"
+
+        let beaconDetails = beacons.prefix(5).map { beacon in
+            let sources = beacon.discoverySources
+                .sorted { $0.rawValue < $1.rawValue }
+                .map { $0.rawValue }
+                .joined(separator: " + ")
+            return "\(beacon.major).\(beacon.minor) [\(sources)]"
+        }.joined(separator: ", ")
+
+        let body: String
+        if beacons.count <= 5 {
+            body = beaconDetails
+        } else {
+            body = "\(beaconDetails) (+\(beacons.count - 5) mais)"
+        }
+
+        sendNotification(
+            identifier: identifier,
+            title: title,
+            body: body,
+            sound: .default,
+            badge: beacons.count
         )
     }
 

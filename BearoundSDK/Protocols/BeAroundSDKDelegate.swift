@@ -37,8 +37,8 @@ public protocol BeAroundSDKDelegate: AnyObject {
     // MARK: - Background Events (v2.3)
 
     /// Called when beacons are detected while app is in background
-    /// - Parameter beaconCount: Number of beacons detected
-    func didDetectBeaconInBackground(beaconCount: Int)
+    /// - Parameter beacons: Array of detected beacons with discovery source info
+    func didDetectBeaconInBackground(beacons: [Beacon])
 }
 
 // Default implementations (all optional except didUpdateBeacons)
@@ -47,5 +47,5 @@ extension BeAroundSDKDelegate {
     public func didChangeScanning(isScanning _: Bool) {}
     public func willStartSync(beaconCount _: Int) {}
     public func didCompleteSync(beaconCount _: Int, success _: Bool, error _: Error?) {}
-    public func didDetectBeaconInBackground(beaconCount _: Int) {}
+    public func didDetectBeaconInBackground(beacons _: [Beacon]) {}
 }
