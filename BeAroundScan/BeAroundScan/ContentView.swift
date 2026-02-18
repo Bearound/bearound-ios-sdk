@@ -240,7 +240,12 @@ struct ContentView: View {
                     .frame(maxHeight: .infinity)
                 } else {
                     List(viewModel.beacons.indices, id: \.self) { index in
-                        BeaconRow(beacon: viewModel.beacons[index])
+                        let beacon = viewModel.beacons[index]
+                        BeaconRow(beacon: beacon, isPinned: viewModel.isPinned(beacon))
+                            .contentShape(Rectangle())
+                            .onTapGesture {
+                                viewModel.togglePin(for: beacon)
+                            }
                     }
                     .listStyle(.plain)
                 }
@@ -295,13 +300,21 @@ struct ContentView: View {
 
 struct BeaconRow: View {
     let beacon: Beacon
+    var isPinned: Bool = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack {
                 VStack(alignment: .leading, spacing: 2) {
-                    Text("Beacon \(beacon.major).\(beacon.minor)")
-                        .font(.headline)
+                    HStack(spacing: 4) {
+                        if isPinned {
+                            Image(systemName: "pin.fill")
+                                .font(.caption)
+                                .foregroundColor(.orange)
+                        }
+                        Text("Beacon \(beacon.major).\(beacon.minor)")
+                            .font(.headline)
+                    }
 
                     Text(beacon.uuid.uuidString)
                         .font(.caption)

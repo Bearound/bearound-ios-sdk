@@ -40,6 +40,9 @@ class BeaconViewModel: NSObject, ObservableObject, BeAroundSDKDelegate {
     @Published var lastSyncBeaconCount: Int = 0
     @Published var lastSyncResult: String = "Aguardando..."
 
+    // Pinned Beacons
+    @Published var pinnedBeaconKeys: Set<String> = []
+
     // User Properties
     @Published var userPropertyInternalId: String = ""
     @Published var userPropertyEmail: String = ""
@@ -220,6 +223,20 @@ class BeaconViewModel: NSObject, ObservableObject, BeAroundSDKDelegate {
         scanStartTime = nil
     }
 
+    func togglePin(for beacon: Beacon) {
+        let key = "\(beacon.major).\(beacon.minor)"
+        if pinnedBeaconKeys.contains(key) {
+            pinnedBeaconKeys.remove(key)
+        } else {
+            pinnedBeaconKeys.insert(key)
+        }
+        beacons = sortBeacons(beacons, by: sortOption)
+    }
+
+    func isPinned(_ beacon: Beacon) -> Bool {
+        pinnedBeaconKeys.contains("\(beacon.major).\(beacon.minor)")
+    }
+
     var currentDisplayInterval: Int {
         Int(BeAroundSDK.shared.currentSyncInterval ?? 0)
     }
@@ -314,9 +331,18 @@ extension BeaconViewModel {
     }
 
     private func sortBeacons(_ beacons: [Beacon], by option: BeaconSortOption) -> [Beacon] {
-        switch option {
-        case .proximity:
-            return beacons.sorted { beacon1, beacon2 in
+        beacons.sorted { beacon1, beacon2 in
+            let key1 = "\(beacon1.major).\(beacon1.minor)"
+            let key2 = "\(beacon2.major).\(beacon2.minor)"
+            let pinned1 = pinnedBeaconKeys.contains(key1)
+            let pinned2 = pinnedBeaconKeys.contains(key2)
+
+            if pinned1 != pinned2 {
+                return pinned1
+            }
+
+            switch option {
+            case .proximity:
                 let proximityOrder: [BeaconProximity] = [.immediate, .near, .far, .bt, .unknown]
                 if let index1 = proximityOrder.firstIndex(of: beacon1.proximity),
                    let index2 = proximityOrder.firstIndex(of: beacon2.proximity),
@@ -335,13 +361,9 @@ extension BeaconViewModel {
                 if beacon2.accuracy > 0 { return false }
 
                 return false
-            }
 
-        case .name:
-            return beacons.sorted { beacon1, beacon2 in
-                let name1 = "\(beacon1.major).\(beacon1.minor)"
-                let name2 = "\(beacon2.major).\(beacon2.minor)"
-                return name1 < name2
+            case .name:
+                return "\(beacon1.major).\(beacon1.minor)" < "\(beacon2.major).\(beacon2.minor)"
             }
         }
     }
