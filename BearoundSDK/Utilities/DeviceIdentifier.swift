@@ -55,18 +55,20 @@ class DeviceIdentifier {
         guard _deviceId == nil else { return }
 
         // First time ever: compute and persist forever
+        // Priority: Keychain UUID > IDFV > Generated UUID > IDFA (last resort)
         let id: String
         let type: String
 
-        if let idfa = computeIDFA() {
-            id = idfa
-            type = "idfa"
-        } else if let keychainId = getKeychainUUID() {
+        if let keychainId = getKeychainUUID() {
             id = keychainId
             type = "keychain_uuid"
         } else if let idfv = UIDevice.current.identifierForVendor?.uuidString {
             id = idfv
             type = "idfv"
+            KeychainHelper.save(id, forKey: keychainKey)
+        } else if let idfa = computeIDFA() {
+            id = idfa
+            type = "idfa"
             KeychainHelper.save(id, forKey: keychainKey)
         } else {
             // Last resort (device locked on first boot) — generate and persist
