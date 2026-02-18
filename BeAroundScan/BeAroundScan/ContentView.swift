@@ -335,6 +335,46 @@ struct BeaconRow: View {
                                 .cornerRadius(4)
                         }
                     }
+
+                    if let metadata = beacon.metadata {
+                        HStack(spacing: 10) {
+                            HStack(spacing: 3) {
+                                Image(systemName: "battery.100")
+                                    .font(.caption2)
+                                    .foregroundColor(batteryColor(metadata.batteryLevel))
+                                Text("\(metadata.batteryLevel)mV")
+                                    .font(.caption2)
+                                    .foregroundColor(.secondary)
+                            }
+
+                            HStack(spacing: 3) {
+                                Image(systemName: "thermometer.medium")
+                                    .font(.caption2)
+                                    .foregroundColor(.orange)
+                                Text("\(metadata.temperature)\u{00B0}C")
+                                    .font(.caption2)
+                                    .foregroundColor(.secondary)
+                            }
+
+                            HStack(spacing: 3) {
+                                Image(systemName: "figure.walk.motion")
+                                    .font(.caption2)
+                                    .foregroundColor(.blue)
+                                Text("\(metadata.movements)")
+                                    .font(.caption2)
+                                    .foregroundColor(.secondary)
+                            }
+
+                            HStack(spacing: 3) {
+                                Image(systemName: "cpu")
+                                    .font(.caption2)
+                                    .foregroundColor(.gray)
+                                Text("v\(metadata.firmwareVersion)")
+                                    .font(.caption2)
+                                    .foregroundColor(.secondary)
+                            }
+                        }
+                    }
                 }
 
                 Spacer()
@@ -374,6 +414,12 @@ struct BeaconRow: View {
         case .bt: .blue
         case .unknown: .gray
         }
+    }
+
+    private func batteryColor(_ mV: Int) -> Color {
+        if mV > 2800 { return .green }
+        if mV > 2400 { return .orange }
+        return .red
     }
 
     private var sortedDiscoverySources: [BeaconDiscoverySource] {
