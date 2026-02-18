@@ -69,6 +69,7 @@ public class BeAroundSDK {
     private var isInBackground = false
     private var wasLaunchedInBackground = false
     private var isBluetoothOnlyMode = false
+    private var syncTrigger = "unknown"
 
     // MARK: - Initialization
 
@@ -209,6 +210,7 @@ public class BeAroundSDK {
         beaconManager.onBackgroundRangingComplete = { [weak self] in
             guard let self else { return }
             NSLog("[BeAroundSDK] Background ranging complete - syncing NOW")
+            self.syncTrigger = "background_ranging_complete"
             self.syncBeaconsImmediately()
         }
 
@@ -233,12 +235,14 @@ public class BeAroundSDK {
                 }
             }
 
+            self.syncTrigger = "display_on"
             self.syncBeaconsImmediately()
         }
 
         beaconManager.onSignificantLocationChange = { [weak self] in
             guard let self else { return }
             NSLog("[BeAroundSDK] Significant location change - syncing")
+            self.syncTrigger = "significant_location"
             self.syncBeaconsImmediately()
         }
 
@@ -435,6 +439,7 @@ public class BeAroundSDK {
         }
 
         stopSyncTimer()
+        syncTrigger = "stop_scanning"
         syncBeaconsImmediately()
 
         SDKConfigStorage.saveIsScanning(false)
@@ -477,6 +482,7 @@ public class BeAroundSDK {
         if isBluetoothOnlyMode {
             timer.schedule(deadline: .now() + syncInterval, repeating: syncInterval)
             timer.setEventHandler { [weak self] in
+                self?.syncTrigger = "bluetooth_timer"
                 self?.syncBeacons()
             }
             timer.resume()
@@ -486,10 +492,11 @@ public class BeAroundSDK {
         if !isInBackground {
             if pauseDuration <= 0 {
                 beaconManager.startRanging()
-                
+
                 timer.schedule(deadline: .now() + syncInterval, repeating: syncInterval)
                 timer.setEventHandler { [weak self] in
                     guard let self else { return }
+                    self.syncTrigger = "foreground_timer"
                     self.syncBeacons()
                 }
                 timer.resume()
@@ -509,7 +516,8 @@ public class BeAroundSDK {
             timer.schedule(deadline: .now() + syncInterval, repeating: syncInterval)
             timer.setEventHandler { [weak self] in
                 guard let self, self.beaconManager.isScanning else { return }
-                
+
+                self.syncTrigger = "foreground_timer"
                 self.syncBeacons()
 
                 DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + pauseDuration) { [weak self] in
@@ -535,6 +543,7 @@ public class BeAroundSDK {
 
                 timer.schedule(deadline: .now() + syncInterval, repeating: syncInterval)
                 timer.setEventHandler { [weak self] in
+                    self?.syncTrigger = "background_timer"
                     self?.syncBeacons()
                 }
                 timer.resume()
@@ -554,6 +563,7 @@ public class BeAroundSDK {
                     guard let self, self.beaconManager.isScanning else { return }
 
                     // Sync the beacons we just collected
+                    self.syncTrigger = "background_timer"
                     self.syncBeacons()
 
                     // Pause ranging during the pause period
@@ -716,11 +726,15 @@ public class BeAroundSDK {
                 location: beaconManager.lastLocation
             )
 
+            let trigger = self.syncTrigger
+            self.syncTrigger = "unknown"
+
             apiClient.sendBeacons(
                 beaconsToSend,
                 sdkInfo: sdkInfo,
                 userDevice: userDevice,
-                userProperties: userProperties
+                userProperties: userProperties,
+                syncTrigger: trigger
             ) { [weak self] result in
                 guard let self else { return }
 
@@ -800,8 +814,8 @@ public class BeAroundSDK {
     }
 
     /// Called by BackgroundTaskManager when BGTaskScheduler triggers
-    public func performBackgroundSync(completion: @escaping (Bool) -> Void) {
-        NSLog("[BeAroundSDK] Background task triggered")
+    public func performBackgroundSync(trigger: String = "background_sync", completion: @escaping (Bool) -> Void) {
+        NSLog("[BeAroundSDK] Background task triggered (trigger=%@)", trigger)
 
         beaconQueue.async { [weak self] in
             guard let self else {
@@ -815,6 +829,7 @@ public class BeAroundSDK {
             if hasBeacons || hasFailedBatches {
                 NSLog("[BeAroundSDK] Background sync: beacons=%d, failed=%d",
                       hasBeacons ? 1 : 0, hasFailedBatches ? 1 : 0)
+                self.syncTrigger = trigger
                 syncBeacons()
                 completion(true)
             } else {
@@ -825,8 +840,8 @@ public class BeAroundSDK {
     }
 
     /// Called by BGTaskScheduler — refreshes BLE scan, collects Service Data, then syncs
-    public func performBackgroundBLERefreshAndSync(bleScanDuration: TimeInterval = 3.0, completion: @escaping (Bool) -> Void) {
-        NSLog("[BeAroundSDK] BGTask: refreshing BLE scan for Service Data")
+    public func performBackgroundBLERefreshAndSync(bleScanDuration: TimeInterval = 3.0, trigger: String = "bg_task", completion: @escaping (Bool) -> Void) {
+        NSLog("[BeAroundSDK] BGTask: refreshing BLE scan for Service Data (trigger=%@)", trigger)
 
         // Ensure BLE is scanning
         if !bluetoothManager.isScanning {
@@ -843,7 +858,7 @@ public class BeAroundSDK {
                 completion(false)
                 return
             }
-            self.performBackgroundSync(completion: completion)
+            self.performBackgroundSync(trigger: trigger, completion: completion)
         }
     }
 
@@ -865,7 +880,7 @@ public class BeAroundSDK {
             }
         }
 
-        performBackgroundBLERefreshAndSync(bleScanDuration: 3.0, completion: completion)
+        performBackgroundBLERefreshAndSync(bleScanDuration: 3.0, trigger: "background_fetch", completion: completion)
     }
 
     // MARK: - Private Helpers

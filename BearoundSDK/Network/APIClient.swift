@@ -26,6 +26,7 @@ class APIClient {
         sdkInfo: SDKInfo,
         userDevice: UserDevice,
         userProperties: UserProperties?,
+        syncTrigger: String = "unknown",
         completion: @escaping (Result<Void, Error>) -> Void
     ) {
         guard !beacons.isEmpty else {
@@ -102,6 +103,7 @@ class APIClient {
                 "build": sdkInfo.build,
             ],
             "device": buildDevicePayload(userDevice),
+            "syncTrigger": syncTrigger,
         ]
 
         if let userProperties, userProperties.hasProperties {

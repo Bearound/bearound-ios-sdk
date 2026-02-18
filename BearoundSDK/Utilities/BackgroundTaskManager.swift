@@ -129,7 +129,7 @@ public class BackgroundTaskManager {
         }
 
         // Refresh BLE scan (3s collection) then sync
-        BeAroundSDK.shared.performBackgroundBLERefreshAndSync(bleScanDuration: 3.0) { success in
+        BeAroundSDK.shared.performBackgroundBLERefreshAndSync(bleScanDuration: 3.0, trigger: "bg_task_refresh") { success in
             NSLog("[BeAroundSDK] BGAppRefreshTask completed (success=%d)", success ? 1 : 0)
             task.setTaskCompleted(success: success)
         }
@@ -150,7 +150,7 @@ public class BackgroundTaskManager {
         }
 
         // Refresh BLE scan (5s collection — more time available) then sync
-        BeAroundSDK.shared.performBackgroundBLERefreshAndSync(bleScanDuration: 5.0) { success in
+        BeAroundSDK.shared.performBackgroundBLERefreshAndSync(bleScanDuration: 5.0, trigger: "bg_task_processing") { success in
             NSLog("[BeAroundSDK] BGProcessingTask completed (success=%d)", success ? 1 : 0)
             task.setTaskCompleted(success: success)
         }
