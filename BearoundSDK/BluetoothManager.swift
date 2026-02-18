@@ -189,6 +189,14 @@ class BluetoothManager: NSObject {
         print("[BluetoothManager] Stopped BLE scanning")
     }
 
+    /// Force restart BLE scan to get fresh Service Data (e.g. on unlock/display events)
+    func refreshScan() {
+        guard isScanning, centralManager.state == .poweredOn else { return }
+        centralManager.stopScan()
+        beginScan()
+        NSLog("[BluetoothManager] Refreshed BLE scan for Service Data (unlock event)")
+    }
+
     // MARK: - Auto-Enable
 
     /// Auto-starts Bluetooth scanning if permission is already granted

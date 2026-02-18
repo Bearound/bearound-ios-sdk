@@ -212,15 +212,25 @@ public class BeAroundSDK {
             self.syncBeaconsImmediately()
         }
 
-        // Triggered on first beacon detection in background
+        // Triggered on first beacon detection in background (unlock/display on)
         beaconManager.onFirstBackgroundBeaconDetected = { [weak self] in
             guard let self else { return }
-            NSLog("[BeAroundSDK] First background beacon - syncing NOW (beacons=%d)", self.collectedBeacons.count)
+            NSLog("[BeAroundSDK] First background beacon (unlock/display) - refreshing BLE and syncing")
 
-            // Notify delegate of background beacon detection with full beacon data
-            let backgroundBeacons = Array(self.collectedBeacons.values)
-            DispatchQueue.main.async {
-                self.delegate?.didDetectBeaconInBackground(beacons: backgroundBeacons)
+            // Refresh BLE scan to get fresh Service Data on unlock
+            self.bluetoothManager.refreshScan()
+
+            // Merge BLE beacons and build clean list on beaconQueue for thread safety
+            self.beaconQueue.async {
+                self.mergeBLEBeacons()
+                self.cleanupStaleBeacons()
+
+                let backgroundBeacons = Array(self.collectedBeacons.values).filter { $0.rssi != 0 }
+                NSLog("[BeAroundSDK] Background beacon count after cleanup/merge: %d", backgroundBeacons.count)
+
+                DispatchQueue.main.async {
+                    self.delegate?.didDetectBeaconInBackground(beacons: backgroundBeacons)
+                }
             }
 
             self.syncBeaconsImmediately()
@@ -564,6 +574,77 @@ public class BeAroundSDK {
         syncTimer = nil
     }
 
+    // MARK: - Beacon Cleanup & Merge
+
+    /// Remove beacons that haven't been updated recently
+    /// Uses 2x the current sync interval as the grace period
+    private func cleanupStaleBeacons() {
+        let maxAge: TimeInterval
+        if let config = configuration {
+            maxAge = config.syncInterval(isInBackground: isInBackground) * 2
+        } else {
+            maxAge = 60.0
+        }
+
+        let now = Date()
+        var removedCount = 0
+
+        for (key, beacon) in collectedBeacons {
+            if now.timeIntervalSince(beacon.timestamp) > maxAge {
+                collectedBeacons.removeValue(forKey: key)
+                removedCount += 1
+            }
+        }
+
+        if removedCount > 0 {
+            NSLog("[BeAroundSDK] Cleaned up %d stale beacons from collectedBeacons", removedCount)
+        }
+    }
+
+    /// Merge BLE-tracked beacons into collectedBeacons for sync
+    /// Adds BLE-only beacons and enriches existing beacons with Service UUID source
+    private func mergeBLEBeacons() {
+        let bleTracked = bluetoothManager.trackedBeacons
+        guard !bleTracked.isEmpty else { return }
+
+        let targetUUID = UUID(uuidString: "E25B8D3C-947A-452F-A13F-589CB706D2E5")!
+
+        for (key, tracked) in bleTracked {
+            if let existing = collectedBeacons[key] {
+                // Enrich existing beacon with BLE Service Data if not already present
+                if !existing.discoverySources.contains(.serviceUUID) {
+                    var sources = existing.discoverySources
+                    sources.insert(.serviceUUID)
+                    collectedBeacons[key] = Beacon(
+                        uuid: existing.uuid,
+                        major: existing.major,
+                        minor: existing.minor,
+                        rssi: existing.rssi,
+                        proximity: existing.proximity,
+                        accuracy: existing.accuracy,
+                        timestamp: existing.timestamp,
+                        metadata: tracked.metadata ?? existing.metadata,
+                        txPower: tracked.txPower,
+                        discoverySources: sources
+                    )
+                }
+            } else {
+                // BLE-only beacon — add to collected
+                collectedBeacons[key] = Beacon(
+                    uuid: targetUUID,
+                    major: tracked.major,
+                    minor: tracked.minor,
+                    rssi: tracked.rssi,
+                    proximity: .bt,
+                    accuracy: -1,
+                    metadata: tracked.metadata,
+                    txPower: tracked.txPower,
+                    discoverySources: [tracked.discoverySource]
+                )
+            }
+        }
+    }
+
     // MARK: - Beacon Sync
 
     private func syncBeaconsImmediately() {
@@ -594,14 +675,22 @@ public class BeAroundSDK {
             var isRetry = false
 
             if shouldRetryFailed, let failedBatch = offlineBatchStorage.loadOldestBatch() {
-                beaconsToSend = failedBatch
+                beaconsToSend = failedBatch.filter { $0.rssi != 0 }
                 isRetry = true
                 NSLog("[BeAroundSDK] Retrying failed batch with %d beacons", beaconsToSend.count)
-            } else if !collectedBeacons.isEmpty {
-                beaconsToSend = Array(collectedBeacons.values)
-                // DON'T clear - keep beacons for continuous updates
-                NSLog("[BeAroundSDK] Syncing %d collected beacons", beaconsToSend.count)
             } else {
+                // Clean up stale beacons and merge BLE Service Data
+                self.cleanupStaleBeacons()
+                self.mergeBLEBeacons()
+
+                if !collectedBeacons.isEmpty {
+                    // Filter out beacons with invalid RSSI (rssi: 0 = unknown)
+                    beaconsToSend = Array(collectedBeacons.values).filter { $0.rssi != 0 }
+                    NSLog("[BeAroundSDK] Syncing %d beacons (after cleanup/merge/filter)", beaconsToSend.count)
+                }
+            }
+
+            guard !beaconsToSend.isEmpty else {
                 NSLog("[BeAroundSDK] Nothing to sync")
                 self.endBackgroundTask()
                 return
