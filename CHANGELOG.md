@@ -5,6 +5,36 @@ All notable changes to BearoundSDK for iOS will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.3.0] - 2026-02-17
+
+### Added
+
+- **Bluetooth-Only Fallback Scanning**: When Location permission is not authorized, the SDK now automatically falls back to Bluetooth-only mode using CoreBluetooth, allowing beacon detection without Location Services.
+- **`BeaconProximity` enum**: Replaces `CLProximity` with a custom enum that includes `.bt` case for beacons detected via Bluetooth-only mode.
+- **`BeaconDiscoverySource` enum**: Tracks how each beacon was discovered (`.coreLocation`, `.serviceUUID`, `.name`).
+- **`discoverySources` property on `Beacon`**: Set indicating which discovery methods detected the beacon.
+- **Sync lifecycle delegate methods**: `willStartSync(beaconCount:)` and `didCompleteSync(beaconCount:success:error:)` for monitoring sync operations.
+- **Background beacon detection delegate**: `didDetectBeaconInBackground(beacons:)` now provides the full array of detected beacons instead of just a count.
+- **BLE scan refresh on unlock**: Automatically refreshes BLE scanning when the device is unlocked to capture fresh Service Data.
+- **Background BLE scanning with state restoration**: CoreBluetooth state restoration support for background wake-ups.
+- **Device identifier caching**: Persistent device identifier with cache support.
+- **Background task processing**: Added `scheduleProcessingTask()` for BGTaskScheduler.
+
+### Changed
+
+- **`Beacon.proximity`** type changed from `CLProximity` to `BeaconProximity`.
+- **`didDetectBeaconInBackground`** delegate signature changed from `beaconCount: Int` to `beacons: [Beacon]`.
+- **`startScanning()`** now checks Location authorization and automatically selects between Location+Bluetooth or Bluetooth-only mode.
+- **Auto-configuration from storage** now supports both Location and Bluetooth-only relaunch paths.
+- BLE beacons are merged with CoreLocation beacons before sync, enriching data with metadata from both sources.
+
+### Breaking Changes
+
+- `Beacon.proximity` is now `BeaconProximity` instead of `CLProximity`.
+- `didDetectBeaconInBackground(beaconCount:)` replaced by `didDetectBeaconInBackground(beacons:)`.
+
+---
+
 ## [2.2.2] - 2026-01-22
 
 ### Changed
