@@ -189,13 +189,22 @@ public class BeAroundSDK {
             }
 
             beaconQueue.async {
-                for beacon in enrichedBeacons {
+                var updatedBeacons: [Beacon] = []
+                for var beacon in enrichedBeacons {
                     let key = "\(beacon.major).\(beacon.minor)"
+                    // Preserve syncedAt from existing entry; reset alreadySynced (new data to send)
+                    if let existing = self.collectedBeacons[key] {
+                        beacon.syncedAt = existing.syncedAt
+                    }
+                    beacon.alreadySynced = false
                     self.collectedBeacons[key] = beacon
+                    updatedBeacons.append(beacon)
+                }
+
+                DispatchQueue.main.async {
+                    self.delegate?.didUpdateBeacons(updatedBeacons)
                 }
             }
-
-            delegate?.didUpdateBeacons(enrichedBeacons)
         }
 
         beaconManager.onError = { [weak self] error in
@@ -270,22 +279,33 @@ public class BeAroundSDK {
                 }
             }
 
-            let beacons = trackedBeacons.map { tracked in
-                Beacon(
-                    uuid: UUID(uuidString: "E25B8D3C-947A-452F-A13F-589CB706D2E5")!,
-                    major: tracked.major,
-                    minor: tracked.minor,
-                    rssi: tracked.rssi,
-                    proximity: .bt,
-                    accuracy: -1,
-                    metadata: tracked.metadata,
-                    txPower: tracked.txPower,
-                    discoverySources: [tracked.discoverySource]
-                )
-            }
+            beaconQueue.async {
+                var beaconsForDelegate: [Beacon] = []
+                for tracked in trackedBeacons {
+                    let key = "\(tracked.major).\(tracked.minor)"
+                    var beacon = Beacon(
+                        uuid: UUID(uuidString: "E25B8D3C-947A-452F-A13F-589CB706D2E5")!,
+                        major: tracked.major,
+                        minor: tracked.minor,
+                        rssi: tracked.rssi,
+                        proximity: .bt,
+                        accuracy: -1,
+                        metadata: tracked.metadata,
+                        txPower: tracked.txPower,
+                        discoverySources: [tracked.discoverySource]
+                    )
+                    // Preserve syncedAt from existing entry; reset alreadySynced
+                    if let existing = self.collectedBeacons[key] {
+                        beacon.syncedAt = existing.syncedAt
+                    }
+                    beacon.alreadySynced = false
+                    self.collectedBeacons[key] = beacon
+                    beaconsForDelegate.append(beacon)
+                }
 
-            DispatchQueue.main.async {
-                self.delegate?.didUpdateBeacons(beacons)
+                DispatchQueue.main.async {
+                    self.delegate?.didUpdateBeacons(beaconsForDelegate)
+                }
             }
         }
     }
@@ -626,7 +646,7 @@ public class BeAroundSDK {
                 if !existing.discoverySources.contains(.serviceUUID) {
                     var sources = existing.discoverySources
                     sources.insert(.serviceUUID)
-                    collectedBeacons[key] = Beacon(
+                    var enriched = Beacon(
                         uuid: existing.uuid,
                         major: existing.major,
                         minor: existing.minor,
@@ -638,10 +658,13 @@ public class BeAroundSDK {
                         txPower: tracked.txPower,
                         discoverySources: sources
                     )
+                    enriched.alreadySynced = existing.alreadySynced
+                    enriched.syncedAt = existing.syncedAt
+                    collectedBeacons[key] = enriched
                 }
             } else {
                 // BLE-only beacon — add to collected
-                collectedBeacons[key] = Beacon(
+                var newBeacon = Beacon(
                     uuid: targetUUID,
                     major: tracked.major,
                     minor: tracked.minor,
@@ -652,6 +675,11 @@ public class BeAroundSDK {
                     txPower: tracked.txPower,
                     discoverySources: [tracked.discoverySource]
                 )
+                // Preserve syncedAt if there was a previous entry
+                if let existing = collectedBeacons[key] {
+                    newBeacon.syncedAt = existing.syncedAt
+                }
+                collectedBeacons[key] = newBeacon
             }
         }
     }
@@ -695,8 +723,8 @@ public class BeAroundSDK {
                 self.mergeBLEBeacons()
 
                 if !collectedBeacons.isEmpty {
-                    // Filter out beacons with invalid RSSI (rssi: 0 = unknown)
-                    beaconsToSend = Array(collectedBeacons.values).filter { $0.rssi != 0 }
+                    // Only send beacons that haven't been synced yet, and filter invalid RSSI
+                    beaconsToSend = Array(collectedBeacons.values).filter { !$0.alreadySynced && $0.rssi != 0 }
                     NSLog("[BeAroundSDK] Syncing %d beacons (after cleanup/merge/filter)", beaconsToSend.count)
                 }
             }
@@ -752,12 +780,44 @@ public class BeAroundSDK {
                         self.delegate?.didCompleteSync(beaconCount: beaconCount, success: true, error: nil)
                     }
 
+                    // Build list of synced beacon keys before entering the queue
+                    let syncedKeys = beaconsToSend.map { "\($0.major).\($0.minor)" }
+
                     beaconQueue.async {
                         self.consecutiveFailures = 0
                         self.lastFailureTime = nil
 
                         if isRetry {
                             self.offlineBatchStorage.removeOldestBatch()
+                        } else {
+                            // Mark sent beacons as synced
+                            let now = Date()
+                            for key in syncedKeys {
+                                if self.collectedBeacons[key] != nil {
+                                    self.collectedBeacons[key]!.alreadySynced = true
+                                    self.collectedBeacons[key]!.syncedAt = now
+                                }
+                            }
+
+                            // Notify delegate with updated beacons (UI reflects "synced" state)
+                            let updatedBeacons = Array(self.collectedBeacons.values)
+                            DispatchQueue.main.async {
+                                self.delegate?.didUpdateBeacons(updatedBeacons)
+                            }
+
+                            // Schedule delayed removal after 30 seconds
+                            DispatchQueue.main.asyncAfter(deadline: .now() + 30) { [weak self] in
+                                guard let self else { return }
+                                self.beaconQueue.async {
+                                    for key in syncedKeys {
+                                        // Only remove if still marked as synced (not re-detected)
+                                        if self.collectedBeacons[key]?.alreadySynced == true {
+                                            self.collectedBeacons.removeValue(forKey: key)
+                                        }
+                                    }
+                                    NSLog("[BeAroundSDK] Delayed cleanup: removed stale synced beacons")
+                                }
+                            }
                         }
                     }
 
@@ -942,7 +1002,7 @@ extension BeAroundSDK: BluetoothManagerDelegate {
         }
 
         if isBluetoothOnlyMode {
-            let beacon = Beacon(
+            var beacon = Beacon(
                 uuid: UUID(uuidString: "E25B8D3C-947A-452F-A13F-589CB706D2E5")!,
                 major: major,
                 minor: minor,
@@ -955,6 +1015,11 @@ extension BeAroundSDK: BluetoothManagerDelegate {
             )
 
             beaconQueue.async {
+                // Preserve syncedAt from existing entry; reset alreadySynced
+                if let existing = self.collectedBeacons[key] {
+                    beacon.syncedAt = existing.syncedAt
+                }
+                beacon.alreadySynced = false
                 self.collectedBeacons[key] = beacon
             }
         }

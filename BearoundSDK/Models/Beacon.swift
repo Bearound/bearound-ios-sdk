@@ -52,6 +52,12 @@ public struct Beacon {
 
     public let discoverySources: Set<BeaconDiscoverySource>
 
+    /// Internal: indicates this beacon was already sent to Ingest
+    public internal(set) var alreadySynced: Bool
+
+    /// Internal: timestamp of the last successful sync for this beacon
+    public internal(set) var syncedAt: Date?
+
     public init(
         uuid: UUID,
         major: Int,
@@ -62,7 +68,9 @@ public struct Beacon {
         timestamp: Date = Date(),
         metadata: BeaconMetadata? = nil,
         txPower: Int? = nil,
-        discoverySources: Set<BeaconDiscoverySource> = [.coreLocation]
+        discoverySources: Set<BeaconDiscoverySource> = [.coreLocation],
+        alreadySynced: Bool = false,
+        syncedAt: Date? = nil
     ) {
         self.uuid = uuid
         self.major = major
@@ -74,6 +82,8 @@ public struct Beacon {
         self.metadata = metadata
         self.txPower = txPower
         self.discoverySources = discoverySources
+        self.alreadySynced = alreadySynced
+        self.syncedAt = syncedAt
     }
 }
 
