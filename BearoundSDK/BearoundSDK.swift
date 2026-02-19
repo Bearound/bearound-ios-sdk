@@ -192,10 +192,10 @@ public class BeAroundSDK {
                 var updatedBeacons: [Beacon] = []
                 for var beacon in enrichedBeacons {
                     let key = "\(beacon.major).\(beacon.minor)"
-                    // Preserve syncedAt from existing entry; reset alreadySynced (new data to send)
                     if let existing = self.collectedBeacons[key] {
                         beacon.syncedAt = existing.syncedAt
                     }
+                    // Real detection → always pending sync
                     beacon.alreadySynced = false
                     self.collectedBeacons[key] = beacon
                     updatedBeacons.append(beacon)
@@ -294,10 +294,10 @@ public class BeAroundSDK {
                         txPower: tracked.txPower,
                         discoverySources: [tracked.discoverySource]
                     )
-                    // Preserve syncedAt from existing entry; reset alreadySynced
                     if let existing = self.collectedBeacons[key] {
                         beacon.syncedAt = existing.syncedAt
                     }
+                    // Real BLE detection → always pending sync
                     beacon.alreadySynced = false
                     self.collectedBeacons[key] = beacon
                     beaconsForDelegate.append(beacon)
@@ -621,7 +621,7 @@ public class BeAroundSDK {
         var removedCount = 0
 
         for (key, beacon) in collectedBeacons {
-            // Skip synced beacons — their removal is handled by the 30s delayed cleanup
+            // Skip synced beacons — their removal is handled by the 10s delayed cleanup
             if beacon.alreadySynced { continue }
             if now.timeIntervalSince(beacon.timestamp) > maxAge {
                 collectedBeacons.removeValue(forKey: key)
@@ -643,45 +643,29 @@ public class BeAroundSDK {
         let targetUUID = UUID(uuidString: "E25B8D3C-947A-452F-A13F-589CB706D2E5")!
 
         for (key, tracked) in bleTracked {
-            if let existing = collectedBeacons[key] {
-                // Enrich existing beacon with BLE Service Data if not already present
-                if !existing.discoverySources.contains(.serviceUUID) {
-                    var sources = existing.discoverySources
-                    sources.insert(.serviceUUID)
-                    var enriched = Beacon(
-                        uuid: existing.uuid,
-                        major: existing.major,
-                        minor: existing.minor,
-                        rssi: existing.rssi,
-                        proximity: existing.proximity,
-                        accuracy: existing.accuracy,
-                        timestamp: existing.timestamp,
-                        metadata: tracked.metadata ?? existing.metadata,
-                        txPower: tracked.txPower,
-                        discoverySources: sources
-                    )
-                    enriched.alreadySynced = existing.alreadySynced
-                    enriched.syncedAt = existing.syncedAt
-                    collectedBeacons[key] = enriched
-                }
-            } else {
-                // BLE-only beacon — add to collected
-                var newBeacon = Beacon(
-                    uuid: targetUUID,
-                    major: tracked.major,
-                    minor: tracked.minor,
-                    rssi: tracked.rssi,
-                    proximity: .bt,
-                    accuracy: -1,
-                    metadata: tracked.metadata,
+            // Only enrich beacons that already exist in collectedBeacons
+            // Never add new beacons here — that's the job of detection callbacks
+            guard let existing = collectedBeacons[key] else { continue }
+
+            // Only enrich with Service UUID source if not already present
+            if !existing.discoverySources.contains(.serviceUUID) {
+                var sources = existing.discoverySources
+                sources.insert(.serviceUUID)
+                var enriched = Beacon(
+                    uuid: existing.uuid,
+                    major: existing.major,
+                    minor: existing.minor,
+                    rssi: existing.rssi,
+                    proximity: existing.proximity,
+                    accuracy: existing.accuracy,
+                    timestamp: existing.timestamp,
+                    metadata: tracked.metadata ?? existing.metadata,
                     txPower: tracked.txPower,
-                    discoverySources: [tracked.discoverySource]
+                    discoverySources: sources
                 )
-                // Preserve syncedAt if there was a previous entry
-                if let existing = collectedBeacons[key] {
-                    newBeacon.syncedAt = existing.syncedAt
-                }
-                collectedBeacons[key] = newBeacon
+                enriched.alreadySynced = existing.alreadySynced
+                enriched.syncedAt = existing.syncedAt
+                collectedBeacons[key] = enriched
             }
         }
     }
@@ -817,8 +801,8 @@ public class BeAroundSDK {
                                 self.delegate?.didUpdateBeacons(updatedBeacons)
                             }
 
-                            // Schedule delayed removal after 30 seconds
-                            DispatchQueue.main.asyncAfter(deadline: .now() + 30) { [weak self] in
+                            // Schedule delayed removal after 10 seconds
+                            DispatchQueue.main.asyncAfter(deadline: .now() + 10) { [weak self] in
                                 guard let self else { return }
                                 self.beaconQueue.async {
                                     for key in syncedKeys {
@@ -1030,10 +1014,10 @@ extension BeAroundSDK: BluetoothManagerDelegate {
             )
 
             beaconQueue.async {
-                // Preserve syncedAt from existing entry; reset alreadySynced
                 if let existing = self.collectedBeacons[key] {
                     beacon.syncedAt = existing.syncedAt
                 }
+                // Real BLE detection → always pending sync
                 beacon.alreadySynced = false
                 self.collectedBeacons[key] = beacon
             }
