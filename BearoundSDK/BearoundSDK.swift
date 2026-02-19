@@ -703,11 +703,17 @@ public class BeAroundSDK {
             var beaconsToSend: [Beacon] = []
             var isRetry = false
 
-            if shouldRetryFailed, let failedBatch = offlineBatchStorage.loadOldestBatch() {
-                beaconsToSend = failedBatch.filter { $0.rssi != 0 }
-                isRetry = true
-                NSLog("[BeAroundSDK] Retrying failed batch with %d beacons", beaconsToSend.count)
-            } else {
+            if shouldRetryFailed {
+                let allBatches = offlineBatchStorage.loadAllBatches()
+                let allRetryBeacons = allBatches.flatMap { $0 }.filter { $0.rssi != 0 }
+                if !allRetryBeacons.isEmpty {
+                    beaconsToSend = allRetryBeacons
+                    isRetry = true
+                    NSLog("[BeAroundSDK] Retrying ALL %d batches (%d beacons total)", allBatches.count, allRetryBeacons.count)
+                }
+            }
+
+            if !isRetry {
                 // Clean up stale beacons and merge BLE Service Data
                 self.cleanupStaleBeacons()
                 self.mergeBLEBeacons()
@@ -787,7 +793,8 @@ public class BeAroundSDK {
                         self.lastFailureTime = nil
 
                         if isRetry {
-                            self.offlineBatchStorage.removeOldestBatch()
+                            self.offlineBatchStorage.clearAllBatches()
+                            NSLog("[BeAroundSDK] All retry batches cleared successfully")
                         } else {
                             // Mark sent beacons as synced
                             let now = Date()
