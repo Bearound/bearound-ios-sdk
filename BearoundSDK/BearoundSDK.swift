@@ -698,47 +698,36 @@ public class BeAroundSDK {
                 return
             }
 
-            let shouldRetryFailed = shouldRetryFailedBatches()
-
             var beaconsToSend: [Beacon] = []
-            var isRetry = false
 
-            if shouldRetryFailed {
-                let allBatches = offlineBatchStorage.loadAllBatches()
-                let allRetryBeacons = allBatches.flatMap { $0 }.filter { $0.rssi != 0 }
-                if !allRetryBeacons.isEmpty {
-                    beaconsToSend = allRetryBeacons
-                    isRetry = true
-                    NSLog("[BeAroundSDK] Retrying ALL %d batches (%d beacons total)", allBatches.count, allRetryBeacons.count)
+            // Clean up stale beacons and merge BLE Service Data
+            self.cleanupStaleBeacons()
+            self.mergeBLEBeacons()
+
+            if !collectedBeacons.isEmpty {
+                // Log state of all collected beacons before filtering
+                for (key, b) in collectedBeacons {
+                    let age = Int(Date().timeIntervalSince(b.timestamp))
+                    NSLog("[BeAroundSDK] COLLECTED %@ | synced=%d | rssi=%d | age=%ds | syncedAt=%@",
+                          key,
+                          b.alreadySynced ? 1 : 0,
+                          b.rssi,
+                          age,
+                          b.syncedAt?.description ?? "nil")
                 }
-            }
 
-            if !isRetry {
-                // Clean up stale beacons and merge BLE Service Data
-                self.cleanupStaleBeacons()
-                self.mergeBLEBeacons()
-
-                if !collectedBeacons.isEmpty {
-                    // Log state of all collected beacons before filtering
-                    for (key, b) in collectedBeacons {
-                        let age = Int(Date().timeIntervalSince(b.timestamp))
-                        NSLog("[BeAroundSDK] COLLECTED %@ | synced=%d | rssi=%d | age=%ds | syncedAt=%@",
-                              key,
-                              b.alreadySynced ? 1 : 0,
-                              b.rssi,
-                              age,
-                              b.syncedAt?.description ?? "nil")
-                    }
-
-                    // Only send beacons that haven't been synced yet, and filter invalid RSSI
-                    beaconsToSend = Array(collectedBeacons.values).filter { !$0.alreadySynced && $0.rssi != 0 }
-                    NSLog("[BeAroundSDK] Syncing %d of %d beacons (pending only)", beaconsToSend.count, collectedBeacons.count)
-                }
+                // Only send beacons that haven't been synced yet, and filter invalid RSSI
+                beaconsToSend = Array(collectedBeacons.values).filter { !$0.alreadySynced && $0.rssi != 0 }
+                NSLog("[BeAroundSDK] Syncing %d of %d beacons (pending only)", beaconsToSend.count, collectedBeacons.count)
             }
 
             guard !beaconsToSend.isEmpty else {
-                NSLog("[BeAroundSDK] Nothing to sync")
+                NSLog("[BeAroundSDK] No new beacons to sync")
                 self.endBackgroundTask()
+                // No new beacons — drain retry queue if pending batches exist
+                if self.shouldRetryFailedBatches() {
+                    self.drainRetryQueue()
+                }
                 return
             }
 
@@ -792,41 +781,41 @@ public class BeAroundSDK {
                         self.consecutiveFailures = 0
                         self.lastFailureTime = nil
 
-                        if isRetry {
-                            self.offlineBatchStorage.clearAllBatches()
-                            NSLog("[BeAroundSDK] All retry batches cleared successfully")
-                        } else {
-                            // Mark sent beacons as synced
-                            let now = Date()
-                            for key in syncedKeys {
-                                if self.collectedBeacons[key] != nil {
-                                    self.collectedBeacons[key]!.alreadySynced = true
-                                    self.collectedBeacons[key]!.syncedAt = now
-                                    NSLog("[BeAroundSDK] MARKED SYNCED: %@", key)
-                                }
+                        // Mark sent beacons as synced
+                        let now = Date()
+                        for key in syncedKeys {
+                            if self.collectedBeacons[key] != nil {
+                                self.collectedBeacons[key]!.alreadySynced = true
+                                self.collectedBeacons[key]!.syncedAt = now
+                                NSLog("[BeAroundSDK] MARKED SYNCED: %@", key)
                             }
+                        }
 
-                            // Notify delegate with updated beacons (UI reflects "synced" state)
-                            let updatedBeacons = Array(self.collectedBeacons.values)
-                            DispatchQueue.main.async {
-                                self.delegate?.didUpdateBeacons(updatedBeacons)
-                            }
+                        // Notify delegate with updated beacons (UI reflects "synced" state)
+                        let updatedBeacons = Array(self.collectedBeacons.values)
+                        DispatchQueue.main.async {
+                            self.delegate?.didUpdateBeacons(updatedBeacons)
+                        }
 
-                            // Schedule delayed removal after 10 seconds
-                            DispatchQueue.main.asyncAfter(deadline: .now() + 10) { [weak self] in
-                                guard let self else { return }
-                                self.beaconQueue.async {
-                                    for key in syncedKeys {
-                                        // Only remove if still marked as synced (not re-detected)
-                                        if self.collectedBeacons[key]?.alreadySynced == true {
-                                            self.collectedBeacons.removeValue(forKey: key)
-                                            NSLog("[BeAroundSDK] REMOVED (30s expired): %@", key)
-                                        } else {
-                                            NSLog("[BeAroundSDK] KEPT (re-detected): %@", key)
-                                        }
+                        // Schedule delayed removal after 10 seconds
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 10) { [weak self] in
+                            guard let self else { return }
+                            self.beaconQueue.async {
+                                for key in syncedKeys {
+                                    // Only remove if still marked as synced (not re-detected)
+                                    if self.collectedBeacons[key]?.alreadySynced == true {
+                                        self.collectedBeacons.removeValue(forKey: key)
+                                        NSLog("[BeAroundSDK] REMOVED (10s expired): %@", key)
+                                    } else {
+                                        NSLog("[BeAroundSDK] KEPT (re-detected): %@", key)
                                     }
                                 }
                             }
+                        }
+
+                        // Drain retry queue after new beacons synced
+                        if self.shouldRetryFailedBatches() {
+                            self.drainRetryQueue()
                         }
                     }
 
@@ -845,10 +834,8 @@ public class BeAroundSDK {
                         self.lastFailureTime = Date()
 
                         // Save to persistent storage for retry
-                        if !isRetry {
-                            self.offlineBatchStorage.saveBatch(beaconsToSend)
-                            NSLog("[BeAroundSDK] Saved failed batch to persistent storage")
-                        }
+                        self.offlineBatchStorage.saveBatch(beaconsToSend)
+                        NSLog("[BeAroundSDK] Saved failed batch to persistent storage")
 
                         if self.consecutiveFailures >= 10 {
                             let circuitBreakerError = NSError(
@@ -867,6 +854,116 @@ public class BeAroundSDK {
 
                     DispatchQueue.main.async {
                         self.delegate?.didFailWithError(error)
+                    }
+                }
+            }
+        }
+    }
+
+    // MARK: - Retry Queue Drain (chunked)
+
+    /// Maximum number of batches to merge per retry API call
+    private static let retryChunkSize = 5
+
+    /// Drains the retry queue by sending batches in chunks of 5, sequentially.
+    /// On success of each chunk, immediately sends the next until the queue is empty.
+    /// On failure, stops draining (will retry on next sync cycle).
+    private func drainRetryQueue() {
+        beaconQueue.async { [weak self] in
+            guard let self else { return }
+            guard !self.isSyncing else {
+                NSLog("[BeAroundSDK] Retry drain skipped — sync in progress")
+                return
+            }
+            guard let apiClient = self.apiClient, let sdkInfo = self.sdkInfo else { return }
+
+            let totalPending = self.offlineBatchStorage.batchCount
+            guard totalPending > 0 else {
+                NSLog("[BeAroundSDK] Retry queue empty, nothing to drain")
+                return
+            }
+
+            let chunkBatches = self.offlineBatchStorage.loadOldestBatches(Self.retryChunkSize)
+            let chunkCount = chunkBatches.count
+            let beaconsToSend = chunkBatches.flatMap { $0 }.filter { $0.rssi != 0 }
+
+            guard !beaconsToSend.isEmpty else {
+                // All beacons in this chunk had rssi=0, skip and try next
+                self.offlineBatchStorage.removeOldestBatches(chunkCount)
+                NSLog("[BeAroundSDK] Skipped %d empty retry batches", chunkCount)
+                self.drainRetryQueue()
+                return
+            }
+
+            self.isSyncing = true
+            let beaconCount = beaconsToSend.count
+
+            NSLog("[BeAroundSDK] Retry drain: sending chunk of %d batches (%d beacons), %d total pending",
+                  chunkCount, beaconCount, totalPending)
+
+            self.beginBackgroundTask()
+
+            DispatchQueue.main.async {
+                self.delegate?.willStartSync(beaconCount: beaconCount)
+            }
+
+            let locationPermission = Self.authorizationStatus()
+            let bluetoothState = self.bluetoothManager.isPoweredOn ? "powered_on" : "powered_off"
+            let appInForeground = !self.isInBackground
+
+            let userDevice = self.deviceInfoCollector.collectDeviceInfo(
+                locationPermission: locationPermission,
+                bluetoothState: bluetoothState,
+                appInForeground: appInForeground,
+                location: self.beaconManager.lastLocation
+            )
+
+            apiClient.sendBeacons(
+                beaconsToSend,
+                sdkInfo: sdkInfo,
+                userDevice: userDevice,
+                userProperties: self.userProperties,
+                syncTrigger: "retry_drain"
+            ) { [weak self] result in
+                guard let self else { return }
+
+                switch result {
+                case .success:
+                    NSLog("[BeAroundSDK] Retry chunk SUCCESS (%d batches, %d beacons)", chunkCount, beaconCount)
+                    self.endBackgroundTask()
+
+                    DispatchQueue.main.async {
+                        self.delegate?.didCompleteSync(beaconCount: beaconCount, success: true, error: nil)
+                    }
+
+                    self.beaconQueue.async {
+                        self.isSyncing = false
+                        self.consecutiveFailures = 0
+                        self.lastFailureTime = nil
+                        self.offlineBatchStorage.removeOldestBatches(chunkCount)
+
+                        // Continue draining if more batches remain
+                        if self.offlineBatchStorage.batchCount > 0 {
+                            NSLog("[BeAroundSDK] %d retry batches remaining, continuing drain...", self.offlineBatchStorage.batchCount)
+                            self.drainRetryQueue()
+                        } else {
+                            NSLog("[BeAroundSDK] All retry batches drained successfully")
+                        }
+                    }
+
+                case .failure(let error):
+                    NSLog("[BeAroundSDK] Retry chunk FAILED: %@ — drain stopped", error.localizedDescription)
+                    self.endBackgroundTask()
+
+                    DispatchQueue.main.async {
+                        self.delegate?.didCompleteSync(beaconCount: beaconCount, success: false, error: error)
+                        self.delegate?.didFailWithError(error)
+                    }
+
+                    self.beaconQueue.async {
+                        self.isSyncing = false
+                        self.consecutiveFailures += 1
+                        self.lastFailureTime = Date()
                     }
                 }
             }

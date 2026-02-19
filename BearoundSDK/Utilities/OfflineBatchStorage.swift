@@ -189,64 +189,77 @@ class OfflineBatchStorage {
     /// Loads the oldest batch from storage (FIFO)
     /// - Returns: Array of beacons or nil if no batches available
     func loadOldestBatch() -> [Beacon]? {
-        guard let directory = storageDirectory else { return nil }
+        let batches = loadOldestBatches(1)
+        return batches.first
+    }
+
+    /// Loads the N oldest batches from storage (FIFO)
+    /// - Parameter count: Maximum number of batches to load
+    /// - Returns: Array of beacon arrays, ordered oldest first
+    func loadOldestBatches(_ count: Int) -> [[Beacon]] {
+        guard let directory = storageDirectory else { return [] }
 
         guard let files = try? fileManager.contentsOfDirectory(atPath: directory.path) else {
-            return nil
+            return []
         }
 
-        // Filter JSON files and sort by name (timestamp prefix ensures oldest first)
         let jsonFiles = files.filter { $0.hasSuffix(".json") }.sorted()
+        var batches: [[Beacon]] = []
 
-        guard let oldestFile = jsonFiles.first else {
-            return nil
+        for filename in jsonFiles.prefix(count) {
+            let fileURL = directory.appendingPathComponent(filename)
+
+            do {
+                let data = try Data(contentsOf: fileURL)
+                let decoder = JSONDecoder()
+                decoder.dateDecodingStrategy = .iso8601
+                let batch = try decoder.decode(StoredBatch.self, from: data)
+                batches.append(batch.beacons.map { $0.toBeacon() })
+            } catch {
+                NSLog("[BeAroundSDK] Failed to load batch %@: %@", filename, error.localizedDescription)
+                try? fileManager.removeItem(at: fileURL)
+            }
         }
 
-        let fileURL = directory.appendingPathComponent(oldestFile)
-
-        do {
-            let data = try Data(contentsOf: fileURL)
-            let decoder = JSONDecoder()
-            decoder.dateDecodingStrategy = .iso8601
-            let batch = try decoder.decode(StoredBatch.self, from: data)
-
-            let beacons = batch.beacons.map { $0.toBeacon() }
-            NSLog("[BeAroundSDK] Loaded oldest batch with %d beacons from %@", beacons.count, oldestFile)
-            return beacons
-        } catch {
-            NSLog("[BeAroundSDK] Failed to load batch %@: %@", oldestFile, error.localizedDescription)
-            // Remove corrupted file
-            try? fileManager.removeItem(at: fileURL)
-            return nil
-        }
+        NSLog("[BeAroundSDK] Loaded %d oldest batches from storage", batches.count)
+        return batches
     }
 
     /// Removes the oldest batch from storage (call after successful sync)
     /// - Returns: true if removed successfully
     @discardableResult
     func removeOldestBatch() -> Bool {
-        guard let directory = storageDirectory else { return false }
+        return removeOldestBatches(1) == 1
+    }
+
+    /// Removes the N oldest batches from storage
+    /// - Parameter count: Number of batches to remove
+    /// - Returns: Number of batches actually removed
+    @discardableResult
+    func removeOldestBatches(_ count: Int) -> Int {
+        guard let directory = storageDirectory else { return 0 }
 
         guard let files = try? fileManager.contentsOfDirectory(atPath: directory.path) else {
-            return false
+            return 0
         }
 
         let jsonFiles = files.filter { $0.hasSuffix(".json") }.sorted()
+        var removedCount = 0
 
-        guard let oldestFile = jsonFiles.first else {
-            return false
+        for filename in jsonFiles.prefix(count) {
+            let fileURL = directory.appendingPathComponent(filename)
+            do {
+                try fileManager.removeItem(at: fileURL)
+                removedCount += 1
+            } catch {
+                NSLog("[BeAroundSDK] Failed to remove batch %@: %@", filename, error.localizedDescription)
+            }
         }
 
-        let fileURL = directory.appendingPathComponent(oldestFile)
-
-        do {
-            try fileManager.removeItem(at: fileURL)
-            NSLog("[BeAroundSDK] Removed batch file: %@", oldestFile)
-            return true
-        } catch {
-            NSLog("[BeAroundSDK] Failed to remove batch %@: %@", oldestFile, error.localizedDescription)
-            return false
+        if removedCount > 0 {
+            NSLog("[BeAroundSDK] Removed %d oldest batches", removedCount)
         }
+        return removedCount
     }
 
     /// Loads all batches from storage (for migration or debugging)
