@@ -621,6 +621,8 @@ public class BeAroundSDK {
         var removedCount = 0
 
         for (key, beacon) in collectedBeacons {
+            // Skip synced beacons — their removal is handled by the 30s delayed cleanup
+            if beacon.alreadySynced { continue }
             if now.timeIntervalSince(beacon.timestamp) > maxAge {
                 collectedBeacons.removeValue(forKey: key)
                 removedCount += 1
