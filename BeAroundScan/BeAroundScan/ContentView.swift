@@ -395,6 +395,15 @@ struct BeaconRow: View {
                                 .background(sourceColor(for: source))
                                 .cornerRadius(4)
                         }
+
+                        Text(beacon.alreadySynced ? "Synced" : "Pending")
+                            .font(.caption2)
+                            .fontWeight(.medium)
+                            .foregroundColor(.white)
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 2)
+                            .background(beacon.alreadySynced ? Color.green : Color.orange)
+                            .cornerRadius(4)
                     }
 
                     if let metadata = beacon.metadata {
@@ -434,6 +443,17 @@ struct BeaconRow: View {
                                     .font(.caption2)
                                     .foregroundColor(.secondary)
                             }
+                        }
+                    }
+
+                    if let syncedAt = beacon.syncedAt {
+                        HStack(spacing: 3) {
+                            Image(systemName: "clock")
+                                .font(.caption2)
+                                .foregroundColor(.green)
+                            Text("Sync: \(syncedAt.formatted(date: .omitted, time: .standard))")
+                                .font(.caption2)
+                                .foregroundColor(.secondary)
                         }
                     }
                 }
