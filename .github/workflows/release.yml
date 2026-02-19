@@ -156,7 +156,7 @@ jobs:
           VERSION=${{ needs.pre_release_validation.outputs.version }}
 
           # Check if version is already published on CocoaPods
-          if pod trunk info BearoundSDK 2>/dev/null | grep -q "- ${VERSION}"; then
+          if pod trunk info BearoundSDK 2>/dev/null | grep -qF -- "- ${VERSION}"; then
             echo "✅ Version ${VERSION} is already published on CocoaPods — skipping push"
             exit 0
           fi
