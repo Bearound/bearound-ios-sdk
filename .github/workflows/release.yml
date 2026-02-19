@@ -155,8 +155,18 @@ jobs:
 
           VERSION=${{ needs.pre_release_validation.outputs.version }}
 
-          # Check if version is already published on CocoaPods
-          if pod trunk info BearoundSDK 2>/dev/null | grep -qF -- "- ${VERSION}"; then
+          # Check if version is already published on CocoaPods (no auth needed)
+          PUBLISHED=$(curl -s "https://trunk.cocoapods.org/api/v1/pods/BearoundSDK" | python3 -c "
+          import sys, json
+          try:
+              data = json.load(sys.stdin)
+              versions = [v['name'] for v in data.get('versions', [])]
+              print('yes' if '${VERSION}' in versions else 'no')
+          except:
+              print('no')
+          " 2>/dev/null)
+
+          if [ "$PUBLISHED" = "yes" ]; then
             echo "✅ Version ${VERSION} is already published on CocoaPods — skipping push"
             exit 0
           fi
