@@ -272,21 +272,27 @@ struct ContentView: View {
                     }
                     .padding(.vertical, 40)
                 } else {
-                    LazyVStack(spacing: 0) {
-                        ForEach(viewModel.beacons.indices, id: \.self) { index in
-                            let beacon = viewModel.beacons[index]
-                            BeaconRow(beacon: beacon, isPinned: viewModel.isPinned(beacon))
-                                .contentShape(Rectangle())
-                                .onTapGesture {
-                                    viewModel.togglePin(for: beacon)
-                                }
-                                .padding(.horizontal)
+                    let pendingBeacons = viewModel.beacons.filter { !$0.alreadySynced }
+                    let syncedBeacons = viewModel.beacons.filter { $0.alreadySynced }
 
-                            if index < viewModel.beacons.count - 1 {
-                                Divider()
-                                    .padding(.horizontal)
-                            }
-                        }
+                    if !pendingBeacons.isEmpty {
+                        BeaconSection(
+                            title: "Pending",
+                            count: pendingBeacons.count,
+                            color: .orange,
+                            beacons: pendingBeacons,
+                            viewModel: viewModel
+                        )
+                    }
+
+                    if !syncedBeacons.isEmpty {
+                        BeaconSection(
+                            title: "Synced",
+                            count: syncedBeacons.count,
+                            color: .green,
+                            beacons: syncedBeacons,
+                            viewModel: viewModel
+                        )
                     }
                 }
             }
@@ -346,6 +352,51 @@ struct ContentView: View {
     }
 }
 
+struct BeaconSection: View {
+    let title: String
+    let count: Int
+    let color: Color
+    let beacons: [Beacon]
+    let viewModel: BeaconViewModel
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(spacing: 6) {
+                Circle()
+                    .fill(color)
+                    .frame(width: 8, height: 8)
+                Text("\(title) (\(count))")
+                    .font(.subheadline)
+                    .fontWeight(.semibold)
+                    .foregroundColor(color)
+            }
+            .padding(.horizontal)
+            .padding(.vertical, 6)
+
+            LazyVStack(spacing: 0) {
+                ForEach(beacons.indices, id: \.self) { index in
+                    let beacon = beacons[index]
+                    BeaconRow(beacon: beacon, isPinned: viewModel.isPinned(beacon))
+                        .contentShape(Rectangle())
+                        .onTapGesture {
+                            viewModel.togglePin(for: beacon)
+                        }
+                        .padding(.horizontal)
+
+                    if index < beacons.count - 1 {
+                        Divider()
+                            .padding(.horizontal)
+                    }
+                }
+            }
+        }
+        .padding(.vertical, 4)
+        .background(color.opacity(0.05))
+        .cornerRadius(8)
+        .padding(.horizontal)
+    }
+}
+
 struct BeaconRow: View {
     let beacon: Beacon
     var isPinned: Bool = false
@@ -395,15 +446,6 @@ struct BeaconRow: View {
                                 .background(sourceColor(for: source))
                                 .cornerRadius(4)
                         }
-
-                        Text(beacon.alreadySynced ? "Synced" : "Pending")
-                            .font(.caption2)
-                            .fontWeight(.medium)
-                            .foregroundColor(.white)
-                            .padding(.horizontal, 6)
-                            .padding(.vertical, 2)
-                            .background(beacon.alreadySynced ? Color.green : Color.orange)
-                            .cornerRadius(4)
                     }
 
                     if let metadata = beacon.metadata {
@@ -446,14 +488,30 @@ struct BeaconRow: View {
                         }
                     }
 
-                    if let syncedAt = beacon.syncedAt {
+                    // Debug: detection timestamp + age
+                    HStack(spacing: 8) {
                         HStack(spacing: 3) {
-                            Image(systemName: "clock")
-                                .font(.caption2)
-                                .foregroundColor(.green)
-                            Text("Sync: \(syncedAt.formatted(date: .omitted, time: .standard))")
+                            Image(systemName: "eye")
                                 .font(.caption2)
                                 .foregroundColor(.secondary)
+                            Text("Det: \(beacon.timestamp.formatted(date: .omitted, time: .standard))")
+                                .font(.caption2)
+                                .foregroundColor(.secondary)
+                        }
+
+                        Text("(\(beaconAge)s ago)")
+                            .font(.caption2)
+                            .foregroundColor(beaconAgeColor)
+
+                        if let syncedAt = beacon.syncedAt {
+                            HStack(spacing: 3) {
+                                Image(systemName: "arrow.up.circle.fill")
+                                    .font(.caption2)
+                                    .foregroundColor(.green)
+                                Text("Sync: \(syncedAt.formatted(date: .omitted, time: .standard))")
+                                    .font(.caption2)
+                                    .foregroundColor(.secondary)
+                            }
                         }
                     }
                 }
@@ -470,6 +528,17 @@ struct BeaconRow: View {
             }
         }
         .padding(.vertical, 8)
+    }
+
+    private var beaconAge: Int {
+        Int(Date().timeIntervalSince(beacon.timestamp))
+    }
+
+    private var beaconAgeColor: Color {
+        let age = beaconAge
+        if age < 10 { return .green }
+        if age < 30 { return .orange }
+        return .red
     }
 
     private var uuidString: String {

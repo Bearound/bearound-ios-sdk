@@ -725,9 +725,20 @@ public class BeAroundSDK {
                 self.mergeBLEBeacons()
 
                 if !collectedBeacons.isEmpty {
+                    // Log state of all collected beacons before filtering
+                    for (key, b) in collectedBeacons {
+                        let age = Int(Date().timeIntervalSince(b.timestamp))
+                        NSLog("[BeAroundSDK] COLLECTED %@ | synced=%d | rssi=%d | age=%ds | syncedAt=%@",
+                              key,
+                              b.alreadySynced ? 1 : 0,
+                              b.rssi,
+                              age,
+                              b.syncedAt?.description ?? "nil")
+                    }
+
                     // Only send beacons that haven't been synced yet, and filter invalid RSSI
                     beaconsToSend = Array(collectedBeacons.values).filter { !$0.alreadySynced && $0.rssi != 0 }
-                    NSLog("[BeAroundSDK] Syncing %d beacons (after cleanup/merge/filter)", beaconsToSend.count)
+                    NSLog("[BeAroundSDK] Syncing %d of %d beacons (pending only)", beaconsToSend.count, collectedBeacons.count)
                 }
             }
 
@@ -768,10 +779,6 @@ public class BeAroundSDK {
             ) { [weak self] result in
                 guard let self else { return }
 
-                beaconQueue.async {
-                    self.isSyncing = false
-                }
-
                 switch result {
                 case .success:
                     NSLog("[BeAroundSDK] Sync SUCCESS")
@@ -785,7 +792,9 @@ public class BeAroundSDK {
                     // Build list of synced beacon keys before entering the queue
                     let syncedKeys = beaconsToSend.map { "\($0.major).\($0.minor)" }
 
+                    // Mark synced + reset isSyncing in a SINGLE beaconQueue block to prevent race conditions
                     beaconQueue.async {
+                        self.isSyncing = false
                         self.consecutiveFailures = 0
                         self.lastFailureTime = nil
 
@@ -798,6 +807,7 @@ public class BeAroundSDK {
                                 if self.collectedBeacons[key] != nil {
                                     self.collectedBeacons[key]!.alreadySynced = true
                                     self.collectedBeacons[key]!.syncedAt = now
+                                    NSLog("[BeAroundSDK] MARKED SYNCED: %@", key)
                                 }
                             }
 
@@ -815,9 +825,11 @@ public class BeAroundSDK {
                                         // Only remove if still marked as synced (not re-detected)
                                         if self.collectedBeacons[key]?.alreadySynced == true {
                                             self.collectedBeacons.removeValue(forKey: key)
+                                            NSLog("[BeAroundSDK] REMOVED (30s expired): %@", key)
+                                        } else {
+                                            NSLog("[BeAroundSDK] KEPT (re-detected): %@", key)
                                         }
                                     }
-                                    NSLog("[BeAroundSDK] Delayed cleanup: removed stale synced beacons")
                                 }
                             }
                         }
@@ -833,6 +845,7 @@ public class BeAroundSDK {
                     }
 
                     beaconQueue.async {
+                        self.isSyncing = false
                         self.consecutiveFailures += 1
                         self.lastFailureTime = Date()
 
