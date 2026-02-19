@@ -7,18 +7,19 @@ struct ContentView: View {
 
     var body: some View {
         NavigationView {
-            VStack(spacing: 16) {
-                VStack(spacing: 4) {
-                    Text("BeAroundScan")
-                        .font(.largeTitle)
-                        .fontWeight(.bold)
+            ScrollView {
+                VStack(spacing: 16) {
+                    VStack(spacing: 4) {
+                        Text("BeAroundScan")
+                            .font(.largeTitle)
+                            .fontWeight(.bold)
 
-                    Text(viewModel.statusMessage)
-                        .font(.subheadline)
-                        .foregroundColor(.secondary)
-                        .multilineTextAlignment(.center)
-                        .padding(.horizontal)
-                }
+                        Text(viewModel.statusMessage)
+                            .font(.subheadline)
+                            .foregroundColor(.secondary)
+                            .multilineTextAlignment(.center)
+                            .padding(.horizontal)
+                    }
 
                 VStack(alignment: .leading, spacing: 8) {
                     Text("Permissões")
@@ -68,6 +69,38 @@ struct ContentView: View {
                                 .font(.caption)
                                 .fontWeight(.medium)
                                 .foregroundColor(notificationPermissionColor)
+                        }
+
+                        HStack {
+                            Image(systemName: "hand.raised.fill")
+                                .font(.caption)
+                                .foregroundColor(trackingPermissionColor)
+                                .frame(width: 20)
+                            Text("Tracking:")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                            Spacer()
+                            Text(viewModel.trackingStatus)
+                                .font(.caption)
+                                .fontWeight(.medium)
+                                .foregroundColor(trackingPermissionColor)
+                        }
+
+                        HStack {
+                            Image(systemName: "tag.fill")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                                .frame(width: 20)
+                            Text("IDFA:")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                            Spacer()
+                            Text(viewModel.idfaValue)
+                                .font(.caption2)
+                                .fontWeight(.medium)
+                                .foregroundColor(.secondary)
+                                .lineLimit(1)
+                                .minimumScaleFactor(0.7)
                         }
                     }
                     .padding(12)
@@ -237,20 +270,28 @@ struct ContentView: View {
                                 .foregroundColor(.secondary)
                         }
                     }
-                    .frame(maxHeight: .infinity)
+                    .padding(.vertical, 40)
                 } else {
-                    List(viewModel.beacons.indices, id: \.self) { index in
-                        let beacon = viewModel.beacons[index]
-                        BeaconRow(beacon: beacon, isPinned: viewModel.isPinned(beacon))
-                            .contentShape(Rectangle())
-                            .onTapGesture {
-                                viewModel.togglePin(for: beacon)
+                    LazyVStack(spacing: 0) {
+                        ForEach(viewModel.beacons.indices, id: \.self) { index in
+                            let beacon = viewModel.beacons[index]
+                            BeaconRow(beacon: beacon, isPinned: viewModel.isPinned(beacon))
+                                .contentShape(Rectangle())
+                                .onTapGesture {
+                                    viewModel.togglePin(for: beacon)
+                                }
+                                .padding(.horizontal)
+
+                            if index < viewModel.beacons.count - 1 {
+                                Divider()
+                                    .padding(.horizontal)
                             }
+                        }
                     }
-                    .listStyle(.plain)
                 }
             }
             .padding(.vertical)
+            }
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .navigationBarTrailing) {
@@ -264,7 +305,7 @@ struct ContentView: View {
             .sheet(isPresented: $showSettings) {
                 SettingsView(viewModel: viewModel)
             }
-        }
+        }  // NavigationView
     }
 
     private var locationPermissionColor: Color {
@@ -294,6 +335,13 @@ struct ContentView: View {
         let status = viewModel.notificationStatus
         if status.contains("Autorizada") { return .green }
         if status.contains("Negada") { return .red }
+        return .orange
+    }
+
+    private var trackingPermissionColor: Color {
+        let status = viewModel.trackingStatus
+        if status.contains("Permitido") { return .green }
+        if status.contains("Negado") || status.contains("Restrito") { return .red }
         return .orange
     }
 }

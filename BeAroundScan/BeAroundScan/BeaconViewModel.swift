@@ -1,3 +1,5 @@
+import AdSupport
+import AppTrackingTransparency
 import BearoundSDK
 import Combine
 import CoreBluetooth
@@ -29,6 +31,8 @@ class BeaconViewModel: NSObject, ObservableObject, BeAroundSDKDelegate {
     @Published var sortOption: BeaconSortOption = .proximity
     @Published var bluetoothStatus: String = "Verificando..."
     @Published var notificationStatus: String = "Verificando..."
+    @Published var trackingStatus: String = "Verificando..."
+    @Published var idfaValue: String = "—"
 
     // SDK Configuration Settings
     @Published var foregroundInterval: ForegroundScanInterval = .seconds15
@@ -66,6 +70,7 @@ class BeaconViewModel: NSObject, ObservableObject, BeAroundSDKDelegate {
         updatePermissionStatus()
         checkBluetoothStatus()
         checkNotificationStatus()
+        requestTrackingPermission()
         initializeSDK()
     }
 
@@ -87,6 +92,56 @@ class BeaconViewModel: NSObject, ObservableObject, BeAroundSDKDelegate {
                     self.notificationStatus = "Desconhecida"
                 }
             }
+        }
+    }
+
+    private func requestTrackingPermission() {
+        if #available(iOS 14, *) {
+            let currentStatus = ATTrackingManager.trackingAuthorizationStatus
+            if currentStatus == .notDetermined {
+                // Delay to avoid conflict with other permission dialogs
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
+                    ATTrackingManager.requestTrackingAuthorization { [weak self] status in
+                        DispatchQueue.main.async {
+                            self?.updateTrackingStatus()
+                        }
+                    }
+                }
+            } else {
+                updateTrackingStatus()
+            }
+        } else {
+            // iOS < 14: no ATT framework
+            let enabled = ASIdentifierManager.shared().isAdvertisingTrackingEnabled
+            trackingStatus = enabled ? "Permitido" : "Negado"
+            updateIDFAValue()
+        }
+    }
+
+    private func updateTrackingStatus() {
+        if #available(iOS 14, *) {
+            switch ATTrackingManager.trackingAuthorizationStatus {
+            case .authorized:
+                trackingStatus = "Permitido"
+            case .denied:
+                trackingStatus = "Negado"
+            case .restricted:
+                trackingStatus = "Restrito"
+            case .notDetermined:
+                trackingStatus = "Não solicitado"
+            @unknown default:
+                trackingStatus = "Desconhecido"
+            }
+        }
+        updateIDFAValue()
+    }
+
+    private func updateIDFAValue() {
+        let idfa = ASIdentifierManager.shared().advertisingIdentifier.uuidString
+        if idfa == "00000000-0000-0000-0000-000000000000" {
+            idfaValue = "Indisponível"
+        } else {
+            idfaValue = idfa
         }
     }
 
