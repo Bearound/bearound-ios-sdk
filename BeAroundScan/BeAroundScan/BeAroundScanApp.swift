@@ -49,10 +49,23 @@ class AppDelegate: NSObject, UIApplicationDelegate {
 @main
 struct BeAroundScanApp: App {
     @UIApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
+    @StateObject private var viewModel = BeaconViewModel()
 
     var body: some Scene {
         WindowGroup {
-            ContentView()
+            TabView {
+                ContentView(viewModel: viewModel)
+                    .tabItem {
+                        Image(systemName: "antenna.radiowaves.left.and.right")
+                        Text("Beacons")
+                    }
+
+                RetryQueueView(viewModel: viewModel)
+                    .tabItem {
+                        Image(systemName: "arrow.clockwise.circle")
+                        Text("Retry Queue")
+                    }
+            }
         }
     }
 }

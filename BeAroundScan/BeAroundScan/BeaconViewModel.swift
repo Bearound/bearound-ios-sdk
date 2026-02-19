@@ -43,6 +43,7 @@ class BeaconViewModel: NSObject, ObservableObject, BeAroundSDKDelegate {
     @Published var lastSyncTime: Date?
     @Published var lastSyncBeaconCount: Int = 0
     @Published var lastSyncResult: String = "Aguardando..."
+    @Published var retryBatchCount: Int = 0
 
     // Pinned Beacons
     @Published var pinnedBeaconKeys: Set<String> = []
@@ -458,6 +459,7 @@ extension BeaconViewModel {
         DispatchQueue.main.async {
             self.lastSyncTime = Date()
             self.lastSyncBeaconCount = beaconCount
+            self.retryBatchCount = BeAroundSDK.shared.pendingBatchCount
             if success {
                 NSLog("[BeaconViewModel] Sync completed successfully: %d beacons", beaconCount)
                 self.lastSyncResult = "Sucesso"

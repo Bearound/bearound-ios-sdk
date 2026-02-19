@@ -2,7 +2,7 @@ import BearoundSDK
 import SwiftUI
 
 struct ContentView: View {
-    @StateObject private var viewModel = BeaconViewModel()
+    @ObservedObject var viewModel: BeaconViewModel
     @State private var showSettings = false
 
     var body: some View {

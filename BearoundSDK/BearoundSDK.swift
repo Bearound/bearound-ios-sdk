@@ -44,6 +44,10 @@ public class BeAroundSDK {
         offlineBatchStorage.batchCount
     }
 
+    public var pendingBatches: [[Beacon]] {
+        offlineBatchStorage.loadAllBatches()
+    }
+
     // MARK: - Private Properties
 
     private var configuration: SDKConfiguration?
