@@ -65,6 +65,12 @@ struct BeAroundScanApp: App {
                         Image(systemName: "arrow.clockwise.circle")
                         Text("Retry Queue")
                     }
+
+                DetectionLogView(viewModel: viewModel)
+                    .tabItem {
+                        Image(systemName: "list.bullet.rectangle")
+                        Text("Log")
+                    }
             }
         }
     }

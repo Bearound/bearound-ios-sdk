@@ -15,14 +15,12 @@ struct SDKConfigurationTests {
     func configurationInitialization() {
         let config = SDKConfiguration(
             businessToken: "test-business-token-abc123",
-            foregroundScanInterval: .seconds30,
-            backgroundScanInterval: .seconds60,
-            maxQueuedPayloads: .medium,
+            scanPrecision: .medium,
+            maxQueuedPayloads: .medium
         )
 
         #expect(config.businessToken == "test-business-token-abc123")
-        #expect(config.foregroundScanInterval.timeInterval == 30)
-        #expect(config.backgroundScanInterval.timeInterval == 60)
+        #expect(config.scanPrecision == .medium)
         #expect(config.maxQueuedPayloads.value == 100)
         #expect(config.apiBaseURL == "https://ingest.bearound.io")
         // appId is now obtained dynamically from Bundle.main.bundleIdentifier
@@ -35,51 +33,44 @@ struct SDKConfigurationTests {
             businessToken: "business-token-123"
         )
 
-        #expect(config.foregroundScanInterval.timeInterval == 15)
-        #expect(config.backgroundScanInterval.timeInterval == 60)
+        #expect(config.scanPrecision == .high)
         #expect(config.maxQueuedPayloads.value == 100)
     }
 
-    @Test("SDKConfiguration foreground scan intervals")
-    func foregroundScanIntervals() {
-        let intervals: [(ForegroundScanInterval, TimeInterval)] = [
-            (.seconds5, 5),
-            (.seconds10, 10),
-            (.seconds15, 15),
-            (.seconds20, 20),
-            (.seconds25, 25),
-            (.seconds30, 30),
-            (.seconds35, 35),
-            (.seconds40, 40),
-            (.seconds45, 45),
-            (.seconds50, 50),
-            (.seconds55, 55),
-            (.seconds60, 60)
-        ]
+    @Test("SDKConfiguration scan precision values")
+    func scanPrecisionValues() {
+        let high = SDKConfiguration(businessToken: "t", scanPrecision: .high)
+        #expect(high.precisionPauseDuration == 0)
+        #expect(high.precisionCycleCount == 0)
+        #expect(high.precisionLocationAccuracy == 10)
+        #expect(high.syncInterval == 15)
 
-        for (interval, expected) in intervals {
-            let config = SDKConfiguration(
-                businessToken: "business-token-123",
-                foregroundScanInterval: interval
-            )
-            #expect(config.foregroundScanInterval.timeInterval == expected)
+        let medium = SDKConfiguration(businessToken: "t", scanPrecision: .medium)
+        #expect(medium.precisionPauseDuration == 10)
+        #expect(medium.precisionCycleCount == 3)
+        #expect(medium.precisionLocationAccuracy == 10)
+        #expect(medium.syncInterval == 60)
+
+        let low = SDKConfiguration(businessToken: "t", scanPrecision: .low)
+        #expect(low.precisionPauseDuration == 50)
+        #expect(low.precisionCycleCount == 1)
+        #expect(low.precisionLocationAccuracy == 100)
+        #expect(low.syncInterval == 60)
+    }
+
+    @Test("SDKConfiguration scan duration is always 10s")
+    func scanDurationConstant() {
+        for precision in ScanPrecision.allCases {
+            let config = SDKConfiguration(businessToken: "t", scanPrecision: precision)
+            #expect(config.precisionScanDuration == 10)
         }
     }
 
-    @Test("SDKConfiguration background scan intervals")
-    func backgroundScanIntervals() {
-        let intervals: [(BackgroundScanInterval, TimeInterval)] = [
-            (.seconds60, 60),
-            (.seconds90, 90),
-            (.seconds120, 120)
-        ]
-
-        for (interval, expected) in intervals {
-            let config = SDKConfiguration(
-                businessToken: "business-token-123",
-                backgroundScanInterval: interval
-            )
-            #expect(config.backgroundScanInterval.timeInterval == expected)
+    @Test("SDKConfiguration cycle interval is always 60s")
+    func cycleIntervalConstant() {
+        for precision in ScanPrecision.allCases {
+            let config = SDKConfiguration(businessToken: "t", scanPrecision: precision)
+            #expect(config.precisionCycleInterval == 60)
         }
     }
 
@@ -101,46 +92,6 @@ struct SDKConfigurationTests {
         }
     }
 
-    @Test("SDKConfiguration scan duration calculation")
-    func scanDurationCalculation() {
-        // Scan duration should be syncInterval / 3, clamped between 5-10 seconds
-
-        let config15 = SDKConfiguration(
-            businessToken: "biz-token",
-            foregroundScanInterval: .seconds15
-        )
-        #expect(config15.scanDuration(for: 15) == 5) // 15/3 = 5
-
-        let config30 = SDKConfiguration(
-            businessToken: "biz-token",
-            foregroundScanInterval: .seconds30
-        )
-        #expect(config30.scanDuration(for: 30) == 10) // 30/3 = 10
-
-        let config60 = SDKConfiguration(
-            businessToken: "biz-token",
-            foregroundScanInterval: .seconds60
-        )
-
-        let config5 = SDKConfiguration(
-            businessToken: "biz-token",
-            foregroundScanInterval: .seconds5
-        )
-        #expect(config5.scanDuration(for: 5) == 5) // 5/3 = 1.67, but clamped to 5
-    }
-
-    @Test("SDKConfiguration sync interval based on background state")
-    func syncIntervalByBackgroundState() {
-        let config = SDKConfiguration(
-            businessToken: "business-token-123",
-            foregroundScanInterval: .seconds15,
-            backgroundScanInterval: .seconds90
-        )
-
-        #expect(config.syncInterval(isInBackground: false) == 15)
-        #expect(config.syncInterval(isInBackground: true) == 90)
-    }
-
     @Test("SDKConfiguration extracts Bundle ID automatically")
     func configurationBundleId() {
         let config = SDKConfiguration(
@@ -152,5 +103,3 @@ struct SDKConfigurationTests {
         #expect(config.appId.isEmpty == false)
     }
 }
-
-

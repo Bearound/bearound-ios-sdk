@@ -7,9 +7,12 @@
 
 import CoreBluetooth
 import Foundation
+import os.log
 #if canImport(UIKit)
     import UIKit
 #endif
+
+private let bleLog = OSLog(subsystem: "com.bearound.sdk", category: "BLE")
 
 protocol BluetoothManagerDelegate: AnyObject {
     func didDiscoverBeacon(
@@ -89,6 +92,16 @@ class BluetoothManager: NSObject {
         centralManager.state == .poweredOn
     }
 
+    /// Diagnostic info for debugging BLE issues
+    var diagnosticInfo: String {
+        let state = centralManager.state.rawValue // 0=unknown,1=resetting,2=unsupported,3=unauthorized,4=poweredOff,5=poweredOn
+        var btAuth = -1
+        if #available(iOS 13.1, *) {
+            btAuth = CBCentralManager.authorization.rawValue // 0=notDetermined,1=restricted,2=denied,3=allowedAlways
+        }
+        return "CBState=\(state) btAuth=\(btAuth) scanning=\(isScanning) pending=\(pendingAutoStart) tracked=\(trackedBeacons.count)"
+    }
+
     override init() {
         super.init()
         _ = centralManager
@@ -124,38 +137,31 @@ class BluetoothManager: NSObject {
     }
 
     @objc private func appDidEnterBackground() {
-        let wasInBackground = isInBackground
         isInBackground = true
-
-        // Restart scan to disable allowDuplicates in background
-        if isScanning && !wasInBackground {
-            restartScan()
-        }
     }
 
     @objc private func appWillEnterForeground() {
-        let wasInBackground = isInBackground
         isInBackground = false
-
-        // Restart scan to enable allowDuplicates in foreground
-        if isScanning && wasInBackground {
-            restartScan()
-        }
     }
 
     // MARK: - Public Methods
 
     func startScanning() {
+        os_log("[BLE] startScanning() — state=%{public}ld isScanning=%{public}d", log: bleLog, type: .info, centralManager.state.rawValue, isScanning ? 1 : 0)
         guard centralManager.state == .poweredOn else {
-            print("[BluetoothManager] Cannot start scanning - Bluetooth not powered on")
+            os_log("[BLE] BLOCKED: state=%{public}ld (not poweredOn)", log: bleLog, type: .error, centralManager.state.rawValue)
             return
         }
 
-        guard !isScanning else { return }
+        guard !isScanning else {
+            os_log("[BLE] BLOCKED: already scanning", log: bleLog, type: .info)
+            return
+        }
 
         isScanning = true
         beginScan()
         startCleanupTimer()
+        os_log("[BLE] startScanning() SUCCESS", log: bleLog, type: .info)
     }
 
     /// Restarts the active scan with the correct parameters for the current app state
@@ -168,7 +174,7 @@ class BluetoothManager: NSObject {
     /// Starts the actual CoreBluetooth scan with BEAD Service UUID filter
     /// iOS delivers all advertisement data (including manufacturer data) for matched peripherals
     private func beginScan() {
-        let allowDuplicates = !isInBackground
+        let allowDuplicates = true
         centralManager.scanForPeripherals(
             withServices: [beadServiceUUID],
             options: [CBCentralManagerScanOptionAllowDuplicatesKey: allowDuplicates]
@@ -197,42 +203,52 @@ class BluetoothManager: NSObject {
         NSLog("[BluetoothManager] Refreshed BLE scan for Service Data (unlock event)")
     }
 
+    /// Temporarily pause BLE scanning (duty cycle control)
+    func pauseScanning() {
+        guard isScanning, centralManager.state == .poweredOn else { return }
+        centralManager.stopScan()
+        stopCleanupTimer()
+    }
+
+    /// Resume BLE scanning after a pause
+    func resumeScanning() {
+        guard isScanning, centralManager.state == .poweredOn else { return }
+        beginScan()
+        startCleanupTimer()
+    }
+
     // MARK: - Auto-Enable
 
     /// Auto-starts Bluetooth scanning if permission is already granted
     /// This eliminates the need to manually call setBluetoothScanning(enabled: true)
     func autoStartIfAuthorized() {
-        // Check Bluetooth authorization status (iOS 13.1+)
         if #available(iOS 13.1, *) {
-            switch CBCentralManager.authorization {
+            let btAuth = CBCentralManager.authorization
+            os_log("[BLE] autoStartIfAuthorized() btAuth=%{public}ld state=%{public}ld isScanning=%{public}d pending=%{public}d",
+                   log: bleLog, type: .info, btAuth.rawValue, centralManager.state.rawValue, isScanning ? 1 : 0, pendingAutoStart ? 1 : 0)
+            switch btAuth {
             case .allowedAlways:
-                // Permission granted, check if Bluetooth is powered on
                 if centralManager.state == .poweredOn {
                     startScanning()
                 } else {
-                    // Will start when Bluetooth powers on
                     pendingAutoStart = true
-                    print("[BluetoothManager] Auto-start pending - waiting for Bluetooth to power on")
+                    os_log("[BLE] pending — BT not poweredOn (state=%{public}ld)", log: bleLog, type: .info, centralManager.state.rawValue)
                 }
             case .notDetermined:
-                // Triggering the centralManager above will prompt for permission
-                // Set flag to auto-start once authorized
                 pendingAutoStart = true
-                print("[BluetoothManager] Bluetooth authorization not determined - waiting for user decision")
+                os_log("[BLE] auth notDetermined — pending=true", log: bleLog, type: .info)
             case .denied, .restricted:
-                print("[BluetoothManager] Bluetooth permission denied or restricted")
+                os_log("[BLE] auth DENIED/RESTRICTED", log: bleLog, type: .error)
                 pendingAutoStart = false
             @unknown default:
-                print("[BluetoothManager] Unknown Bluetooth authorization status")
+                os_log("[BLE] auth unknown (%{public}ld)", log: bleLog, type: .error, btAuth.rawValue)
                 pendingAutoStart = false
             }
         } else {
-            // iOS 12 - just check if Bluetooth is powered on
             if centralManager.state == .poweredOn {
                 startScanning()
             } else {
                 pendingAutoStart = true
-                print("[BluetoothManager] Auto-start pending - waiting for Bluetooth to power on (iOS 12)")
             }
         }
     }
@@ -379,9 +395,10 @@ extension BluetoothManager: CBCentralManagerDelegate {
         NSLog("[BluetoothManager] State restoration triggered")
 
         // Check if we were scanning when the app was terminated
+        // Only set pendingAutoStart — don't set isScanning to true yet,
+        // otherwise startScanning() guard will block the actual beginScan() call
         if let services = dict[CBCentralManagerRestoredStateScanServicesKey] as? [CBUUID],
            services.contains(beadServiceUUID) {
-            isScanning = true
             pendingAutoStart = true
             NSLog("[BluetoothManager] Restored: was scanning for BEAD service UUID")
         }
@@ -389,26 +406,33 @@ extension BluetoothManager: CBCentralManagerDelegate {
 
     func centralManagerDidUpdateState(_ central: CBCentralManager) {
         let isPoweredOn = central.state == .poweredOn
+        os_log("[BLE] didUpdateState state=%{public}ld poweredOn=%{public}d pending=%{public}d scanning=%{public}d",
+               log: bleLog, type: .info, central.state.rawValue, isPoweredOn ? 1 : 0, pendingAutoStart ? 1 : 0, isScanning ? 1 : 0)
         delegate?.didUpdateBluetoothState(isPoweredOn: isPoweredOn)
 
         if isPoweredOn {
             if pendingAutoStart {
                 pendingAutoStart = false
 
-                // recheck for ios 13+
                 if #available(iOS 13.1, *) {
-                    if CBCentralManager.authorization == .allowedAlways {
+                    let btAuth = CBCentralManager.authorization
+                    os_log("[BLE] pending path — btAuth=%{public}ld", log: bleLog, type: .info, btAuth.rawValue)
+                    if btAuth == .allowedAlways {
                         startScanning()
+                    } else {
+                        os_log("[BLE] BLOCKED: btAuth=%{public}ld (not allowedAlways)", log: bleLog, type: .error, btAuth.rawValue)
                     }
                 } else {
-                    // ios 12
                     startScanning()
                 }
             } else if isScanning {
-                // Bluetooth recovered - restart the scan
+                os_log("[BLE] BT recovered — restarting scan", log: bleLog, type: .info)
                 restartScan()
+            } else {
+                os_log("[BLE] poweredOn but idle (pending=false, scanning=false)", log: bleLog, type: .info)
             }
         } else if !isPoweredOn, isScanning {
+            os_log("[BLE] powered off while scanning — isScanning=false", log: bleLog, type: .error)
             isScanning = false
         }
     }
@@ -419,6 +443,7 @@ extension BluetoothManager: CBCentralManagerDelegate {
         advertisementData: [String: Any],
         rssi RSSI: NSNumber
     ) {
+        os_log("[BLE] didDiscover rssi=%{public}d", log: bleLog, type: .info, RSSI.intValue)
         guard RSSI.intValue != 127, RSSI.intValue != 0 else { return }
 
         let connectable = advertisementData[CBAdvertisementDataIsConnectable] as? Bool ?? false

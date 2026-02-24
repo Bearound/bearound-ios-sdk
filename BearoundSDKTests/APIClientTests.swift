@@ -41,8 +41,7 @@ struct APIClientTests {
     func apiClientInitialization() {
         let config = SDKConfiguration(
             businessToken: "test-business-token-123",
-            foregroundScanInterval: .seconds10,
-            backgroundScanInterval: .seconds60
+            scanPrecision: .high
         )
 
         let apiClient = APIClient(configuration: config)
@@ -182,8 +181,7 @@ struct APIClientTests {
     func apiClientBaseURLValidation() {
         let config = SDKConfiguration(
             businessToken: "test-token",
-            foregroundScanInterval: .seconds15,
-            backgroundScanInterval: .seconds60
+            scanPrecision: .high
         )
         
         #expect(config.apiBaseURL == "https://ingest.bearound.io")

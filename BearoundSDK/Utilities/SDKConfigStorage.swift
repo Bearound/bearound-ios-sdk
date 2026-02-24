@@ -14,8 +14,7 @@ public class SDKConfigStorage {
     private static let suiteName = "com.bearound.sdk.config"
 
     private static let keyBusinessToken = "business_token"
-    private static let keyForegroundInterval = "foreground_interval"
-    private static let keyBackgroundInterval = "background_interval"
+    private static let keyScanPrecision = "scan_precision"
     private static let keyMaxQueuedPayloads = "max_queued_payloads"
     private static let keyIsConfigured = "is_configured"
     private static let keyIsScanning = "is_scanning"
@@ -32,13 +31,12 @@ public class SDKConfigStorage {
         }
 
         defaults.set(config.businessToken, forKey: keyBusinessToken)
-        defaults.set(Int(config.foregroundScanInterval.timeInterval), forKey: keyForegroundInterval)
-        defaults.set(Int(config.backgroundScanInterval.timeInterval), forKey: keyBackgroundInterval)
+        defaults.set(config.scanPrecision.rawValue, forKey: keyScanPrecision)
         defaults.set(config.maxQueuedPayloads.rawValue, forKey: keyMaxQueuedPayloads)
         defaults.set(true, forKey: keyIsConfigured)
 
         defaults.synchronize()
-        NSLog("[BeAroundSDK] Configuration saved to persistent storage")
+        NSLog("[BeAroundSDK] Configuration saved to persistent storage (precision: %@)", config.scanPrecision.rawValue)
     }
 
     /// Loads the SDK configuration from persistent storage
@@ -60,21 +58,17 @@ public class SDKConfigStorage {
             return nil
         }
 
-        let foregroundRaw = defaults.integer(forKey: keyForegroundInterval)
-        let backgroundRaw = defaults.integer(forKey: keyBackgroundInterval)
+        let precisionRaw = defaults.string(forKey: keyScanPrecision) ?? "high"
         let maxQueuedRaw = defaults.integer(forKey: keyMaxQueuedPayloads)
 
-        let foregroundInterval = ForegroundScanInterval(rawValue: foregroundRaw) ?? .seconds15
-        let backgroundInterval = BackgroundScanInterval(rawValue: backgroundRaw) ?? .seconds60
+        let scanPrecision = ScanPrecision(rawValue: precisionRaw) ?? .high
         let maxQueuedPayloads = MaxQueuedPayloads(rawValue: maxQueuedRaw) ?? .medium
 
-        NSLog("[BeAroundSDK] Loaded configuration from storage (foreground: %ds, background: %ds)",
-              foregroundRaw, backgroundRaw)
+        NSLog("[BeAroundSDK] Loaded configuration from storage (precision: %@)", precisionRaw)
 
         return SDKConfiguration(
             businessToken: businessToken,
-            foregroundScanInterval: foregroundInterval,
-            backgroundScanInterval: backgroundInterval,
+            scanPrecision: scanPrecision,
             maxQueuedPayloads: maxQueuedPayloads
         )
     }
@@ -88,8 +82,7 @@ public class SDKConfigStorage {
     static func clear() {
         guard let defaults = defaults else { return }
         defaults.removeObject(forKey: keyBusinessToken)
-        defaults.removeObject(forKey: keyForegroundInterval)
-        defaults.removeObject(forKey: keyBackgroundInterval)
+        defaults.removeObject(forKey: keyScanPrecision)
         defaults.removeObject(forKey: keyMaxQueuedPayloads)
         defaults.removeObject(forKey: keyIsConfigured)
         defaults.removeObject(forKey: keyIsScanning)

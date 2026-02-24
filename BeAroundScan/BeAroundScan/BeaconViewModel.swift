@@ -8,8 +8,7 @@ import SwiftUI
 import UserNotifications
 
 private enum UserDefaultsKeys {
-    static let foregroundInterval = "foregroundInterval"
-    static let backgroundInterval = "backgroundInterval"
+    static let scanPrecision = "scanPrecision"
     static let queueSize = "queueSize"
     static let userPropertyInternalId = "userPropertyInternalId"
     static let userPropertyEmail = "userPropertyEmail"
@@ -35,8 +34,7 @@ class BeaconViewModel: NSObject, ObservableObject, BeAroundSDKDelegate {
     @Published var idfaValue: String = "—"
 
     // SDK Configuration Settings
-    @Published var foregroundInterval: ForegroundScanInterval = .seconds15
-    @Published var backgroundInterval: BackgroundScanInterval = .seconds60
+    @Published var scanPrecision: ScanPrecision = .high
     @Published var queueSize: MaxQueuedPayloads = .medium
 
     // Sync Info
@@ -44,6 +42,24 @@ class BeaconViewModel: NSObject, ObservableObject, BeAroundSDKDelegate {
     @Published var lastSyncBeaconCount: Int = 0
     @Published var lastSyncResult: String = "Aguardando..."
     @Published var retryBatchCount: Int = 0
+
+    // BLE Diagnostic
+    @Published var bleDiagnostic: String = "..."
+
+    // Detection Log — separate queues for foreground, background, and background locked
+    @Published var foregroundLog: [DetectionLogEntry] = []
+    @Published var backgroundLog: [DetectionLogEntry] = []
+    @Published var backgroundLockedLog: [DetectionLogEntry] = []
+    private let maxForegroundLogEntries = 50000
+    private let maxBackgroundLogEntries = 50000
+    private let maxBackgroundLockedLogEntries = 50000
+
+    /// Tracks whether the device is locked
+    private(set) var isDeviceLocked: Bool = false
+
+    var detectionLog: [DetectionLogEntry] {
+        (foregroundLog + backgroundLog + backgroundLockedLog).sorted { $0.timestamp > $1.timestamp }
+    }
 
     // Pinned Beacons
     @Published var pinnedBeaconKeys: Set<String> = []
@@ -59,12 +75,14 @@ class BeaconViewModel: NSObject, ObservableObject, BeAroundSDKDelegate {
     private var scanStartTime: Date?
     private let notificationManager = NotificationManager.shared
     private var bluetoothManager: CBCentralManager?
+    private var diagnosticTimer: Timer?
 
     override init() {
         super.init()
         locationManager.delegate = self
 
         loadSavedSettings()
+        setupLockObservers()
 
         locationManager.requestAlwaysAuthorization()
         notificationManager.requestAuthorization()
@@ -73,6 +91,32 @@ class BeaconViewModel: NSObject, ObservableObject, BeAroundSDKDelegate {
         checkNotificationStatus()
         requestTrackingPermission()
         initializeSDK()
+        startDiagnosticTimer()
+    }
+
+    private func setupLockObservers() {
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(deviceDidLock),
+            name: UIApplication.protectedDataWillBecomeUnavailableNotification,
+            object: nil
+        )
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(deviceDidUnlock),
+            name: UIApplication.protectedDataDidBecomeAvailableNotification,
+            object: nil
+        )
+        // Check initial state
+        isDeviceLocked = !UIApplication.shared.isProtectedDataAvailable
+    }
+
+    @objc private func deviceDidLock() {
+        isDeviceLocked = true
+    }
+
+    @objc private func deviceDidUnlock() {
+        isDeviceLocked = false
     }
 
     private func checkBluetoothStatus() {
@@ -149,14 +193,9 @@ class BeaconViewModel: NSObject, ObservableObject, BeAroundSDKDelegate {
     private func loadSavedSettings() {
         let defaults = UserDefaults.standard
 
-        if let foregroundRaw = defaults.object(forKey: UserDefaultsKeys.foregroundInterval) as? Int,
-           let interval = ForegroundScanInterval(rawValue: foregroundRaw) {
-            self.foregroundInterval = interval
-        }
-
-        if let backgroundRaw = defaults.object(forKey: UserDefaultsKeys.backgroundInterval) as? Int,
-           let interval = BackgroundScanInterval(rawValue: backgroundRaw) {
-            self.backgroundInterval = interval
+        if let precisionRaw = defaults.string(forKey: UserDefaultsKeys.scanPrecision),
+           let precision = ScanPrecision(rawValue: precisionRaw) {
+            self.scanPrecision = precision
         }
 
         if let queueRaw = defaults.object(forKey: UserDefaultsKeys.queueSize) as? Int,
@@ -173,8 +212,7 @@ class BeaconViewModel: NSObject, ObservableObject, BeAroundSDKDelegate {
     private func saveCurrentSettings() {
         let defaults = UserDefaults.standard
 
-        defaults.set(foregroundInterval.rawValue, forKey: UserDefaultsKeys.foregroundInterval)
-        defaults.set(backgroundInterval.rawValue, forKey: UserDefaultsKeys.backgroundInterval)
+        defaults.set(scanPrecision.rawValue, forKey: UserDefaultsKeys.scanPrecision)
         defaults.set(queueSize.rawValue, forKey: UserDefaultsKeys.queueSize)
 
         defaults.set(userPropertyInternalId, forKey: UserDefaultsKeys.userPropertyInternalId)
@@ -186,21 +224,31 @@ class BeaconViewModel: NSObject, ObservableObject, BeAroundSDKDelegate {
     private func updatePermissionStatus() {
         let locationAuth = locationManager.authorizationStatus
 
-        permissionStatus = switch locationAuth {
+        var status: String = switch locationAuth {
         case .authorizedAlways: "Sempre (Background habilitado)"
         case .authorizedWhenInUse: "Quando em uso (Background não funciona)"
         case .denied, .restricted: "Negada"
         case .notDetermined: "Aguardando resposta..."
         @unknown default: "Status desconhecido"
         }
+
+        // Check precise location — iOS disables all beacon APIs when off
+        if #available(iOS 14.0, *) {
+            if locationAuth == .authorizedAlways || locationAuth == .authorizedWhenInUse {
+                if locationManager.accuracyAuthorization == .reducedAccuracy {
+                    status += " | Precisa: OFF (beacons CL desabilitados)"
+                }
+            }
+        }
+
+        permissionStatus = status
     }
 
     @MainActor
     private func initializeSDK() {
         BeAroundSDK.shared.configure(
             businessToken: "BUSINESS_TOKEN",
-            foregroundScanInterval: foregroundInterval,
-            backgroundScanInterval: backgroundInterval,
+            scanPrecision: scanPrecision,
             maxQueuedPayloads: queueSize
         )
 
@@ -234,8 +282,7 @@ class BeaconViewModel: NSObject, ObservableObject, BeAroundSDKDelegate {
 
         BeAroundSDK.shared.configure(
             businessToken: "BUSINESS_TOKEN",
-            foregroundScanInterval: foregroundInterval,
-            backgroundScanInterval: backgroundInterval,
+            scanPrecision: scanPrecision,
             maxQueuedPayloads: queueSize
         )
         
@@ -293,29 +340,31 @@ class BeaconViewModel: NSObject, ObservableObject, BeAroundSDKDelegate {
         pinnedBeaconKeys.contains("\(beacon.major).\(beacon.minor)")
     }
 
-    var currentDisplayInterval: Int {
-        Int(BeAroundSDK.shared.currentSyncInterval ?? 0)
-    }
-    
-    var scanDuration: Int {
-        Int(BeAroundSDK.shared.currentScanDuration ?? 0)
-    }
-
-    var pauseDuration: Int {
-        let interval = Int(BeAroundSDK.shared.currentSyncInterval ?? 0)
-        let scan = scanDuration
-        return max(0, interval - scan)
+    var scanPrecisionLabel: String {
+        switch BeAroundSDK.shared.currentScanPrecision ?? scanPrecision {
+        case .high: return "Alta (Ininterrupto)"
+        case .medium: return "Média (3x10s/min)"
+        case .low: return "Baixa (1x10s/min)"
+        }
     }
 
     var scanMode: String {
-        return "Periódico (economiza bateria)"
+        return scanPrecisionLabel
     }
 
     var sdkVersion: String {
         return BeAroundSDK.version
     }
 
-    deinit {}
+    private func startDiagnosticTimer() {
+        diagnosticTimer = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) { [weak self] _ in
+            self?.bleDiagnostic = BeAroundSDK.shared.bleDiagnosticInfo
+        }
+    }
+
+    deinit {
+        diagnosticTimer?.invalidate()
+    }
 }
 
 extension BeaconViewModel: CLLocationManagerDelegate {
@@ -377,6 +426,10 @@ extension BeaconViewModel {
             self.wasInBeaconRegion = isNowInBeaconRegion
             self.beacons = sortedBeacons
             self.lastScanTime = Date()
+
+            // Record detection log entries
+            let isBackground = UIApplication.shared.applicationState != .active
+            self.recordDetections(beacons: sortedBeacons, isBackground: isBackground)
 
             if sortedBeacons.isEmpty {
                 self.statusMessage = "Scaneando..."
@@ -478,6 +531,37 @@ extension BeaconViewModel {
         DispatchQueue.main.async {
             NSLog("[BeaconViewModel] Beacon detected in background: %d beacons", beacons.count)
             self.notificationManager.notifyBeaconDetectedWithDetails(beacons: beacons, isBackground: true)
+            self.recordDetections(beacons: beacons, isBackground: true)
         }
+    }
+
+    // MARK: - Detection Log
+
+    private func recordDetections(beacons: [Beacon], isBackground: Bool) {
+        guard !beacons.isEmpty else { return }
+        let locked = isDeviceLocked
+        let newEntries = beacons.map { DetectionLogEntry.from(beacon: $0, isBackground: isBackground, isLocked: locked) }
+        if isBackground && locked {
+            backgroundLockedLog.insert(contentsOf: newEntries, at: 0)
+            if backgroundLockedLog.count > maxBackgroundLockedLogEntries {
+                backgroundLockedLog = Array(backgroundLockedLog.prefix(maxBackgroundLockedLogEntries))
+            }
+        } else if isBackground {
+            backgroundLog.insert(contentsOf: newEntries, at: 0)
+            if backgroundLog.count > maxBackgroundLogEntries {
+                backgroundLog = Array(backgroundLog.prefix(maxBackgroundLogEntries))
+            }
+        } else {
+            foregroundLog.insert(contentsOf: newEntries, at: 0)
+            if foregroundLog.count > maxForegroundLogEntries {
+                foregroundLog = Array(foregroundLog.prefix(maxForegroundLogEntries))
+            }
+        }
+    }
+
+    func clearDetectionLog() {
+        foregroundLog.removeAll()
+        backgroundLog.removeAll()
+        backgroundLockedLog.removeAll()
     }
 }
