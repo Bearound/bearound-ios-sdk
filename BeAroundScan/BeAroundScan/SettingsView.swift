@@ -11,7 +11,7 @@ import BearoundSDK
 struct SettingsView: View {
     @ObservedObject var viewModel: BeaconViewModel
     @Environment(\.dismiss) var dismiss
-    
+
     var body: some View {
         NavigationView {
             Form {
@@ -25,22 +25,11 @@ struct SettingsView: View {
                     }
                 }
 
-                Section("Intervalos de Sync") {
-                    Picker("Foreground", selection: $viewModel.foregroundInterval) {
-                        ForEach(ForegroundScanInterval.allCases, id: \.self) { interval in
-                            Text("\(Int(interval.timeInterval))s").tag(interval)
-                        }
-                    }
-
-                    Picker("Background", selection: $viewModel.backgroundInterval) {
-                        ForEach(BackgroundScanInterval.allCases, id: \.self) { interval in
-                            let seconds = Int(interval.timeInterval)
-                            if seconds < 60 {
-                                Text("\(seconds)s").tag(interval)
-                            } else {
-                                Text("\(seconds)s (\(seconds/60)min)").tag(interval)
-                            }
-                        }
+                Section("Precisão do Scan") {
+                    Picker("Precisão", selection: $viewModel.scanPrecision) {
+                        Text("Alta (Ininterrupto)").tag(ScanPrecision.high)
+                        Text("Média (3x10s/min)").tag(ScanPrecision.medium)
+                        Text("Baixa (1x10s/min)").tag(ScanPrecision.low)
                     }
                 }
 
@@ -94,9 +83,9 @@ struct SettingsView: View {
             }
         }
     }
-    
+
     // MARK: - Helper Functions
-    
+
     private func displayTextForQueue(_ payload: MaxQueuedPayloads) -> String {
         switch payload {
         case .small: return "Small (50 batches)"
@@ -106,5 +95,3 @@ struct SettingsView: View {
         }
     }
 }
-
-// MARK: - Note: Now using SDK enums directly - no helper enums needed!

@@ -12,128 +12,99 @@ import Testing
 
 @Suite("SDKConfigStorage Tests")
 struct SDKConfigStorageTests {
-    
+
     @Test("Save and load configuration")
     func saveAndLoadConfiguration() {
         // Create test configuration
         let config = SDKConfiguration(
             businessToken: "test-token-123",
-            foregroundScanInterval: .seconds30,
-            backgroundScanInterval: .seconds90,
+            scanPrecision: .medium,
             maxQueuedPayloads: .large
         )
-        
+
         // Save configuration
         SDKConfigStorage.save(config)
-        
+
         // Load configuration
         let loadedConfig = SDKConfigStorage.load()
-        
+
         #expect(loadedConfig != nil)
         #expect(loadedConfig?.businessToken == "test-token-123")
-        #expect(loadedConfig?.foregroundScanInterval.timeInterval == 30)
-        #expect(loadedConfig?.backgroundScanInterval.timeInterval == 90)
+        #expect(loadedConfig?.scanPrecision == .medium)
         #expect(loadedConfig?.maxQueuedPayloads.value == 200)
     }
-    
+
     @Test("Load returns nil when no config saved")
     func loadWithoutSaving() {
         // Clear any existing config
         SDKConfigStorage.clear()
-        
+
         // Try to load
         let config = SDKConfigStorage.load()
-        
+
         #expect(config == nil)
     }
-    
+
     @Test("Clear configuration")
     func clearConfiguration() {
         // Save a config
         let config = SDKConfiguration(
             businessToken: "test-token",
-            foregroundScanInterval: .seconds15,
-            backgroundScanInterval: .seconds60
+            scanPrecision: .high
         )
         SDKConfigStorage.save(config)
-        
+
         // Verify it was saved
         #expect(SDKConfigStorage.load() != nil)
-        
+
         // Clear it
         SDKConfigStorage.clear()
-        
+
         // Verify it was cleared
         #expect(SDKConfigStorage.load() == nil)
     }
-    
+
     @Test("Save and load scanning state")
     func saveAndLoadScanningState() {
         // Save scanning state as true
         SDKConfigStorage.saveIsScanning(true)
         #expect(SDKConfigStorage.loadIsScanning() == true)
-        
+
         // Save scanning state as false
         SDKConfigStorage.saveIsScanning(false)
         #expect(SDKConfigStorage.loadIsScanning() == false)
     }
-    
+
     @Test("Default scanning state is false")
     func defaultScanningState() {
         // Clear config (which clears scanning state too)
         SDKConfigStorage.clear()
-        
+
         // Load should return false by default
         #expect(SDKConfigStorage.loadIsScanning() == false)
     }
-    
-    @Test("Persist all enum values")
-    func persistAllEnumValues() {
-        // Test all foreground interval values
-        let foregroundIntervals: [ForegroundScanInterval] = [
-            .seconds5, .seconds10, .seconds15, .seconds20,
-            .seconds25, .seconds30, .seconds35, .seconds40,
-            .seconds45, .seconds50, .seconds55, .seconds60
-        ]
-        
-        for interval in foregroundIntervals {
+
+    @Test("Persist all precision values")
+    func persistAllPrecisionValues() {
+        // Test all scan precision values
+        for precision in ScanPrecision.allCases {
             let config = SDKConfiguration(
                 businessToken: "test",
-                foregroundScanInterval: interval,
-                backgroundScanInterval: .seconds60
+                scanPrecision: precision
             )
             SDKConfigStorage.save(config)
             let loaded = SDKConfigStorage.load()
-            #expect(loaded?.foregroundScanInterval == interval)
+            #expect(loaded?.scanPrecision == precision)
         }
-        
-        // Test all background interval values
-        let backgroundIntervals: [BackgroundScanInterval] = [
-            .seconds15, .seconds30, .seconds45,
-            .seconds60, .seconds90, .seconds120
-        ]
-        
-        for interval in backgroundIntervals {
-            let config = SDKConfiguration(
-                businessToken: "test",
-                foregroundScanInterval: .seconds15,
-                backgroundScanInterval: interval
-            )
-            SDKConfigStorage.save(config)
-            let loaded = SDKConfigStorage.load()
-            #expect(loaded?.backgroundScanInterval == interval)
-        }
-        
+
         // Test all queue size values
         let queueSizes: [MaxQueuedPayloads] = [
             .small, .medium, .large, .xlarge
         ]
-        
+
         for queueSize in queueSizes {
             let config = SDKConfiguration(
                 businessToken: "test",
-                foregroundScanInterval: .seconds15,
-                backgroundScanInterval: .seconds60,
                 maxQueuedPayloads: queueSize
             )
             SDKConfigStorage.save(config)

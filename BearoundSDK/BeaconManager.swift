@@ -137,7 +137,7 @@ class BeaconManager: NSObject {
     private func setupLocationManager() {
         locationManager.delegate = self
         locationManager.pausesLocationUpdatesAutomatically = false
-        locationManager.desiredAccuracy = kCLLocationAccuracyHundredMeters
+        locationManager.desiredAccuracy = kCLLocationAccuracyNearestTenMeters
         locationManager.distanceFilter = kCLDistanceFilterNone
 
         if #available(iOS 14.0, *) {
@@ -173,6 +173,11 @@ class BeaconManager: NSObject {
             configureBackgroundUpdates(enabled: false)
         }
 
+        // Resume GPS for coordinate data in foreground
+        if isScanning {
+            locationManager.startUpdatingLocation()
+        }
+
         if isScanning, let region = beaconRegion, !isRanging {
             locationManager.startRangingBeacons(satisfying: region.beaconIdentityConstraint)
             isRanging = true
@@ -184,6 +189,9 @@ class BeaconManager: NSObject {
         isInForeground = false
 
         if isScanning {
+            // Stop GPS to save battery — ranging + region monitoring work without it
+            locationManager.stopUpdatingLocation()
+
             configureBackgroundUpdates(enabled: true)
 
             if !isRanging, let region = beaconRegion {
@@ -319,21 +327,25 @@ class BeaconManager: NSObject {
         isRanging = false
         stopRangingRefreshTimer()
 
-        // Stop location updates to hide the location arrow (saves battery)
-        // Region monitoring stays active for terminated app support
-        locationManager.stopUpdatingLocation()
+        // Stop GPS if in foreground (in background it's already off)
+        if isInForeground {
+            locationManager.stopUpdatingLocation()
+        }
         locationManager.allowsBackgroundLocationUpdates = false
 
-        NSLog("[BeAroundSDK] Ranging PAUSED - location updates stopped (background=%d)", !isInForeground ? 1 : 0)
+        NSLog("[BeAroundSDK] Ranging PAUSED (background=%d)", !isInForeground ? 1 : 0)
     }
 
     /// Resume ranging after a pause
     func resumeRanging() {
         guard let region = beaconRegion, !isRanging, isScanning else { return }
 
-        // Re-enable location updates for ranging
         configureBackgroundUpdates(enabled: !isInForeground)
-        locationManager.startUpdatingLocation()
+
+        // Only start GPS in foreground — saves battery in background
+        if isInForeground {
+            locationManager.startUpdatingLocation()
+        }
 
         locationManager.startRangingBeacons(satisfying: region.beaconIdentityConstraint)
         isRanging = true
@@ -342,7 +354,12 @@ class BeaconManager: NSObject {
             startRangingRefreshTimer()
         }
 
-        NSLog("[BeAroundSDK] Ranging RESUMED - location updates started (background=%d)", !isInForeground ? 1 : 0)
+        NSLog("[BeAroundSDK] Ranging RESUMED (background=%d, gps=%d)", !isInForeground ? 1 : 0, isInForeground ? 1 : 0)
+    }
+
+    /// Update the desired accuracy for location manager
+    func updateDesiredAccuracy(_ accuracy: CLLocationAccuracy) {
+        locationManager.desiredAccuracy = accuracy
     }
 
     // MARK: - Significant Location Changes
@@ -394,8 +411,11 @@ class BeaconManager: NSObject {
         locationManager.startMonitoring(for: region)
         locationManager.requestState(for: region)
 
-        // Start location updates for coordinate data
-        locationManager.startUpdatingLocation()
+        // Start location updates only in foreground (GPS is battery-heavy)
+        // In background, region monitoring + ranging work without GPS
+        if isInForeground {
+            locationManager.startUpdatingLocation()
+        }
 
         isScanning = true
         onScanningStateChanged?(true)
@@ -771,7 +791,16 @@ extension BeaconManager: CLLocationManagerDelegate {
             startWatchdog()
             startRangingRefreshTimer()
         } else {
-            NSLog("[BeAroundSDK] Region entered in foreground - SDK will control ranging")
+            // Foreground: if ranging is paused (duty cycle), start immediately
+            // so beacons are detected right away on region entry
+            if isScanning, let region = beaconRegion, !isRanging {
+                locationManager.startRangingBeacons(satisfying: region.beaconIdentityConstraint)
+                isRanging = true
+                startWatchdog()
+                NSLog("[BeAroundSDK] Region entered in foreground during pause - immediate ranging started")
+            } else {
+                NSLog("[BeAroundSDK] Region entered in foreground - SDK will control ranging")
+            }
         }
     }
 

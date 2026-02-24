@@ -56,6 +56,12 @@ struct ContentView: View {
                                 .foregroundColor(bluetoothPermissionColor)
                         }
 
+                        // BLE Diagnostic
+                        Text(viewModel.bleDiagnostic)
+                            .font(.system(size: 9, design: .monospaced))
+                            .foregroundColor(.orange)
+                            .lineLimit(2)
+
                         HStack {
                             Image(systemName: "bell.fill")
                                 .font(.caption)
@@ -117,31 +123,11 @@ struct ContentView: View {
 
                         VStack(alignment: .leading, spacing: 4) {
                             HStack {
-                                Text("Modo:")
+                                Text("Precisão:")
                                     .font(.caption)
                                     .foregroundColor(.secondary)
                                 Spacer()
-                                Text(viewModel.scanMode)
-                                    .font(.caption)
-                                    .fontWeight(.medium)
-                            }
-
-                            HStack {
-                                Text("Intervalo de sync:")
-                                    .font(.caption)
-                                    .foregroundColor(.secondary)
-                                Spacer()
-                                Text("\(viewModel.currentDisplayInterval)s")
-                                    .font(.caption)
-                                    .fontWeight(.medium)
-                            }
-
-                            HStack {
-                                Text("Duração do scan:")
-                                    .font(.caption)
-                                    .foregroundColor(.secondary)
-                                Spacer()
-                                Text("\(viewModel.scanDuration)s")
+                                Text(viewModel.scanPrecisionLabel)
                                     .font(.caption)
                                     .fontWeight(.medium)
                             }
