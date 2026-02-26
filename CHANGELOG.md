@@ -5,6 +5,40 @@ All notable changes to BearoundSDK for iOS will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.3.7] - 2026-02-26
+
+### Added
+
+- **Scan Precision Mode**: Replaced `ForegroundScanInterval` and `BackgroundScanInterval` with a single `ScanPrecision` enum (`.high`, `.medium`, `.low`) that controls duty cycle for both BLE and CoreLocation scanning.
+  - **High**: Continuous BLE + CL scanning, sync every 15s
+  - **Medium**: 3 cycles of 10s scan / 10s pause per 60s interval
+  - **Low**: 1 cycle of 10s scan / 50s pause per 60s interval
+- **Independent BLE + CL scanning**: BLE and CoreLocation now start independently based on their own authorization status, instead of mutually exclusive modes.
+- **Precise Location detection**: SDK now detects when iOS "Precise Location" is disabled (reduced accuracy) and disables CoreLocation beacon ranging, falling back to BLE-only.
+- **Chunked retry queue drain**: Offline retry batches are now sent in chunks of 5 batches per API call, chaining sequentially until the queue is fully drained. Previously sent one batch per sync cycle.
+- **os_log diagnostics**: Added structured `os_log` logging for BLE/CL scanning state changes.
+- **`bleDiagnosticInfo` property**: Public diagnostic string for debugging BLE/CL scanning issues.
+- **Detection Log tab**: New tab in the demo app (BeAroundScan) for viewing beacon detection history.
+
+### Changed
+
+- **`configure()` API simplified**: Replaced `foregroundScanInterval` + `backgroundScanInterval` parameters with single `scanPrecision` parameter.
+- **`isScanning`**: Now returns `true` if either BLE or CL is scanning (was exclusive).
+- **`stopScanning()`**: Stops both BLE and CL independently.
+- **BLE beacon cleanup**: Only removes BLE-only beacons that left range; CL-detected beacons are preserved.
+- **BLE beacon merge**: When CL is already tracking a beacon, BLE updates no longer overwrite CL data (CL has better proximity/accuracy).
+- **Removed `isBluetoothOnlyMode`**: No longer needed; BLE and CL operate independently.
+- **Removed `ForegroundScanInterval` and `BackgroundScanInterval` enums**: Replaced by `ScanPrecision`.
+- **Removed `currentSyncInterval` and `currentScanDuration` public properties**: Replaced by `currentScanPrecision`.
+
+### Breaking Changes
+
+- `configure(businessToken:foregroundScanInterval:backgroundScanInterval:maxQueuedPayloads:)` replaced by `configure(businessToken:scanPrecision:maxQueuedPayloads:)`.
+- `ForegroundScanInterval` and `BackgroundScanInterval` enums removed. Use `ScanPrecision` instead.
+- `currentSyncInterval` and `currentScanDuration` properties removed. Use `currentScanPrecision` instead.
+
+---
+
 ## [2.3.6] - 2026-02-20
 
 ### Added

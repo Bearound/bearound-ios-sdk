@@ -21,7 +21,7 @@ public class BeAroundSDK {
     public static let shared = BeAroundSDK()
 
     public static var version: String {
-        return "2.3.6"
+        return "2.3.7"
     }
 
     // MARK: - Public Properties
