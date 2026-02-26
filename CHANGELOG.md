@@ -19,10 +19,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **os_log diagnostics**: Added structured `os_log` logging for BLE/CL scanning state changes.
 - **`bleDiagnosticInfo` property**: Public diagnostic string for debugging BLE/CL scanning issues.
 - **Detection Log tab**: New tab in the demo app (BeAroundScan) for viewing beacon detection history.
+- **Duty Cycle Control**: BLE `pauseScanning()`/`resumeScanning()` and CL ranging pause/resume synchronized per precision mode.
+- **Immediate Ranging on Region Entry**: When entering a beacon region during a duty cycle pause in foreground, ranging starts immediately.
+- **Android Migration Guide**: Added `ANDROID.md` with full implementation guide for Android SDK.
 
 ### Changed
 
 - **`configure()` API simplified**: Replaced `foregroundScanInterval` + `backgroundScanInterval` parameters with single `scanPrecision` parameter.
+- **Battery Optimization**: GPS (`startUpdatingLocation`) now only runs in foreground to reduce background battery consumption.
 - **`isScanning`**: Now returns `true` if either BLE or CL is scanning (was exclusive).
 - **`stopScanning()`**: Stops both BLE and CL independently.
 - **BLE beacon cleanup**: Only removes BLE-only beacons that left range; CL-detected beacons are preserved.
