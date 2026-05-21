@@ -183,10 +183,13 @@ class BluetoothManager: NSObject {
     }
 
     func stopScanning() {
+        // Always cancel any pending auto-start so a deferred BT power-on doesn't
+        // sneak a scan back in after we asked to stop (e.g. after region exit).
+        pendingAutoStart = false
+
         guard isScanning else { return }
 
         isScanning = false
-        pendingAutoStart = false
         centralManager.stopScan()
         stopCleanupTimer()
         lastSeenBeacons.removeAll()

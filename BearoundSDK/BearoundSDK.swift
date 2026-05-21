@@ -300,6 +300,26 @@ public class BeAroundSDK {
             }
         }
 
+        // v2.4 — gate BLE active scan by region presence. Outside region: BLE off.
+        // autoStartIfAuthorized does its own permission check, so it's safe to call unconditionally.
+        beaconManager.onActiveScanShouldStart = { [weak self] in
+            guard let self else { return }
+            NSLog("[SDK] Active scan START — starting BLE central scan (region entered)")
+            self.bluetoothManager.autoStartIfAuthorized()
+            DispatchQueue.main.async {
+                self.delegate?.didChangeActiveScanState(isActive: true)
+            }
+        }
+
+        beaconManager.onActiveScanShouldStop = { [weak self] in
+            guard let self else { return }
+            NSLog("[SDK] Active scan STOP — stopping BLE central scan (region exited)")
+            self.bluetoothManager.stopScanning()
+            DispatchQueue.main.async {
+                self.delegate?.didChangeActiveScanState(isActive: false)
+            }
+        }
+
         beaconManager.onLocationCaptureStarted = { [weak self] reason in
             DispatchQueue.main.async {
                 self?.delegate?.didStartLocationCapture(reason: reason)
@@ -498,10 +518,10 @@ public class BeAroundSDK {
             return
         }
 
-        // 2. BLE starts if authorized
-        if bluetoothAuthorized {
-            bluetoothManager.autoStartIfAuthorized()
-        }
+        // 2. BLE does NOT start here. Active scanning (BLE + ranging) is gated by
+        //    beacon-region presence — see onActiveScanShouldStart / onActiveScanShouldStop.
+        //    On startup, BeaconManager's startMonitoring → requestState will trigger
+        //    didEnterRegion if we're already inside, which then starts BLE.
 
         // 3. CoreLocation starts only if authorized AND precise location is on
         // Location updates are gated by beacon detection — never run continuously.

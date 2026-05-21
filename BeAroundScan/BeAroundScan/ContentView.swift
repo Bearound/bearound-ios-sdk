@@ -614,6 +614,14 @@ struct GeofenceDebugCard: View {
                 )
 
                 statusRow(
+                    icon: "antenna.radiowaves.left.and.right",
+                    label: "Scan ativo:",
+                    value: viewModel.isActiveScanRunning ? "LIGADO" : "desligado",
+                    color: viewModel.isActiveScanRunning ? .green : .secondary,
+                    bold: viewModel.isActiveScanRunning
+                )
+
+                statusRow(
                     icon: "location.fill",
                     label: "Captura GPS:",
                     value: viewModel.isCapturingLocation ? "EM ANDAMENTO…" : "idle",
@@ -737,6 +745,8 @@ struct GeofenceEventRow: View {
         case .captureStarted: .blue
         case .captureCompletedWithFix: .green
         case .captureCompletedNoFix: .red
+        case .scanResumed: .mint
+        case .scanPaused: .gray
         }
     }
 
@@ -747,6 +757,8 @@ struct GeofenceEventRow: View {
         case .captureStarted: "GPS DISPARADO"
         case .captureCompletedWithFix: "FIX OK"
         case .captureCompletedNoFix: "SEM FIX"
+        case .scanResumed: "SCAN LIGADO"
+        case .scanPaused: "SCAN PAUSADO"
         }
     }
 }

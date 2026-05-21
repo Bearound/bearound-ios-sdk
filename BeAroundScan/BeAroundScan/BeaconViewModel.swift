@@ -29,6 +29,8 @@ struct GeofenceEvent: Identifiable {
         case captureStarted
         case captureCompletedWithFix
         case captureCompletedNoFix
+        case scanResumed
+        case scanPaused
     }
 
     let id = UUID()
@@ -66,6 +68,8 @@ class BeaconViewModel: NSObject, ObservableObject, BeAroundSDKDelegate {
     // MARK: - Geofence Debug (v2.4)
     /// True while iOS reports the device is inside the beacon region (BLE proximity).
     @Published var isInBeaconRegion: Bool = false
+    /// True when active scanning (ranging + BLE) is running. Outside a region this stays false.
+    @Published var isActiveScanRunning: Bool = false
     /// True while a beacon-triggered GPS capture window is open.
     @Published var isCapturingLocation: Bool = false
     /// Why the most recent capture window opened.
@@ -619,6 +623,19 @@ extension BeaconViewModel {
                 kind: .regionExit,
                 timestamp: Date(),
                 detail: "iOS reportou saída da região do beacon"
+            ))
+        }
+    }
+
+    func didChangeActiveScanState(isActive: Bool) {
+        DispatchQueue.main.async {
+            self.isActiveScanRunning = isActive
+            self.appendGeofenceEvent(.init(
+                kind: isActive ? .scanResumed : .scanPaused,
+                timestamp: Date(),
+                detail: isActive
+                    ? "Scan ativo (ranging + BLE) LIGADO"
+                    : "Scan ativo (ranging + BLE) DESLIGADO — só region monitoring rodando"
             ))
         }
     }

@@ -79,6 +79,12 @@ public protocol BeAroundSDKDelegate: AnyObject {
     /// Called when the location capture window closes — either with a fix or by timeout.
     /// Inspect `result.hasFix` to know whether a coordinate was acquired.
     func didCompleteLocationCapture(_ result: BeAroundLocationCapture)
+
+    /// Called when active scanning state changes. Active = ranging + BLE central scan running.
+    /// Active scanning runs ONLY while inside a beacon region — outside the region only the
+    /// kernel-level region monitoring is on, which has effectively zero battery cost.
+    /// - Parameter isActive: True when ranging + BLE scan are running; false when paused.
+    func didChangeActiveScanState(isActive: Bool)
 }
 
 // Default implementations (all optional except didUpdateBeacons)
@@ -92,4 +98,5 @@ extension BeAroundSDKDelegate {
     public func didExitBeaconRegion() {}
     public func didStartLocationCapture(reason _: String) {}
     public func didCompleteLocationCapture(_: BeAroundLocationCapture) {}
+    public func didChangeActiveScanState(isActive _: Bool) {}
 }

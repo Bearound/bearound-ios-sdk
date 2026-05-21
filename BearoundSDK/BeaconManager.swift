@@ -76,6 +76,12 @@ class BeaconManager: NSObject {
     /// Called when iOS reports beacon region exit
     var onRegionExit: (() -> Void)?
 
+    /// Called when active scanning should START (region entered) — host should start BLE central scan.
+    var onActiveScanShouldStart: (() -> Void)?
+
+    /// Called when active scanning should STOP (region exited) — host should stop BLE central scan.
+    var onActiveScanShouldStop: (() -> Void)?
+
     /// Called when a beacon-triggered location capture window opens. Param: reason tag.
     var onLocationCaptureStarted: ((String) -> Void)?
 
@@ -94,7 +100,8 @@ class BeaconManager: NSObject {
     // MARK: - Background State
 
     private var hasNotifiedFirstBackgroundBeacon = false
-    private var isInBeaconRegion = false
+    /// True when iOS reports the device is currently inside the beacon region (per CLBeaconRegion state).
+    private(set) var isInBeaconRegion = false
     private var isProcessingRegionEntry = false
     private var isBackgroundTemporaryRanging = false
 
@@ -202,14 +209,15 @@ class BeaconManager: NSObject {
             configureBackgroundUpdates(enabled: false)
         }
 
-        // Location is NOT started here. It only starts when a beacon is detected —
-        // see startLocationCaptureIfNeeded(). If beacons are currently present and
-        // our lastLocation is stale, refresh now.
+        // Location is NOT started here. It only starts when a beacon is detected.
+        // If beacons are currently present and our lastLocation is stale, refresh now.
         if isScanning && hasBeaconsLocked() && isLocationStale() {
             startLocationCapture(reason: "foreground_with_beacon")
         }
 
-        if isScanning, let region = beaconRegion, !isRanging {
+        // Resume ranging ONLY if we're inside a beacon region.
+        // Outside a region: stay idle. iOS will wake us via didEnterRegion when a beacon appears.
+        if isScanning, isInBeaconRegion, let region = beaconRegion, !isRanging {
             locationManager.startRangingBeacons(satisfying: region.beaconIdentityConstraint)
             isRanging = true
             startWatchdog()
@@ -223,15 +231,17 @@ class BeaconManager: NSObject {
             // Stop any active location capture — GPS off in background unless re-triggered by beacon
             stopLocationCapture(reason: "background_entry")
 
-            configureBackgroundUpdates(enabled: true)
-
-            if !isRanging, let region = beaconRegion {
+            // Resume ranging ONLY if we're inside a beacon region.
+            if !isRanging, isInBeaconRegion, let region = beaconRegion {
+                configureBackgroundUpdates(enabled: true)
                 locationManager.startRangingBeacons(satisfying: region.beaconIdentityConstraint)
                 isRanging = true
                 startWatchdog()
+                startRangingRefreshTimer()
+            } else {
+                // Outside a region — make sure we aren't holding the background location grant
+                configureBackgroundUpdates(enabled: false)
             }
-
-            startRangingRefreshTimer()
         }
     }
 
@@ -858,6 +868,8 @@ extension BeaconManager: CLLocationManagerDelegate {
         isInBeaconRegion = true
         if !wasAlreadyInRegion {
             onRegionEnter?()
+            // Host (SDK) should start BLE central scan now that we're inside the region.
+            onActiveScanShouldStart?()
         }
 
         guard !isRanging else {
@@ -936,6 +948,8 @@ extension BeaconManager: CLLocationManagerDelegate {
         isInBeaconRegion = false
         if wasInRegion {
             onRegionExit?()
+            // Host (SDK) should stop BLE central scan now that we left the region.
+            onActiveScanShouldStop?()
         }
         stopWatchdog()
         stopRangingRefreshTimer()
@@ -967,8 +981,10 @@ extension BeaconManager: CLLocationManagerDelegate {
 
         if state == .inside {
             locationManager(manager, didEnterRegion: beaconRegion)
-        } else {
-            isInBeaconRegion = false
+        } else if isInBeaconRegion {
+            // iOS reports we're now outside but we thought we were inside —
+            // route through the exit handler so active scan gets stopped.
+            locationManager(manager, didExitRegion: beaconRegion)
         }
     }
 
