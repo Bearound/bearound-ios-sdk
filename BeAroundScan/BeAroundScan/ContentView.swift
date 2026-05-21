@@ -1,4 +1,5 @@
 import BearoundSDK
+import CoreLocation
 import SwiftUI
 
 struct ContentView: View {
@@ -190,6 +191,9 @@ struct ContentView: View {
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(.horizontal)
+
+                    GeofenceDebugCard(viewModel: viewModel)
+                        .padding(.horizontal)
                 }
 
                 Button(action: {
@@ -576,6 +580,185 @@ struct BeaconRow: View {
         case .serviceUUID: .purple
         case .name: .teal
         case .coreLocation: .indigo
+        }
+    }
+}
+
+// MARK: - Geofence Debug
+
+struct GeofenceDebugCard: View {
+    @ObservedObject var viewModel: BeaconViewModel
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Text("Debug Geofence")
+                    .font(.headline)
+                Spacer()
+                if !viewModel.geofenceEventLog.isEmpty {
+                    Button(action: { viewModel.clearGeofenceLog() }) {
+                        Image(systemName: "trash")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    }
+                }
+            }
+
+            VStack(alignment: .leading, spacing: 6) {
+                statusRow(
+                    icon: "mappin.and.ellipse",
+                    label: "Zona do beacon:",
+                    value: viewModel.isInBeaconRegion ? "DENTRO" : "fora",
+                    color: viewModel.isInBeaconRegion ? .green : .secondary,
+                    bold: viewModel.isInBeaconRegion
+                )
+
+                statusRow(
+                    icon: "antenna.radiowaves.left.and.right",
+                    label: "Scan ativo:",
+                    value: viewModel.isActiveScanRunning ? "LIGADO" : "desligado",
+                    color: viewModel.isActiveScanRunning ? .green : .secondary,
+                    bold: viewModel.isActiveScanRunning
+                )
+
+                statusRow(
+                    icon: "location.fill",
+                    label: "Captura GPS:",
+                    value: viewModel.isCapturingLocation ? "EM ANDAMENTO…" : "idle",
+                    color: viewModel.isCapturingLocation ? .blue : .secondary,
+                    bold: viewModel.isCapturingLocation
+                )
+
+                Divider()
+
+                detailRow(label: "Última abertura:", value: viewModel.lastCaptureOpenReason)
+                detailRow(label: "Último fechamento:", value: viewModel.lastCaptureOutcome)
+
+                if let loc = viewModel.lastCapturedLocation {
+                    detailRow(
+                        label: "Última coord:",
+                        value: String(format: "%.5f, %.5f ±%dm",
+                                      loc.coordinate.latitude,
+                                      loc.coordinate.longitude,
+                                      Int(loc.horizontalAccuracy))
+                    )
+                } else {
+                    detailRow(label: "Última coord:", value: "—")
+                }
+
+                if let completedAt = viewModel.lastCaptureCompletedAt {
+                    detailRow(
+                        label: "Concluído em:",
+                        value: completedAt.formatted(date: .omitted, time: .standard)
+                    )
+                }
+            }
+            .padding(12)
+            .background(Color.gray.opacity(0.1))
+            .cornerRadius(8)
+
+            if !viewModel.geofenceEventLog.isEmpty {
+                Text("Eventos recentes")
+                    .font(.caption)
+                    .fontWeight(.semibold)
+                    .foregroundColor(.secondary)
+                    .padding(.top, 4)
+
+                VStack(alignment: .leading, spacing: 4) {
+                    ForEach(viewModel.geofenceEventLog.prefix(10)) { event in
+                        GeofenceEventRow(event: event)
+                    }
+                }
+                .padding(10)
+                .background(Color.gray.opacity(0.05))
+                .cornerRadius(8)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func statusRow(icon: String, label: String, value: String, color: Color, bold: Bool) -> some View {
+        HStack {
+            Image(systemName: icon)
+                .font(.caption)
+                .foregroundColor(color)
+                .frame(width: 20)
+            Text(label)
+                .font(.caption)
+                .foregroundColor(.secondary)
+            Spacer()
+            Text(value)
+                .font(.caption)
+                .fontWeight(bold ? .bold : .medium)
+                .foregroundColor(color)
+        }
+    }
+
+    private func detailRow(label: String, value: String) -> some View {
+        HStack(alignment: .top) {
+            Text(label)
+                .font(.caption2)
+                .foregroundColor(.secondary)
+            Spacer()
+            Text(value)
+                .font(.system(size: 11, design: .monospaced))
+                .foregroundColor(.primary)
+                .multilineTextAlignment(.trailing)
+                .lineLimit(2)
+        }
+    }
+}
+
+struct GeofenceEventRow: View {
+    let event: GeofenceEvent
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 8) {
+            Circle()
+                .fill(color)
+                .frame(width: 8, height: 8)
+                .padding(.top, 4)
+
+            VStack(alignment: .leading, spacing: 2) {
+                HStack {
+                    Text(title)
+                        .font(.caption2)
+                        .fontWeight(.semibold)
+                        .foregroundColor(color)
+                    Spacer()
+                    Text(event.timestamp.formatted(date: .omitted, time: .standard))
+                        .font(.system(size: 10, design: .monospaced))
+                        .foregroundColor(.secondary)
+                }
+                Text(event.detail)
+                    .font(.system(size: 11))
+                    .foregroundColor(.primary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+    }
+
+    private var color: Color {
+        switch event.kind {
+        case .regionEnter: .green
+        case .regionExit: .orange
+        case .captureStarted: .blue
+        case .captureCompletedWithFix: .green
+        case .captureCompletedNoFix: .red
+        case .scanResumed: .mint
+        case .scanPaused: .gray
+        }
+    }
+
+    private var title: String {
+        switch event.kind {
+        case .regionEnter: "ENTROU NA ZONA"
+        case .regionExit: "SAIU DA ZONA"
+        case .captureStarted: "GPS DISPARADO"
+        case .captureCompletedWithFix: "FIX OK"
+        case .captureCompletedNoFix: "SEM FIX"
+        case .scanResumed: "SCAN LIGADO"
+        case .scanPaused: "SCAN PAUSADO"
         }
     }
 }

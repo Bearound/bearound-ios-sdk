@@ -21,7 +21,7 @@ public class BeAroundSDK {
     public static let shared = BeAroundSDK()
 
     public static var version: String {
-        return "2.3.7"
+        return "2.4.0"
     }
 
     // MARK: - Public Properties
@@ -278,19 +278,62 @@ public class BeAroundSDK {
             self.syncBeaconsImmediately()
         }
 
-        beaconManager.onSignificantLocationChange = { [weak self] in
-            guard let self else { return }
-            NSLog("[BeAroundSDK] Significant location change - syncing")
-            self.syncTrigger = "significant_location"
-            self.syncBeaconsImmediately()
-        }
-
         beaconManager.onAppRelaunchedFromTerminated = { [weak self] in
             guard let self else { return }
             NSLog("[BeAroundSDK] APP RELAUNCHED FROM TERMINATED - ensuring configuration")
 
             if self.configuration == nil {
                 self.autoConfigureFromStorage()
+            }
+        }
+
+        // v2.4 — surface region transitions and location-capture lifecycle to the host app
+        beaconManager.onRegionEnter = { [weak self] in
+            DispatchQueue.main.async {
+                self?.delegate?.didEnterBeaconRegion()
+            }
+        }
+
+        beaconManager.onRegionExit = { [weak self] in
+            DispatchQueue.main.async {
+                self?.delegate?.didExitBeaconRegion()
+            }
+        }
+
+        // v2.4 — gate BLE active scan by region presence. Outside region: BLE off.
+        // autoStartIfAuthorized does its own permission check, so it's safe to call unconditionally.
+        beaconManager.onActiveScanShouldStart = { [weak self] in
+            guard let self else { return }
+            NSLog("[SDK] Active scan START — starting BLE central scan (region entered)")
+            self.bluetoothManager.autoStartIfAuthorized()
+            DispatchQueue.main.async {
+                self.delegate?.didChangeActiveScanState(isActive: true)
+            }
+        }
+
+        beaconManager.onActiveScanShouldStop = { [weak self] in
+            guard let self else { return }
+            NSLog("[SDK] Active scan STOP — stopping BLE central scan (region exited)")
+            self.bluetoothManager.stopScanning()
+            DispatchQueue.main.async {
+                self.delegate?.didChangeActiveScanState(isActive: false)
+            }
+        }
+
+        beaconManager.onLocationCaptureStarted = { [weak self] reason in
+            DispatchQueue.main.async {
+                self?.delegate?.didStartLocationCapture(reason: reason)
+            }
+        }
+
+        beaconManager.onLocationCaptureCompleted = { [weak self] location, openingReason, outcome in
+            let result = BeAroundLocationCapture(
+                reason: openingReason,
+                location: location,
+                outcome: outcome
+            )
+            DispatchQueue.main.async {
+                self?.delegate?.didCompleteLocationCapture(result)
             }
         }
 
@@ -475,20 +518,19 @@ public class BeAroundSDK {
             return
         }
 
-        // 2. BLE starts if authorized
-        if bluetoothAuthorized {
-            bluetoothManager.autoStartIfAuthorized()
-        }
+        // 2. BLE does NOT start here. Active scanning (BLE + ranging) is gated by
+        //    beacon-region presence — see onActiveScanShouldStart / onActiveScanShouldStop.
+        //    On startup, BeaconManager's startMonitoring → requestState will trigger
+        //    didEnterRegion if we're already inside, which then starts BLE.
 
         // 3. CoreLocation starts only if authorized AND precise location is on
+        // Location updates are gated by beacon detection — never run continuously.
         if locationCanRangeBeacons {
             beaconManager.updateDesiredAccuracy(configuration!.precisionLocationAccuracy)
             beaconManager.startScanning()
-            beaconManager.startSignificantLocationMonitoring()
         } else if beaconManager.isScanning {
             // CL was running but can no longer range beacons (e.g., Precise Location turned off)
             beaconManager.stopScanning()
-            beaconManager.stopSignificantLocationMonitoring()
         }
 
         // 4. Always: sync timer, persist, BGTasks
@@ -510,7 +552,6 @@ public class BeAroundSDK {
 
         if beaconManager.isScanning {
             beaconManager.stopScanning()
-            beaconManager.stopSignificantLocationMonitoring()
         }
 
         stopSyncTimer()

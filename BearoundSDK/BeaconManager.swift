@@ -36,6 +36,16 @@ class BeaconManager: NSObject {
     /// Maximum RSSI samples for moving average
     private let rssiHistoryMaxCount = 5
 
+    /// Location capture window when triggered by beacon detection (foreground)
+    private let locationCaptureWindowForeground: TimeInterval = 30.0
+    /// Location capture window when triggered by beacon detection (background)
+    /// Kept short to conserve battery — we just need one good fix
+    private let locationCaptureWindowBackground: TimeInterval = 15.0
+    /// Accept a fix as "good enough" and stop capturing if accuracy is within this radius (meters)
+    private let locationAcceptAccuracy: CLLocationDistance = 30.0
+    /// If lastLocation is older than this, re-pulse GPS even though beacons are still present
+    private let locationStaleThreshold: TimeInterval = 600.0
+
     // MARK: - Properties
 
     private let locationManager = CLLocationManager()
@@ -57,11 +67,27 @@ class BeaconManager: NSObject {
     /// Called when first beacon is detected in background - triggers immediate sync
     var onFirstBackgroundBeaconDetected: (() -> Void)?
 
-    /// Called when significant location change detected
-    var onSignificantLocationChange: (() -> Void)?
-
     /// CRITICAL: Called when app was relaunched from terminated state
     var onAppRelaunchedFromTerminated: (() -> Void)?
+
+    /// Called when iOS reports beacon region entry (BLE proximity)
+    var onRegionEnter: (() -> Void)?
+
+    /// Called when iOS reports beacon region exit
+    var onRegionExit: (() -> Void)?
+
+    /// Called when active scanning should START (region entered) — host should start BLE central scan.
+    var onActiveScanShouldStart: (() -> Void)?
+
+    /// Called when active scanning should STOP (region exited) — host should stop BLE central scan.
+    var onActiveScanShouldStop: (() -> Void)?
+
+    /// Called when a beacon-triggered location capture window opens. Param: reason tag.
+    var onLocationCaptureStarted: ((String) -> Void)?
+
+    /// Called when a location capture window closes — either with a fix or by timeout.
+    /// Params: optional CLLocation, opening reason, closing outcome.
+    var onLocationCaptureCompleted: ((CLLocation?, String, String) -> Void)?
 
     // MARK: - Beacon State
 
@@ -74,14 +100,24 @@ class BeaconManager: NSObject {
     // MARK: - Background State
 
     private var hasNotifiedFirstBackgroundBeacon = false
-    private var isMonitoringSignificantLocationChanges = false
-    private var isInBeaconRegion = false
+    /// True when iOS reports the device is currently inside the beacon region (per CLBeaconRegion state).
+    private(set) var isInBeaconRegion = false
     private var isProcessingRegionEntry = false
     private var isBackgroundTemporaryRanging = false
+
+    /// True while a beacon-triggered location capture window is active
+    private var isCapturingLocation = false
+    /// Reason the current capture window was opened (for the completed callback)
+    private var currentCaptureReason: String?
+    /// Location acquired during the current capture window. Reset on each start.
+    private var capturedLocationInWindow: CLLocation?
+    /// Tracks last observed beacon-presence state so we can detect rising edges
+    private var hadBeaconsLastTick = false
 
     private var backgroundRangingTimer: DispatchSourceTimer?
     private var rangingWatchdog: DispatchSourceTimer?
     private var rangingRefreshTimer: DispatchSourceTimer?
+    private var locationCaptureTimer: DispatchSourceTimer?
 
     private var lastBeaconUpdate: Date?
     private(set) var lastLocation: CLLocation?
@@ -173,12 +209,15 @@ class BeaconManager: NSObject {
             configureBackgroundUpdates(enabled: false)
         }
 
-        // Resume GPS for coordinate data in foreground
-        if isScanning {
-            locationManager.startUpdatingLocation()
+        // Location is NOT started here. It only starts when a beacon is detected.
+        // If beacons are currently present and our lastLocation is stale, refresh now.
+        if isScanning && hasBeaconsLocked() && isLocationStale() {
+            startLocationCapture(reason: "foreground_with_beacon")
         }
 
-        if isScanning, let region = beaconRegion, !isRanging {
+        // Resume ranging ONLY if we're inside a beacon region.
+        // Outside a region: stay idle. iOS will wake us via didEnterRegion when a beacon appears.
+        if isScanning, isInBeaconRegion, let region = beaconRegion, !isRanging {
             locationManager.startRangingBeacons(satisfying: region.beaconIdentityConstraint)
             isRanging = true
             startWatchdog()
@@ -189,18 +228,20 @@ class BeaconManager: NSObject {
         isInForeground = false
 
         if isScanning {
-            // Stop GPS to save battery — ranging + region monitoring work without it
-            locationManager.stopUpdatingLocation()
+            // Stop any active location capture — GPS off in background unless re-triggered by beacon
+            stopLocationCapture(reason: "background_entry")
 
-            configureBackgroundUpdates(enabled: true)
-
-            if !isRanging, let region = beaconRegion {
+            // Resume ranging ONLY if we're inside a beacon region.
+            if !isRanging, isInBeaconRegion, let region = beaconRegion {
+                configureBackgroundUpdates(enabled: true)
                 locationManager.startRangingBeacons(satisfying: region.beaconIdentityConstraint)
                 isRanging = true
                 startWatchdog()
+                startRangingRefreshTimer()
+            } else {
+                // Outside a region — make sure we aren't holding the background location grant
+                configureBackgroundUpdates(enabled: false)
             }
-
-            startRangingRefreshTimer()
         }
     }
 
@@ -260,6 +301,7 @@ class BeaconManager: NSObject {
         stopWatchdog()
         stopRangingRefreshTimer()
         stopBackgroundRangingTimer()
+        stopLocationCapture(reason: "stop_scanning")
 
         if let region = beaconRegion {
             locationManager.stopMonitoring(for: region)
@@ -268,8 +310,6 @@ class BeaconManager: NSObject {
                 isRanging = false
             }
         }
-
-        locationManager.stopUpdatingLocation()
 
         beaconLock.lock()
         detectedBeacons.removeAll()
@@ -282,6 +322,7 @@ class BeaconManager: NSObject {
         beaconRegion = nil
         isInBeaconRegion = false
         emptyBeaconCount = 0
+        hadBeaconsLastTick = false
         isScanning = false
         onScanningStateChanged?(false)
         onBeaconsUpdated?([])
@@ -289,6 +330,12 @@ class BeaconManager: NSObject {
 
     func startRanging() {
         guard isScanning, let region = beaconRegion, !isRanging else { return }
+        // Doctrine: ranging only runs inside a beacon region. Outside, only region
+        // monitoring is active (kernel-level, no CL service running).
+        guard isInBeaconRegion else {
+            NSLog("[BeAroundSDK] startRanging skipped — not inside beacon region")
+            return
+        }
 
         locationManager.startRangingBeacons(satisfying: region.beaconIdentityConstraint)
         isRanging = true
@@ -319,7 +366,6 @@ class BeaconManager: NSObject {
 
     /// Temporarily pause ranging (can be used in background for scan interval control)
     /// Unlike stopRanging(), this works in background and doesn't clear beacon data
-    /// Also stops location updates to hide the location arrow indicator
     func pauseRanging() {
         guard let region = beaconRegion, isRanging else { return }
 
@@ -327,10 +373,8 @@ class BeaconManager: NSObject {
         isRanging = false
         stopRangingRefreshTimer()
 
-        // Stop GPS if in foreground (in background it's already off)
-        if isInForeground {
-            locationManager.stopUpdatingLocation()
-        }
+        // No more beacon updates during pause — also cancel any in-flight location capture
+        stopLocationCapture(reason: "ranging_paused")
         locationManager.allowsBackgroundLocationUpdates = false
 
         NSLog("[BeAroundSDK] Ranging PAUSED (background=%d)", !isInForeground ? 1 : 0)
@@ -339,14 +383,17 @@ class BeaconManager: NSObject {
     /// Resume ranging after a pause
     func resumeRanging() {
         guard let region = beaconRegion, !isRanging, isScanning else { return }
+        // Doctrine: ranging only runs inside a beacon region. Outside, only region
+        // monitoring is active. Duty-cycle resume callers will retry once we enter.
+        guard isInBeaconRegion else {
+            NSLog("[BeAroundSDK] resumeRanging skipped — not inside beacon region")
+            return
+        }
 
         configureBackgroundUpdates(enabled: !isInForeground)
 
-        // Only start GPS in foreground — saves battery in background
-        if isInForeground {
-            locationManager.startUpdatingLocation()
-        }
-
+        // Location is NOT started here. It will be started by processBeacons() once
+        // a beacon is actually seen again.
         locationManager.startRangingBeacons(satisfying: region.beaconIdentityConstraint)
         isRanging = true
 
@@ -354,7 +401,7 @@ class BeaconManager: NSObject {
             startRangingRefreshTimer()
         }
 
-        NSLog("[BeAroundSDK] Ranging RESUMED (background=%d, gps=%d)", !isInForeground ? 1 : 0, isInForeground ? 1 : 0)
+        NSLog("[BeAroundSDK] Ranging RESUMED (background=%d)", !isInForeground ? 1 : 0)
     }
 
     /// Update the desired accuracy for location manager
@@ -362,27 +409,82 @@ class BeaconManager: NSObject {
         locationManager.desiredAccuracy = accuracy
     }
 
-    // MARK: - Significant Location Changes
+    // MARK: - Location Capture (gated by beacon detection)
+    //
+    // Doctrine: GPS is OFF by default. It is only turned ON when a beacon is
+    // detected (either via region entry or ranging callback) and is turned OFF
+    // as soon as we obtain a fix with acceptable accuracy, or after a timeout.
+    // The SDK never consults location in background unless a beacon is present.
 
-    func startSignificantLocationMonitoring() {
-        guard CLLocationManager.significantLocationChangeMonitoringAvailable() else {
-            NSLog("[BeAroundSDK] Significant location changes not available")
-            return
-        }
-
-        guard !isMonitoringSignificantLocationChanges else { return }
-
-        locationManager.startMonitoringSignificantLocationChanges()
-        isMonitoringSignificantLocationChanges = true
-        NSLog("[BeAroundSDK] Started significant location monitoring")
+    /// Returns true if any beacon is currently detected. Safe to call without holding the lock.
+    private func hasBeaconsLocked() -> Bool {
+        beaconLock.lock()
+        defer { beaconLock.unlock() }
+        return !detectedBeacons.isEmpty
     }
 
-    func stopSignificantLocationMonitoring() {
-        guard isMonitoringSignificantLocationChanges else { return }
+    /// Returns true if we have no location, or our last fix is older than `locationStaleThreshold`.
+    private func isLocationStale() -> Bool {
+        guard let last = lastLocation else { return true }
+        return -last.timestamp.timeIntervalSinceNow > locationStaleThreshold
+    }
 
-        locationManager.stopMonitoringSignificantLocationChanges()
-        isMonitoringSignificantLocationChanges = false
-        NSLog("[BeAroundSDK] Stopped significant location monitoring")
+    /// Start a one-shot location capture window. Idempotent — if already capturing, no-op.
+    /// Auto-stops on first acceptable fix (see locationAcceptAccuracy) or after the window expires.
+    private func startLocationCapture(reason: String) {
+        guard isScanning, !isCapturingLocation else { return }
+        isCapturingLocation = true
+        currentCaptureReason = reason
+        capturedLocationInWindow = nil
+
+        // In background we need allowsBackgroundLocationUpdates = true for GPS to deliver updates
+        if !isInForeground {
+            configureBackgroundUpdates(enabled: true)
+        }
+
+        locationManager.startUpdatingLocation()
+
+        let window = isInForeground ? locationCaptureWindowForeground : locationCaptureWindowBackground
+        NSLog("[BeAroundSDK] Location capture STARTED (reason=%@, window=%.0fs, fg=%d)",
+              reason, window, isInForeground ? 1 : 0)
+
+        onLocationCaptureStarted?(reason)
+
+        locationCaptureTimer?.cancel()
+        let timer = DispatchSource.makeTimerSource(queue: DispatchQueue.global(qos: .utility))
+        timer.schedule(deadline: .now() + window)
+        timer.setEventHandler { [weak self] in
+            self?.stopLocationCapture(reason: "timeout")
+        }
+        locationCaptureTimer = timer
+        timer.resume()
+    }
+
+    /// Stop the location capture window. Idempotent.
+    private func stopLocationCapture(reason: String) {
+        guard isCapturingLocation else { return }
+        let openingReason = currentCaptureReason ?? "unknown"
+        isCapturingLocation = false
+        currentCaptureReason = nil
+
+        locationCaptureTimer?.cancel()
+        locationCaptureTimer = nil
+
+        locationManager.stopUpdatingLocation()
+
+        // In background, drop the background-location grant once we're done capturing
+        if !isInForeground {
+            configureBackgroundUpdates(enabled: false)
+        }
+
+        let acquiredInThisWindow = capturedLocationInWindow
+        capturedLocationInWindow = nil
+
+        NSLog("[BeAroundSDK] Location capture STOPPED (reason=%@, fg=%d, gotFixInWindow=%d)",
+              reason, isInForeground ? 1 : 0, acquiredInThisWindow != nil ? 1 : 0)
+
+        // Surface the outcome — only the location acquired during THIS window, not stale data.
+        onLocationCaptureCompleted?(acquiredInThisWindow, openingReason, reason)
     }
 
     // MARK: - Region Monitoring (CRITICAL for terminated app)
@@ -411,11 +513,8 @@ class BeaconManager: NSObject {
         locationManager.startMonitoring(for: region)
         locationManager.requestState(for: region)
 
-        // Start location updates only in foreground (GPS is battery-heavy)
-        // In background, region monitoring + ranging work without GPS
-        if isInForeground {
-            locationManager.startUpdatingLocation()
-        }
+        // Location updates are NOT started here. GPS only runs when a beacon is
+        // actually detected (see didEnterRegion + processBeacons rising edge).
 
         isScanning = true
         onScanningStateChanged?(true)
@@ -539,7 +638,9 @@ class BeaconManager: NSObject {
             }
         }
 
-        if !updatedBeacons.isEmpty {
+        let hasBeaconsNow = !updatedBeacons.isEmpty
+
+        if hasBeaconsNow {
             onBeaconsUpdated?(updatedBeacons)
 
             // CRITICAL: Notify first beacon in background for immediate sync
@@ -550,7 +651,37 @@ class BeaconManager: NSObject {
             }
         }
 
+        // Snapshot state for the location-capture decision so we can act outside the lock.
+        let wasHasBeacons = hadBeaconsLastTick
+        hadBeaconsLastTick = hasBeaconsNow
+
+        // Drive the location-capture state machine after releasing the beacon lock.
+        // start/stopLocationCapture do not touch beaconLock, but we keep callbacks
+        // outside the locked region as a defensive measure.
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.applyLocationCaptureDecision(hasBeaconsNow: hasBeaconsNow, hadBeaconsBefore: wasHasBeacons)
+        }
+
         startWatchdog()
+    }
+
+    /// Reacts to beacon-presence transitions. Strictly: location only runs when a beacon is seen.
+    /// - Rising edge (no beacons → beacons): start capture if our fix is missing/stale
+    /// - Steady state (beacons present, no capture in flight, stale fix): refresh
+    /// - Falling edge (beacons → none): stop any in-flight capture
+    private func applyLocationCaptureDecision(hasBeaconsNow: Bool, hadBeaconsBefore: Bool) {
+        guard isScanning else { return }
+
+        if hasBeaconsNow {
+            if !hadBeaconsBefore && isLocationStale() {
+                startLocationCapture(reason: "beacon_rising_edge")
+            } else if !isCapturingLocation && isLocationStale() {
+                startLocationCapture(reason: "stale_refresh")
+            }
+        } else if hadBeaconsBefore {
+            stopLocationCapture(reason: "beacons_lost")
+        }
     }
 
     // MARK: - Timers
@@ -745,11 +876,17 @@ extension BeaconManager: CLLocationManagerDelegate {
               isInForeground ? 1 : 0, isScanning ? 1 : 0, isRanging ? 1 : 0)
         #endif
 
+        let wasAlreadyInRegion = isInBeaconRegion
         isInBeaconRegion = true
+        if !wasAlreadyInRegion {
+            onRegionEnter?()
+            // Host (SDK) should start BLE central scan now that we're inside the region.
+            onActiveScanShouldStart?()
+        }
 
-        guard !isRanging else { 
+        guard !isRanging else {
             NSLog("[BeAroundSDK] Already ranging, skipping region entry handling")
-            return 
+            return
         }
 
         if !actuallyInForeground {
@@ -781,6 +918,9 @@ extension BeaconManager: CLLocationManagerDelegate {
                 isRanging = true
                 startWatchdog()
 
+                // Region entry IS the canonical "beacon detected" event — capture location now.
+                startLocationCapture(reason: "region_entry_terminated")
+
                 // Use extended duration for terminated app relaunch
                 startBackgroundRangingTimer(duration: terminatedAppRangingDuration)
                 return
@@ -790,6 +930,9 @@ extension BeaconManager: CLLocationManagerDelegate {
             isRanging = true
             startWatchdog()
             startRangingRefreshTimer()
+
+            // Region entered in background while SDK was running — fetch one location fix
+            startLocationCapture(reason: "region_entry_background")
         } else {
             // Foreground: if ranging is paused (duty cycle), start immediately
             // so beacons are detected right away on region entry
@@ -801,6 +944,10 @@ extension BeaconManager: CLLocationManagerDelegate {
             } else {
                 NSLog("[BeAroundSDK] Region entered in foreground - SDK will control ranging")
             }
+
+            // Even in foreground, trigger one location capture on region entry — the
+            // processBeacons rising edge will be a no-op if we already grabbed a fix.
+            startLocationCapture(reason: "region_entry_foreground")
         }
     }
 
@@ -809,9 +956,16 @@ extension BeaconManager: CLLocationManagerDelegate {
 
         NSLog("[BeAroundSDK] EXITED BEACON REGION")
 
+        let wasInRegion = isInBeaconRegion
         isInBeaconRegion = false
+        if wasInRegion {
+            onRegionExit?()
+            // Host (SDK) should stop BLE central scan now that we left the region.
+            onActiveScanShouldStop?()
+        }
         stopWatchdog()
         stopRangingRefreshTimer()
+        stopLocationCapture(reason: "region_exit")
 
         if isRanging {
             locationManager.stopRangingBeacons(satisfying: beaconRegion.beaconIdentityConstraint)
@@ -828,6 +982,7 @@ extension BeaconManager: CLLocationManagerDelegate {
         lastBeaconUpdate = nil
         beaconLock.unlock()
 
+        hadBeaconsLastTick = false
         onBeaconsUpdated?([])
     }
 
@@ -838,8 +993,10 @@ extension BeaconManager: CLLocationManagerDelegate {
 
         if state == .inside {
             locationManager(manager, didEnterRegion: beaconRegion)
-        } else {
-            isInBeaconRegion = false
+        } else if isInBeaconRegion {
+            // iOS reports we're now outside but we thought we were inside —
+            // route through the exit handler so active scan gets stopped.
+            locationManager(manager, didExitRegion: beaconRegion)
         }
     }
 
@@ -852,14 +1009,25 @@ extension BeaconManager: CLLocationManagerDelegate {
         guard let location = locations.last else { return }
 
         let age = -location.timestamp.timeIntervalSinceNow
-        if age < 15 && location.horizontalAccuracy >= 0 && location.horizontalAccuracy < 100 {
-            lastLocation = location
+        let isFresh = age < 15
+        let hasAccuracy = location.horizontalAccuracy >= 0
+        let isUsable = isFresh && hasAccuracy && location.horizontalAccuracy < 100
+
+        guard isUsable else { return }
+
+        // Store every usable fix so we always carry the freshest one.
+        lastLocation = location
+
+        // Record the fix against the current window so the completion callback
+        // surfaces only what was acquired during THIS capture, not stale data.
+        if isCapturingLocation {
+            capturedLocationInWindow = location
         }
 
-        // Significant location change in background
-        if !isInForeground && isMonitoringSignificantLocationChanges {
-            NSLog("[BeAroundSDK] Location update in background - triggering sync")
-            onSignificantLocationChange?()
+        // If this fix is "good enough", we're done — stop GPS to save battery.
+        // Otherwise keep capture open (timer will close it on timeout).
+        if isCapturingLocation && location.horizontalAccuracy <= locationAcceptAccuracy {
+            stopLocationCapture(reason: "fix_acquired_acc=\(Int(location.horizontalAccuracy))m")
         }
     }
 }
