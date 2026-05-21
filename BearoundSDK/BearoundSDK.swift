@@ -278,13 +278,6 @@ public class BeAroundSDK {
             self.syncBeaconsImmediately()
         }
 
-        beaconManager.onSignificantLocationChange = { [weak self] in
-            guard let self else { return }
-            NSLog("[BeAroundSDK] Significant location change - syncing")
-            self.syncTrigger = "significant_location"
-            self.syncBeaconsImmediately()
-        }
-
         beaconManager.onAppRelaunchedFromTerminated = { [weak self] in
             guard let self else { return }
             NSLog("[BeAroundSDK] APP RELAUNCHED FROM TERMINATED - ensuring configuration")
@@ -481,14 +474,13 @@ public class BeAroundSDK {
         }
 
         // 3. CoreLocation starts only if authorized AND precise location is on
+        // Location updates are gated by beacon detection — never run continuously.
         if locationCanRangeBeacons {
             beaconManager.updateDesiredAccuracy(configuration!.precisionLocationAccuracy)
             beaconManager.startScanning()
-            beaconManager.startSignificantLocationMonitoring()
         } else if beaconManager.isScanning {
             // CL was running but can no longer range beacons (e.g., Precise Location turned off)
             beaconManager.stopScanning()
-            beaconManager.stopSignificantLocationMonitoring()
         }
 
         // 4. Always: sync timer, persist, BGTasks
@@ -510,7 +502,6 @@ public class BeAroundSDK {
 
         if beaconManager.isScanning {
             beaconManager.stopScanning()
-            beaconManager.stopSignificantLocationMonitoring()
         }
 
         stopSyncTimer()
