@@ -330,6 +330,12 @@ class BeaconManager: NSObject {
 
     func startRanging() {
         guard isScanning, let region = beaconRegion, !isRanging else { return }
+        // Doctrine: ranging only runs inside a beacon region. Outside, only region
+        // monitoring is active (kernel-level, no CL service running).
+        guard isInBeaconRegion else {
+            NSLog("[BeAroundSDK] startRanging skipped — not inside beacon region")
+            return
+        }
 
         locationManager.startRangingBeacons(satisfying: region.beaconIdentityConstraint)
         isRanging = true
@@ -377,6 +383,12 @@ class BeaconManager: NSObject {
     /// Resume ranging after a pause
     func resumeRanging() {
         guard let region = beaconRegion, !isRanging, isScanning else { return }
+        // Doctrine: ranging only runs inside a beacon region. Outside, only region
+        // monitoring is active. Duty-cycle resume callers will retry once we enter.
+        guard isInBeaconRegion else {
+            NSLog("[BeAroundSDK] resumeRanging skipped — not inside beacon region")
+            return
+        }
 
         configureBackgroundUpdates(enabled: !isInForeground)
 
