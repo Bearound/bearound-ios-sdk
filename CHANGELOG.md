@@ -5,6 +5,36 @@ All notable changes to BearoundSDK for iOS will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.4.0] - 2026-05-21
+
+### Changed
+
+- **Location is now strictly beacon-gated.** GPS (`startUpdatingLocation`) and iBeacon ranging (`startRangingBeacons`) only run while iOS reports the device is inside the beacon region. Outside the region, only kernel-level region monitoring stays on — effectively zero battery cost.
+- **BLE central scan is gated by region presence.** `CBCentralManager.scanForPeripherals` no longer runs continuously on SDK start; it activates on region entry and stops on region exit.
+- **Removed continuous `significantLocationChanges` monitoring.** The SDK no longer tracks coarse cell-tower-based location movements in background. Wake-up for terminated apps now relies on BLE region monitoring + `BackgroundTaskManager` only.
+- **Capture-window GPS model.** When a beacon is detected, the SDK opens a one-shot GPS capture window (30s in foreground, 15s in background). The window closes on first fix with `horizontalAccuracy ≤ 30m` or on timeout. While beacons remain in range and the cached fix is fresh (<10min), GPS stays off.
+
+### Added
+
+- `BeAroundSDKDelegate.didEnterBeaconRegion()` — fires when iOS reports BLE region entry.
+- `BeAroundSDKDelegate.didExitBeaconRegion()` — fires on region exit.
+- `BeAroundSDKDelegate.didStartLocationCapture(reason:)` — fires when a beacon-triggered GPS capture window opens.
+- `BeAroundSDKDelegate.didCompleteLocationCapture(_ result: BeAroundLocationCapture)` — fires when the window closes, with the acquired coordinate (if any) and the closing outcome.
+- `BeAroundSDKDelegate.didChangeActiveScanState(isActive:)` — fires when ranging+BLE active scanning toggles (true on region entry, false on exit).
+- `BeAroundLocationCapture` public struct describing the outcome of a capture window (reason, location?, outcome, timestamp, hasFix).
+- All new delegate methods ship with default no-op implementations — no breaking change for existing integrators.
+
+### Fixed
+
+- Duty-cycle timer no longer resumes ranging outside the beacon region. Previously, `BearoundSDK.startSyncTimer` would call `beaconManager.resumeRanging()` on every cycle without a region check, leaving CoreLocation active (and the iOS location indicator visible) even when no beacon was nearby.
+- `BluetoothManager.stopScanning()` now also clears `pendingAutoStart`, preventing a deferred Bluetooth power-on from sneaking a scan back in after region exit.
+
+### Battery impact
+
+For an app that spends most of its time outside any beacon region, this release drops CoreLocation + BLE active duty cycle to ~0 outside the region. Expect noticeable battery savings on users who carry the app but rarely encounter beacons.
+
+---
+
 ## [2.3.7] - 2026-02-26
 
 ### Added
