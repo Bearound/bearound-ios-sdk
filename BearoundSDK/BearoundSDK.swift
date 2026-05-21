@@ -287,6 +287,36 @@ public class BeAroundSDK {
             }
         }
 
+        // v2.4 — surface region transitions and location-capture lifecycle to the host app
+        beaconManager.onRegionEnter = { [weak self] in
+            DispatchQueue.main.async {
+                self?.delegate?.didEnterBeaconRegion()
+            }
+        }
+
+        beaconManager.onRegionExit = { [weak self] in
+            DispatchQueue.main.async {
+                self?.delegate?.didExitBeaconRegion()
+            }
+        }
+
+        beaconManager.onLocationCaptureStarted = { [weak self] reason in
+            DispatchQueue.main.async {
+                self?.delegate?.didStartLocationCapture(reason: reason)
+            }
+        }
+
+        beaconManager.onLocationCaptureCompleted = { [weak self] location, openingReason, outcome in
+            let result = BeAroundLocationCapture(
+                reason: openingReason,
+                location: location,
+                outcome: outcome
+            )
+            DispatchQueue.main.async {
+                self?.delegate?.didCompleteLocationCapture(result)
+            }
+        }
+
         bluetoothManager.delegate = self
 
         bluetoothManager.onBeaconsUpdated = { [weak self] trackedBeacons in
