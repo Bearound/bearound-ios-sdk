@@ -761,98 +761,21 @@ struct TwoEyesDebugScreen: View {
                     .foregroundColor(.secondary)
                     .padding(.vertical, 8)
             } else {
-                // Top-line verdict — the single answer to "quem está melhor agora?".
-                // Synthesized from coverage + RSSI + latency. Color-coded big pill at the
-                // top so the user sees the conclusion before reading the numbers.
+                // Top-line verdict — single sentence answer.
                 verdictPill(locOnly: locOnly, btOnly: btOnly, both: both,
                             avgRSSI: rssi.avg, hasBT: hasBT,
                             locWins: race.locationWins, btWins: race.bluetoothWins)
 
-                // 1. Cobertura — Venn-style breakdown across the two sources.
-                analysisGroup(
-                    title: "Cobertura (beacons únicos vistos)",
-                    hint: locOnly + btOnly == 0
-                        ? "Os dois olhos viram todos os beacons disponíveis — ideal."
-                        : "Quando um número é maior que zero, aquele olho está perdendo beacons que o outro vê."
-                ) {
-                    statRowWithBadge(
-                        label: "👁 Só Location",
-                        value: "\(locOnly)",
-                        valueColor: .green,
-                        badge: locOnly == 0 ? .init("OK", .green) : .init("LACUNA", .orange)
-                    )
-                    statRowWithBadge(
-                        label: "👁 Só Bluetooth",
-                        value: "\(btOnly)",
-                        valueColor: .blue,
-                        badge: btOnly == 0 ? .init("OK", .green) : .init("LACUNA", .orange)
-                    )
-                    statRowWithBadge(
-                        label: "✓ Ambos",
-                        value: "\(both)",
-                        valueColor: .primary,
-                        badge: both > 0 ? .init("OVERLAP", .green) : nil
-                    )
-                }
+                // The main attraction: "Quem é mais preciso?" — 4 dimensions with explicit
+                // winners + scoreboard summary. Replaces the old "Cobertura/Latência" split
+                // which left the user unsure of who was actually winning.
+                precisionScorecard(
+                    locOnly: locOnly, btOnly: btOnly, both: both,
+                    locWins: race.locationWins, btWins: race.bluetoothWins,
+                    avgRSSI: rssi.avg, rssiRange: (rssi.min, rssi.max), hasBT: hasBT
+                )
 
-                // 2. Quem detectou primeiro — only computable for beacons in the overlap.
-                analysisGroup(
-                    title: "Latência (quem viu primeiro)",
-                    hint: both == 0
-                        ? "Precisa de pelo menos 1 beacon visto pelos 2 olhos pra eu medir."
-                        : "Vantagem alta (>5s) = um olho está bem mais rápido. Próxima de zero = empate técnico."
-                ) {
-                    if both == 0 {
-                        statRow(label: "—", value: "sem overlap ainda", emphasis: .muted)
-                    } else {
-                        statRowWithBadge(
-                            label: "Location ganhou",
-                            value: "\(race.locationWins)x",
-                            valueColor: .green,
-                            badge: race.locationWins > race.bluetoothWins ? .init("VENCEDOR", .green) : nil
-                        )
-                        statRowWithBadge(
-                            label: "Bluetooth ganhou",
-                            value: "\(race.bluetoothWins)x",
-                            valueColor: .blue,
-                            badge: race.bluetoothWins > race.locationWins ? .init("VENCEDOR", .blue) : nil
-                        )
-                        if race.ties > 0 {
-                            statRow(label: "Empate (<100ms)", value: "\(race.ties)x", emphasis: .muted)
-                        }
-                        let leadQ = latencyQuality(seconds: race.avgLeadSeconds)
-                        statRowWithBadge(
-                            label: "Vantagem média",
-                            value: race.avgLeadSeconds < 0.01 ? "—" : String(format: "%.2fs", race.avgLeadSeconds),
-                            valueColor: .primary,
-                            badge: race.avgLeadSeconds < 0.01 ? nil : .init(leadQ.label, leadQ.color)
-                        )
-                    }
-                }
-
-                // 3. RSSI — exclusive to the Bluetooth eye. Indicator pill + hint translates
-                // raw dBm into "BOM", "FRACO" etc. so user doesn't need to know the scale.
-                analysisGroup(
-                    title: "Signal strength (RSSI — só BT)",
-                    hint: hasBT
-                        ? "RSSI = força do sinal em dBm. Quanto MAIS PERTO de zero, MELHOR. -50 = colado no beacon, -90 = no limite."
-                        : "RSSI só existe via Bluetooth — CoreLocation não expõe esse dado puro."
-                ) {
-                    if !hasBT {
-                        statRow(label: "—", value: "nenhum beacon BT no momento", emphasis: .muted)
-                    } else {
-                        let q = rssiQuality(avg: rssi.avg)
-                        statRowWithBadge(
-                            label: "Médio",
-                            value: "\(rssi.avg) dBm",
-                            valueColor: .blue,
-                            badge: .init(q.label, q.color)
-                        )
-                        statRow(label: "Range", value: "\(rssi.min)…\(rssi.max) dBm", emphasis: .muted)
-                    }
-                }
-
-                // 4. Recommendation — synthesized prose from the numbers above. Plain language.
+                // Recommendation — synthesized prose from the numbers above. Plain language.
                 analysisGroup(title: "Recomendação", hint: nil) {
                     Text(recommendation(locOnly: locOnly, btOnly: btOnly, both: both,
                                         locWins: race.locationWins, btWins: race.bluetoothWins))
@@ -865,6 +788,265 @@ struct TwoEyesDebugScreen: View {
         .padding(12)
         .background(Color.gray.opacity(0.08))
         .cornerRadius(8)
+    }
+
+    // MARK: - Precision Scorecard (v2.5)
+
+    /// Four-dimension scorecard that declares a winner per category and a final scoreboard.
+    /// Replaces the previous Cobertura/Latência sections which made the user count by hand.
+    @ViewBuilder
+    private func precisionScorecard(
+        locOnly: Int, btOnly: Int, both: Int,
+        locWins: Int, btWins: Int,
+        avgRSSI: Int, rssiRange: (Int, Int), hasBT: Bool
+    ) -> some View {
+        // Evaluate the four dimensions. Each returns (winner, value-text, why-text).
+        let coverage = evaluateCoverage(locOnly: locOnly, btOnly: btOnly, both: both)
+        let speed = evaluateSpeed(locWins: locWins, btWins: btWins)
+        let granularity = evaluateGranularity(hasBT: hasBT)
+        let stability = evaluateStability(hasBT: hasBT, range: rssiRange, avg: avgRSSI)
+
+        // Scoreboard tally
+        let dimensions = [coverage, speed, granularity, stability]
+        let locScore = dimensions.filter { $0.winner == .location }.count
+        let btScore = dimensions.filter { $0.winner == .bluetooth }.count
+        let tieScore = dimensions.filter { $0.winner == .tie }.count
+
+        VStack(alignment: .leading, spacing: 10) {
+            Text("Quem é mais preciso?")
+                .font(.system(size: 13, weight: .bold))
+
+            // 4 dimension cards
+            precisionRow(icon: "🎯", title: "Cobertura",     evaluation: coverage)
+            precisionRow(icon: "⚡", title: "Velocidade",     evaluation: speed)
+            precisionRow(icon: "🔍", title: "Granularidade",  evaluation: granularity)
+            precisionRow(icon: "📊", title: "Estabilidade",   evaluation: stability)
+
+            // Final scoreboard — one big row showing the tally with explicit framing
+            // so the user reads "X-Y" rather than re-counting badges above.
+            scoreboardRow(loc: locScore, bt: btScore, ties: tieScore)
+        }
+        .padding(12)
+        .background(Color.gray.opacity(0.05))
+        .cornerRadius(8)
+    }
+
+    /// Render one dimension row: icon · title · winner badge · value · why-prose.
+    /// The "why" is the key addition the user asked for — every number has its
+    /// interpretation glued to it.
+    private func precisionRow(icon: String, title: String, evaluation: PrecisionEvaluation) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 6) {
+                Text(icon).font(.body)
+                Text(title)
+                    .font(.system(size: 12, weight: .semibold))
+                Spacer()
+                winnerBadge(evaluation.winner)
+            }
+            // Value (numeric) and why (prose). Padded so they nest under the title visually.
+            VStack(alignment: .leading, spacing: 2) {
+                Text(evaluation.valueText)
+                    .font(.system(size: 11, design: .monospaced))
+                    .foregroundColor(.primary)
+                Text(evaluation.why)
+                    .font(.system(size: 11))
+                    .foregroundColor(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .padding(.leading, 26)
+        }
+        .padding(.vertical, 4)
+    }
+
+    /// Small colored chip showing who won this dimension. Same chip language as the cards.
+    @ViewBuilder
+    private func winnerBadge(_ winner: PrecisionWinner) -> some View {
+        switch winner {
+        case .location:
+            chip(text: "👁 LOCATION", color: .green)
+        case .bluetooth:
+            chip(text: "👁 BLUETOOTH", color: .blue)
+        case .tie:
+            chip(text: "EMPATE", color: .gray)
+        case .none:
+            chip(text: "S/ DADOS", color: .gray)
+        }
+    }
+
+    private func chip(text: String, color: Color) -> some View {
+        Text(text)
+            .font(.system(size: 9, weight: .bold, design: .monospaced))
+            .foregroundColor(color)
+            .padding(.horizontal, 6)
+            .padding(.vertical, 2)
+            .background(
+                RoundedRectangle(cornerRadius: 4)
+                    .fill(color.opacity(0.18))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 4)
+                    .stroke(color, lineWidth: 0.8)
+            )
+    }
+
+    /// Final scoreboard row — visual tally. Bigger numbers, more impact.
+    private func scoreboardRow(loc: Int, bt: Int, ties: Int) -> some View {
+        HStack(spacing: 14) {
+            VStack(spacing: 2) {
+                Text("\(loc)")
+                    .font(.system(size: 22, weight: .bold, design: .rounded))
+                    .foregroundColor(.green)
+                Text("LOCATION")
+                    .font(.system(size: 9, weight: .semibold, design: .monospaced))
+                    .foregroundColor(.secondary)
+            }
+            Text("—")
+                .font(.title3)
+                .foregroundColor(.secondary)
+            VStack(spacing: 2) {
+                Text("\(bt)")
+                    .font(.system(size: 22, weight: .bold, design: .rounded))
+                    .foregroundColor(.blue)
+                Text("BLUETOOTH")
+                    .font(.system(size: 9, weight: .semibold, design: .monospaced))
+                    .foregroundColor(.secondary)
+            }
+            if ties > 0 {
+                Text("·")
+                    .font(.title3)
+                    .foregroundColor(.secondary)
+                VStack(spacing: 2) {
+                    Text("\(ties)")
+                        .font(.system(size: 22, weight: .bold, design: .rounded))
+                        .foregroundColor(.gray)
+                    Text("EMPATE")
+                        .font(.system(size: 9, weight: .semibold, design: .monospaced))
+                        .foregroundColor(.secondary)
+                }
+            }
+            Spacer()
+        }
+        .padding(10)
+        .background(Color.gray.opacity(0.08))
+        .cornerRadius(8)
+        .padding(.top, 4)
+    }
+
+    // MARK: - Per-dimension evaluation logic
+
+    private enum PrecisionWinner { case location, bluetooth, tie, none }
+
+    private struct PrecisionEvaluation {
+        let winner: PrecisionWinner
+        let valueText: String
+        let why: String
+    }
+
+    /// 🎯 Cobertura — quem vê mais dos beacons disponíveis (relativo ao total visto pelos dois).
+    /// Reframed from the old "Só Location 0 / Só BT 0 / Ambos N" which made the user count by hand.
+    /// Now expressed as "BT cobre X% do que Location vê" + reverse.
+    private func evaluateCoverage(locOnly: Int, btOnly: Int, both: Int) -> PrecisionEvaluation {
+        let totalUniverse = locOnly + btOnly + both
+        guard totalUniverse > 0 else {
+            return .init(winner: .none, valueText: "0 beacons", why: "Nenhum beacon visto ainda.")
+        }
+        // % of the union that each eye sees
+        let locSees = both + locOnly  // beacons Location has seen
+        let btSees = both + btOnly    // beacons BT has seen
+        let locPct = Int((Double(locSees) / Double(totalUniverse)) * 100)
+        let btPct = Int((Double(btSees) / Double(totalUniverse)) * 100)
+
+        let winner: PrecisionWinner
+        if locPct == btPct { winner = .tie }
+        else if locPct > btPct { winner = .location }
+        else { winner = .bluetooth }
+
+        let valueText = "Location: \(locPct)% (\(locSees)/\(totalUniverse))   •   Bluetooth: \(btPct)% (\(btSees)/\(totalUniverse))"
+        let why: String
+        if winner == .tie {
+            why = "Os dois olhos veem 100% dos beacons. Cobertura completa."
+        } else if winner == .location {
+            why = "Location enxerga \(locSees - btSees) beacon(s) que o BT não vê — provável: BT bloqueado ou fora de range."
+        } else {
+            why = "Bluetooth enxerga \(btSees - locSees) beacon(s) que o Location não vê — provável: Precise Location off ou beacon fora da region monitorada."
+        }
+        return .init(winner: winner, valueText: valueText, why: why)
+    }
+
+    /// ⚡ Velocidade — quem detectou primeiro nas corridas (overlap-only).
+    private func evaluateSpeed(locWins: Int, btWins: Int) -> PrecisionEvaluation {
+        let total = locWins + btWins
+        guard total > 0 else {
+            return .init(winner: .none, valueText: "Sem corridas ainda", why: "Precisa de pelo menos 1 beacon visto pelos 2 olhos pra medir.")
+        }
+        let winner: PrecisionWinner
+        if locWins == btWins { winner = .tie }
+        else if locWins > btWins { winner = .location }
+        else { winner = .bluetooth }
+
+        let valueText = "Location: \(locWins)x   •   Bluetooth: \(btWins)x"
+        let why: String
+        switch winner {
+        case .location:
+            why = "Location detectou primeiro em \(locWins) de \(total) corridas. Vantagem: kernel-level monitoring acorda o app antes do BLE scan."
+        case .bluetooth:
+            why = "Bluetooth detectou primeiro em \(btWins) de \(total) corridas. Vantagem: scan ativo é determinístico (~1-2s); CL pode ser preguiçoso (até 30s)."
+        case .tie:
+            why = "Empate técnico — os dois olhos respondem em paralelo, sem atraso significativo entre eles."
+        case .none:
+            why = ""
+        }
+        return .init(winner: winner, valueText: valueText, why: why)
+    }
+
+    /// 🔍 Granularidade — qual olho dá leitura mais fina por beacon.
+    /// Esta é estrutural — Bluetooth sempre vence porque CL nunca expõe RSSI puro.
+    private func evaluateGranularity(hasBT: Bool) -> PrecisionEvaluation {
+        if hasBT {
+            return .init(
+                winner: .bluetooth,
+                valueText: "BT: RSSI em dBm (256 níveis)   •   Location: 4 buckets (immediate/near/far/unknown)",
+                why: "Bluetooth dá distância fina por dBm. CoreLocation só te diz a 'faixa' (perto/médio/longe). BT é ~64x mais granular."
+            )
+        } else {
+            return .init(
+                winner: .location,
+                valueText: "Sem dado BT — só Location ativo",
+                why: "Sem BT no momento. Location dá os buckets de proximidade, que é o que tem."
+            )
+        }
+    }
+
+    /// 📊 Estabilidade — qual eye mantém leitura consistente.
+    /// Usamos o range do RSSI atual como proxy: range curto = beacons clusters perto, leitura estável.
+    /// Range largo = mistura distância, ou sinal flutuando — menos preciso.
+    private func evaluateStability(hasBT: Bool, range: (min: Int, max: Int), avg: Int) -> PrecisionEvaluation {
+        guard hasBT else {
+            return .init(
+                winner: .location,
+                valueText: "Sem dado BT",
+                why: "Location mantém proximity buckets estáveis (iOS faz suavização interna)."
+            )
+        }
+        let spread = range.max - range.min
+        let winner: PrecisionWinner
+        let stability: String
+        if spread <= 10 {
+            winner = .bluetooth
+            stability = "Variação BAIXA (\(spread) dB) — sinal muito estável"
+        } else if spread <= 25 {
+            winner = .bluetooth
+            stability = "Variação MÉDIA (\(spread) dB) — sinal aceitável"
+        } else {
+            winner = .location
+            stability = "Variação ALTA (\(spread) dB) — beacons em distâncias muito diferentes"
+        }
+
+        return .init(
+            winner: winner,
+            valueText: "BT range: \(range.min)…\(range.max) dBm   •   Δ \(spread) dB",
+            why: "\(stability). Location não tem esse dado bruto — sempre 'estável' por construção (suavizado pelo iOS)."
+        )
     }
 
     // MARK: - Quality thresholds (RSSI + Latency)
