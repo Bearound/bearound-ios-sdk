@@ -31,6 +31,9 @@ struct GeofenceEvent: Identifiable {
         case captureCompletedNoFix
         case scanResumed
         case scanPaused
+        // v2.5 — Two Eyes
+        case bluetoothZoneEnter
+        case bluetoothZoneExit
     }
 
     let id = UUID()
@@ -38,6 +41,14 @@ struct GeofenceEvent: Identifiable {
     let timestamp: Date
     /// Free-form detail line (reason / outcome / coordinates).
     let detail: String
+}
+
+/// Which "eye" is being mirrored by a Debug Geofence card.
+/// LEFT  = Location (CoreLocation region monitoring)
+/// RIGHT = Bluetooth (CBCentralManager scan, BLE-only zone detector)
+enum GeofenceEye {
+    case location
+    case bluetooth
 }
 
 class BeaconViewModel: NSObject, ObservableObject, BeAroundSDKDelegate {
@@ -65,9 +76,142 @@ class BeaconViewModel: NSObject, ObservableObject, BeAroundSDKDelegate {
     // BLE Diagnostic
     @Published var bleDiagnostic: String = "..."
 
-    // MARK: - Geofence Debug (v2.4)
-    /// True while iOS reports the device is inside the beacon region (BLE proximity).
+    // MARK: - Geofence Debug — Two Eyes (v2.5)
+    //
+    // Two independent presence signals, each rendered in its own card:
+    //   👁 LEFT  — Location:  isInBeaconRegion + lastLocationEnter/Exit + locationRegionEnterCount
+    //   👁 RIGHT — Bluetooth: isInBluetoothZone + lastBluetoothEnter/Exit + bluetoothZoneEnterCount
+
+    /// LEFT EYE (Location) — True while CoreLocation reports the device is inside the iBeacon region.
+    /// Works even if the user has BT permission off (iOS manages BLE at the system level).
     @Published var isInBeaconRegion: Bool = false
+    /// LEFT EYE — When the Location eye most recently saw a region ENTER. Resets per session.
+    @Published var lastLocationEnter: Date?
+    /// LEFT EYE — When the Location eye most recently saw a region EXIT. Resets per session.
+    @Published var lastLocationExit: Date?
+    /// LEFT EYE — Number of region enters observed in this session.
+    @Published var locationRegionEnterCount: Int = 0
+
+    /// RIGHT EYE (Bluetooth) — True while the BLE-only zone detector sees at least one beacon
+    /// in its rolling window. Works even if the user has Location off (region monitoring inactive).
+    @Published var isInBluetoothZone: Bool = false
+    /// RIGHT EYE — When the Bluetooth eye most recently entered the zone. Resets per session.
+    @Published var lastBluetoothEnter: Date?
+    /// RIGHT EYE — When the Bluetooth eye most recently exited the zone. Resets per session.
+    @Published var lastBluetoothExit: Date?
+    /// RIGHT EYE — Number of Bluetooth zone enters observed in this session.
+    @Published var bluetoothZoneEnterCount: Int = 0
+
+    /// LEFT EYE — Unique beacon keys (`major.minor`) ever seen by the Location eye in this session.
+    /// Used to compute the "Total detectados" pill on the card. Survives beacons going out of range.
+    @Published var locationBeaconKeysSeen: Set<String> = []
+
+    /// RIGHT EYE — Unique beacon keys ever seen by the Bluetooth eye in this session.
+    @Published var bluetoothBeaconKeysSeen: Set<String> = []
+
+    /// First-detection timestamp per beacon per eye. Used by the comparative analysis block
+    /// to measure latency — for any beacon both eyes saw, we know which eye fired first and
+    /// by how much. Populated lazily in didUpdateBeacons (first sighting only — no overwrites).
+    @Published var firstSeenByLocation: [String: Date] = [:]
+    @Published var firstSeenByBluetooth: [String: Date] = [:]
+
+    /// LEFT EYE — Beacons currently visible to the Location eye (have `.coreLocation` in sources).
+    /// Live-derived from `beacons` so it tracks comings and goings without extra state.
+    var locationBeaconsNow: Int {
+        beacons.filter { $0.discoverySources.contains(.coreLocation) }.count
+    }
+
+    /// RIGHT EYE — Beacons currently visible to the Bluetooth eye (have `.serviceUUID` or `.name` in sources).
+    var bluetoothBeaconsNow: Int {
+        beacons.filter {
+            $0.discoverySources.contains(.serviceUUID) || $0.discoverySources.contains(.name)
+        }.count
+    }
+
+    // MARK: - Comparative Analysis (v2.5)
+    //
+    // These derived values power the "Análise comparativa" block on the dedicated screen.
+    // They answer: which eye is more useful in YOUR environment right now?
+
+    /// Beacon keys this session was seen ONLY by the Location eye (never by BT).
+    /// Indicates beacons that BT can't reach — could be permission off, BT-disabled beacons,
+    /// or out of BLE scan range while still in iBeacon region range.
+    var locationOnlyKeys: Set<String> {
+        locationBeaconKeysSeen.subtracting(bluetoothBeaconKeysSeen)
+    }
+
+    /// Beacon keys ONLY seen by the Bluetooth eye (never by Location).
+    /// Indicates beacons that CL doesn't pick up — Precise Location off, distance > region trigger,
+    /// or beacon advertises the BEAD service but isn't a CLBeaconRegion target.
+    var bluetoothOnlyKeys: Set<String> {
+        bluetoothBeaconKeysSeen.subtracting(locationBeaconKeysSeen)
+    }
+
+    /// Beacon keys seen by BOTH eyes — the overlap. Only these have meaningful latency data.
+    var bothEyesKeys: Set<String> {
+        locationBeaconKeysSeen.intersection(bluetoothBeaconKeysSeen)
+    }
+
+    /// Per-beacon winner: which eye fired first for each beacon in the overlap.
+    /// Returns (locationWins, bluetoothWins, averageLeadSeconds). Lead is positive when the
+    /// winning eye saw it earlier — averaged across all beacons.
+    /// (locationWins, bluetoothWins) won't always sum to bothEyesKeys.count because ties exist.
+    var detectionRace: (locationWins: Int, bluetoothWins: Int, ties: Int, avgLeadSeconds: Double) {
+        var locWins = 0
+        var btWins = 0
+        var ties = 0
+        var leadsSeconds: [Double] = []
+
+        for key in bothEyesKeys {
+            guard let locFirst = firstSeenByLocation[key],
+                  let btFirst = firstSeenByBluetooth[key] else { continue }
+            let delta = btFirst.timeIntervalSince(locFirst)  // positive = location was earlier
+            // Treat anything within 100ms as a tie — beneath the resolution of our event loop.
+            if abs(delta) < 0.1 {
+                ties += 1
+            } else if delta > 0 {
+                locWins += 1
+                leadsSeconds.append(delta)
+            } else {
+                btWins += 1
+                leadsSeconds.append(-delta)
+            }
+        }
+
+        let avg = leadsSeconds.isEmpty ? 0.0 : leadsSeconds.reduce(0, +) / Double(leadsSeconds.count)
+        return (locWins, btWins, ties, avg)
+    }
+
+    /// RSSI statistics from the BT eye for beacons currently in range.
+    /// Returns (avg, min, max). Defaults to (0,0,0) when no beacons are visible.
+    /// CoreLocation does NOT give us raw RSSI (only CLProximity buckets), which is one
+    /// concrete reason to keep the Bluetooth eye even when Location is working — it's the
+    /// only source of fine-grained signal strength.
+    var bluetoothRSSIStats: (avg: Int, min: Int, max: Int) {
+        let rssiValues = beacons.compactMap { beacon -> Int? in
+            let hasBLE = beacon.discoverySources.contains(.serviceUUID) || beacon.discoverySources.contains(.name)
+            return hasBLE ? beacon.rssi : nil
+        }
+        guard !rssiValues.isEmpty else { return (0, 0, 0) }
+        let avg = rssiValues.reduce(0, +) / rssiValues.count
+        return (avg, rssiValues.min() ?? 0, rssiValues.max() ?? 0)
+    }
+
+    // MARK: - Duty Cycle (v2.5)
+
+    /// RIGHT EYE — Current scan mode of the Bluetooth eye. Drives the "Modo" pill on the card.
+    /// Defaults to `.idle` so the UI renders correctly even before the SDK fires its first event.
+    @Published var bluetoothScanMode: BluetoothScanMode = .idle
+
+    /// RIGHT EYE — Absolute time of the next idle peek. Non-nil only while bluetoothScanMode == .idle.
+    /// Used together with `nowTick` to render the live "Próx. scan em Xs" countdown.
+    @Published var bluetoothNextIdleScanAt: Date?
+
+    /// 1Hz heartbeat used to age the countdown ("4:23 → 4:22 → 4:21...") without forcing the
+    /// BluetoothManager to fire an SDK event every second. Updated by `tickTimer`.
+    @Published var nowTick: Date = Date()
+    private var tickTimer: Timer?
+
     /// True when active scanning (ranging + BLE) is running. Outside a region this stays false.
     @Published var isActiveScanRunning: Bool = false
     /// True while a beacon-triggered GPS capture window is open.
@@ -130,6 +274,18 @@ class BeaconViewModel: NSObject, ObservableObject, BeAroundSDKDelegate {
         requestTrackingPermission()
         initializeSDK()
         startDiagnosticTimer()
+        startTickTimer()
+    }
+
+    /// 1Hz heartbeat that re-publishes `nowTick`. SwiftUI views observing the view model
+    /// re-render with each tick, which is how the EyeCard's countdown stays live.
+    private func startTickTimer() {
+        tickTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
+            guard let self else { return }
+            DispatchQueue.main.async {
+                self.nowTick = Date()
+            }
+        }
     }
 
     private func setupLockObservers() {
@@ -285,7 +441,7 @@ class BeaconViewModel: NSObject, ObservableObject, BeAroundSDKDelegate {
     @MainActor
     private func initializeSDK() {
         BeAroundSDK.shared.configure(
-            businessToken: "BUSINESS_TOKEN",
+            businessToken: "ee2ec9c46d2b2ad99bddcdd0afe224e6",
             scanPrecision: scanPrecision,
             maxQueuedPayloads: queueSize
         )
@@ -319,7 +475,7 @@ class BeaconViewModel: NSObject, ObservableObject, BeAroundSDKDelegate {
         }
 
         BeAroundSDK.shared.configure(
-            businessToken: "BUSINESS_TOKEN",
+            businessToken: "ee2ec9c46d2b2ad99bddcdd0afe224e6",
             scanPrecision: scanPrecision,
             maxQueuedPayloads: queueSize
         )
@@ -402,6 +558,7 @@ class BeaconViewModel: NSObject, ObservableObject, BeAroundSDKDelegate {
 
     deinit {
         diagnosticTimer?.invalidate()
+        tickTimer?.invalidate()
     }
 }
 
@@ -464,6 +621,27 @@ extension BeaconViewModel {
             self.wasInBeaconRegion = isNowInBeaconRegion
             self.beacons = sortedBeacons
             self.lastScanTime = Date()
+
+            // v2.5 — Two Eyes — accumulate unique beacon keys per detection source so each
+            // EyeCard can show "Total detectados" independently. Sets dedupe automatically.
+            // Also stamp the FIRST sighting per eye so the comparative analysis can compute
+            // latency (who saw which beacon first, and by how many seconds).
+            let now = Date()
+            for beacon in sortedBeacons {
+                let key = "\(beacon.major).\(beacon.minor)"
+                if beacon.discoverySources.contains(.coreLocation) {
+                    self.locationBeaconKeysSeen.insert(key)
+                    if self.firstSeenByLocation[key] == nil {
+                        self.firstSeenByLocation[key] = now
+                    }
+                }
+                if beacon.discoverySources.contains(.serviceUUID) || beacon.discoverySources.contains(.name) {
+                    self.bluetoothBeaconKeysSeen.insert(key)
+                    if self.firstSeenByBluetooth[key] == nil {
+                        self.firstSeenByBluetooth[key] = now
+                    }
+                }
+            }
 
             // Record detection log entries
             let isBackground = UIApplication.shared.applicationState != .active
@@ -607,23 +785,67 @@ extension BeaconViewModel {
 
     func didEnterBeaconRegion() {
         DispatchQueue.main.async {
+            let now = Date()
             self.isInBeaconRegion = true
+            self.lastLocationEnter = now
+            self.locationRegionEnterCount += 1
             self.appendGeofenceEvent(.init(
                 kind: .regionEnter,
-                timestamp: Date(),
-                detail: "iOS reportou entrada na região do beacon (BLE)"
+                timestamp: now,
+                detail: "👁 LOCATION (esquerdo) — iOS reportou entrada na região (CLBeaconRegion)"
             ))
         }
     }
 
     func didExitBeaconRegion() {
         DispatchQueue.main.async {
+            let now = Date()
             self.isInBeaconRegion = false
+            self.lastLocationExit = now
             self.appendGeofenceEvent(.init(
                 kind: .regionExit,
-                timestamp: Date(),
-                detail: "iOS reportou saída da região do beacon"
+                timestamp: now,
+                detail: "👁 LOCATION (esquerdo) — iOS reportou saída da região"
             ))
+        }
+    }
+
+    // MARK: - Bluetooth Zone Delegate (v2.5) — RIGHT EYE
+
+    func didEnterBluetoothZone() {
+        DispatchQueue.main.async {
+            let now = Date()
+            self.isInBluetoothZone = true
+            self.lastBluetoothEnter = now
+            self.bluetoothZoneEnterCount += 1
+            self.appendGeofenceEvent(.init(
+                kind: .bluetoothZoneEnter,
+                timestamp: now,
+                detail: "👁 BLUETOOTH (direito) — BLE detectou beacon (CBCentralManager)"
+            ))
+        }
+    }
+
+    func didExitBluetoothZone() {
+        DispatchQueue.main.async {
+            let now = Date()
+            self.isInBluetoothZone = false
+            self.lastBluetoothExit = now
+            self.appendGeofenceEvent(.init(
+                kind: .bluetoothZoneExit,
+                timestamp: now,
+                detail: "👁 BLUETOOTH (direito) — zona vazia por 10s (graça expirou)"
+            ))
+        }
+    }
+
+    // v2.5 — Duty cycle mode transition (Bluetooth eye)
+    // BluetoothManager flips between .idle (5min cycle) and .active (continuous + 10s tick).
+    // SDK already dispatches this on main, but we wrap defensively anyway.
+    func didChangeBluetoothScanMode(_ mode: BluetoothScanMode, nextIdleScanAt: Date?) {
+        DispatchQueue.main.async {
+            self.bluetoothScanMode = mode
+            self.bluetoothNextIdleScanAt = nextIdleScanAt
         }
     }
 

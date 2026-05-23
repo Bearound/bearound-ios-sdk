@@ -34,6 +34,7 @@ public struct BeAroundLocationCapture {
 /// (the countdown timer was firing every second which was wasteful)
 /// v2.3: Added sync lifecycle and background detection callbacks
 /// v2.4: Added region transition + location capture callbacks for the beacon-gated GPS model
+/// v2.5: Decoupled "two eyes" model — BLE-only zone detection runs independently of CoreLocation region monitoring
 public protocol BeAroundSDKDelegate: AnyObject {
     /// Called when beacons are detected or updated, array of detected beacons with their current data
     func didUpdateBeacons(_ beacons: [Beacon])
@@ -85,6 +86,37 @@ public protocol BeAroundSDKDelegate: AnyObject {
     /// kernel-level region monitoring is on, which has effectively zero battery cost.
     /// - Parameter isActive: True when ranging + BLE scan are running; false when paused.
     func didChangeActiveScanState(isActive: Bool)
+
+    // MARK: - Two Eyes — Bluetooth Zone (v2.5)
+    //
+    // The SDK now exposes TWO independent presence signals:
+    //
+    //   👁 LEFT eye  — Location:  didEnterBeaconRegion / didExitBeaconRegion (v2.4)
+    //                  Backed by CLLocationManager iBeacon region monitoring. Works even
+    //                  if the app has no BT permission (iOS manages BLE at the system level).
+    //
+    //   👁 RIGHT eye — Bluetooth: didEnterBluetoothZone / didExitBluetoothZone (v2.5)
+    //                  Backed by CBCentralManager BLE scan. Derives "in zone" purely from
+    //                  recent BLE detections, independent of CoreLocation. Works even if
+    //                  the user has Location off (region monitoring inactive).
+    //
+    // The two eyes fire independently. UIs can mirror each one in its own debug card.
+
+    /// Called when the BLE scanner detects at least one beacon within a recent rolling window.
+    /// This is the canonical "Bluetooth eye sees us in a zone" signal, independent of CoreLocation.
+    func didEnterBluetoothZone()
+
+    /// Called when the BLE scanner has seen zero beacons for the configured empty-tick threshold.
+    /// Fires even when the Location eye still reports we are inside its monitored region.
+    func didExitBluetoothZone()
+
+    /// Called whenever the Bluetooth eye's duty-cycle mode changes. The two modes are:
+    ///   .idle   — scanner OFF most of the time; peeks for 10s every 5 min
+    ///   .active — scanner ON continuously; UI gets a tick every 10s
+    /// - Parameters:
+    ///   - mode: the new mode the BT eye just entered
+    ///   - nextIdleScanAt: absolute time of the next idle peek; non-nil only when mode is .idle
+    func didChangeBluetoothScanMode(_ mode: BluetoothScanMode, nextIdleScanAt: Date?)
 }
 
 // Default implementations (all optional except didUpdateBeacons)
@@ -99,4 +131,7 @@ extension BeAroundSDKDelegate {
     public func didStartLocationCapture(reason _: String) {}
     public func didCompleteLocationCapture(_: BeAroundLocationCapture) {}
     public func didChangeActiveScanState(isActive _: Bool) {}
+    public func didEnterBluetoothZone() {}
+    public func didExitBluetoothZone() {}
+    public func didChangeBluetoothScanMode(_: BluetoothScanMode, nextIdleScanAt _: Date?) {}
 }

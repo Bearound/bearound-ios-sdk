@@ -288,23 +288,35 @@ public class BeAroundSDK {
         }
 
         // v2.4 — surface region transitions and location-capture lifecycle to the host app
+        // v2.5 — region transitions also drive the BT eye duty-cycle wake/sleep
         beaconManager.onRegionEnter = { [weak self] in
+            guard let self else { return }
+            // Wake the Bluetooth eye: region entry is the canonical "user is at a beacon"
+            // signal, fires from kernel-level CL monitoring even when the app is suspended.
+            self.bluetoothManager.wakeToActive()
             DispatchQueue.main.async {
-                self?.delegate?.didEnterBeaconRegion()
+                self.delegate?.didEnterBeaconRegion()
             }
         }
 
         beaconManager.onRegionExit = { [weak self] in
+            guard let self else { return }
+            // Put the Bluetooth eye back to sleep — user left the zone, stop burning battery.
+            self.bluetoothManager.sleepToIdle()
             DispatchQueue.main.async {
-                self?.delegate?.didExitBeaconRegion()
+                self.delegate?.didExitBeaconRegion()
             }
         }
 
-        // v2.4 — gate BLE active scan by region presence. Outside region: BLE off.
-        // autoStartIfAuthorized does its own permission check, so it's safe to call unconditionally.
+        // v2.5 — TWO EYES MODEL
+        // The BLE scan no longer stops on Location region exit. It runs whenever the user has
+        // granted BT permission AND the BluetoothManager was started (see startScanning()).
+        // The "active scan" callback now just mirrors the BeaconManager's ranging state, which
+        // is the Location eye's notion of "actively tracking". The BLE eye runs continuously
+        // and surfaces its own zone presence via didEnterBluetoothZone / didExitBluetoothZone.
         beaconManager.onActiveScanShouldStart = { [weak self] in
             guard let self else { return }
-            NSLog("[SDK] Active scan START — starting BLE central scan (region entered)")
+            NSLog("[SDK] Active scan START — region entered (BLE already running independently)")
             self.bluetoothManager.autoStartIfAuthorized()
             DispatchQueue.main.async {
                 self.delegate?.didChangeActiveScanState(isActive: true)
@@ -313,8 +325,10 @@ public class BeAroundSDK {
 
         beaconManager.onActiveScanShouldStop = { [weak self] in
             guard let self else { return }
-            NSLog("[SDK] Active scan STOP — stopping BLE central scan (region exited)")
-            self.bluetoothManager.stopScanning()
+            NSLog("[SDK] Active scan STOP — region exited (BLE keeps running independently)")
+            // INTENTIONAL: do NOT stop the BluetoothManager here. The BLE eye is decoupled
+            // from CoreLocation region monitoring as of v2.5. The Location eye exiting does
+            // not silence the Bluetooth eye.
             DispatchQueue.main.async {
                 self.delegate?.didChangeActiveScanState(isActive: false)
             }
@@ -338,6 +352,31 @@ public class BeAroundSDK {
         }
 
         bluetoothManager.delegate = self
+
+        // v2.5 — Bluetooth eye: BLE-only zone presence, independent of CoreLocation region.
+        bluetoothManager.onBluetoothZoneEnter = { [weak self] in
+            NSLog("[SDK] Bluetooth eye — ENTER ZONE (BLE rising edge)")
+            DispatchQueue.main.async {
+                self?.delegate?.didEnterBluetoothZone()
+            }
+        }
+
+        bluetoothManager.onBluetoothZoneExit = { [weak self] in
+            NSLog("[SDK] Bluetooth eye — EXIT ZONE (BLE falling edge after grace)")
+            DispatchQueue.main.async {
+                self?.delegate?.didExitBluetoothZone()
+            }
+        }
+
+        // v2.5 — surface duty-cycle mode transitions of the BT eye to the host.
+        // notifyScanModeChanged already dispatches on main, but we re-route through
+        // the same path the other delegate calls use for consistency.
+        bluetoothManager.onScanModeChanged = { [weak self] mode, nextIdleScanAt in
+            NSLog("[SDK] BT scan mode → %@ (nextIdleScanAt=%@)",
+                  mode.rawValue,
+                  nextIdleScanAt.map { "\($0)" } ?? "nil")
+            self?.delegate?.didChangeBluetoothScanMode(mode, nextIdleScanAt: nextIdleScanAt)
+        }
 
         bluetoothManager.onBeaconsUpdated = { [weak self] trackedBeacons in
             guard let self else { return }
@@ -518,13 +557,18 @@ public class BeAroundSDK {
             return
         }
 
-        // 2. BLE does NOT start here. Active scanning (BLE + ranging) is gated by
-        //    beacon-region presence — see onActiveScanShouldStart / onActiveScanShouldStop.
-        //    On startup, BeaconManager's startMonitoring → requestState will trigger
-        //    didEnterRegion if we're already inside, which then starts BLE.
+        // 2. v2.5 TWO EYES — BLE eye starts here, independent of Location.
+        //    Previously BLE was gated by CoreLocation region entry; that coupling is broken now.
+        //    The Bluetooth eye runs whenever BT permission is granted and the SDK is scanning.
+        //    Its zone presence is derived from its own rolling-window detector
+        //    (see BluetoothManager.evaluateZonePresence) and surfaced as
+        //    didEnterBluetoothZone / didExitBluetoothZone on the delegate.
+        if bluetoothAuthorized {
+            bluetoothManager.autoStartIfAuthorized()
+        }
 
-        // 3. CoreLocation starts only if authorized AND precise location is on
-        // Location updates are gated by beacon detection — never run continuously.
+        // 3. Location eye — CoreLocation starts only if authorized AND precise location is on.
+        //    Location updates are gated by beacon detection — never run continuously.
         if locationCanRangeBeacons {
             beaconManager.updateDesiredAccuracy(configuration!.precisionLocationAccuracy)
             beaconManager.startScanning()
