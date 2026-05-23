@@ -670,6 +670,10 @@ struct TwoEyesDebugScreen: View {
                         )
                     }
 
+                    // Comparative analysis — quantifies which eye is "better" for THIS user's
+                    // environment based on actual data the app has collected this session.
+                    analysisBlock
+
                     // Quick legend so the user remembers what each mode means without
                     // having to scroll back to docs. Kept compact.
                     legendBlock
@@ -729,6 +733,145 @@ struct TwoEyesDebugScreen: View {
             RoundedRectangle(cornerRadius: 8)
                 .fill(isOn ? color.opacity(0.12) : Color.gray.opacity(0.08))
         )
+    }
+
+    /// "Análise comparativa" — answers the user's question: "which eye is more precise?"
+    /// Pulls live aggregates from the view model. Each row is a different lens on the data.
+    private var analysisBlock: some View {
+        let race = viewModel.detectionRace
+        let rssi = viewModel.bluetoothRSSIStats
+        let locOnly = viewModel.locationOnlyKeys.count
+        let btOnly = viewModel.bluetoothOnlyKeys.count
+        let both = viewModel.bothEyesKeys.count
+        let hasData = (locOnly + btOnly + both) > 0
+        let hasBT = !viewModel.beacons.filter {
+            $0.discoverySources.contains(.serviceUUID) || $0.discoverySources.contains(.name)
+        }.isEmpty
+
+        return VStack(alignment: .leading, spacing: 12) {
+            Text("Análise comparativa")
+                .font(.subheadline)
+                .fontWeight(.semibold)
+
+            if !hasData {
+                Text("Sem dados ainda — fica perto de um beacon por uns segundos pra eu poder comparar os olhos.")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                    .padding(.vertical, 8)
+            } else {
+                // 1. Cobertura — Venn-style breakdown across the two sources.
+                analysisGroup(title: "Cobertura (beacons únicos vistos)") {
+                    statRow(label: "👁 Só Location",   value: "\(locOnly)", emphasis: .green)
+                    statRow(label: "👁 Só Bluetooth",  value: "\(btOnly)",  emphasis: .blue)
+                    statRow(label: "✓ Ambos",          value: "\(both)",    emphasis: .primary)
+                }
+
+                // 2. Quem detectou primeiro — only computable for beacons in the overlap.
+                analysisGroup(title: "Latência (quem viu primeiro)") {
+                    if both == 0 {
+                        statRow(label: "—", value: "sem overlap ainda", emphasis: .muted)
+                    } else {
+                        statRow(label: "Location ganhou", value: "\(race.locationWins)x", emphasis: .green)
+                        statRow(label: "Bluetooth ganhou", value: "\(race.bluetoothWins)x", emphasis: .blue)
+                        if race.ties > 0 {
+                            statRow(label: "Empate (<100ms)", value: "\(race.ties)x", emphasis: .muted)
+                        }
+                        statRow(
+                            label: "Vantagem média",
+                            value: race.avgLeadSeconds < 0.01 ? "—" : String(format: "%.2fs", race.avgLeadSeconds),
+                            emphasis: .muted
+                        )
+                    }
+                }
+
+                // 3. RSSI — exclusive to the Bluetooth eye. CL only gives us proximity buckets.
+                analysisGroup(title: "Signal strength (RSSI — só BT)") {
+                    if !hasBT {
+                        statRow(label: "—", value: "nenhum beacon BT no momento", emphasis: .muted)
+                    } else {
+                        statRow(label: "Médio",  value: "\(rssi.avg) dBm",  emphasis: .blue)
+                        statRow(label: "Range",  value: "\(rssi.min)…\(rssi.max) dBm", emphasis: .muted)
+                    }
+                }
+
+                // 4. Recommendation — synthesized from the numbers above. Honest about
+                // the fact that the two eyes are complementary, not competitive.
+                analysisGroup(title: "Recomendação") {
+                    Text(recommendation(locOnly: locOnly, btOnly: btOnly, both: both,
+                                        locWins: race.locationWins, btWins: race.bluetoothWins))
+                        .font(.system(size: 12))
+                        .foregroundColor(.primary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+        }
+        .padding(12)
+        .background(Color.gray.opacity(0.08))
+        .cornerRadius(8)
+    }
+
+    private enum StatEmphasis {
+        case green, blue, primary, muted
+
+        var color: Color {
+            switch self {
+            case .green:   return .green
+            case .blue:    return .blue
+            case .primary: return .primary
+            case .muted:   return .secondary
+            }
+        }
+    }
+
+    private func analysisGroup<Content: View>(title: String, @ViewBuilder content: () -> Content) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(title)
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundColor(.secondary)
+            VStack(alignment: .leading, spacing: 2) {
+                content()
+            }
+            .padding(.leading, 4)
+        }
+    }
+
+    private func statRow(label: String, value: String, emphasis: StatEmphasis) -> some View {
+        HStack {
+            Text(label)
+                .font(.system(size: 12))
+                .foregroundColor(.primary)
+            Spacer()
+            Text(value)
+                .font(.system(size: 12, weight: .semibold, design: .monospaced))
+                .foregroundColor(emphasis.color)
+        }
+    }
+
+    /// Generates a one-paragraph recommendation based on the data the user has collected.
+    /// We don't pretend there's a single winner — we surface the trade-offs that matched
+    /// THIS session's numbers.
+    private func recommendation(locOnly: Int, btOnly: Int, both: Int, locWins: Int, btWins: Int) -> String {
+        var lines: [String] = []
+
+        if both > 0 && locWins > btWins {
+            lines.append("• Location detectou primeiro em \(locWins)/\(locWins + btWins) beacons → melhor pra wake-up rápido.")
+        } else if both > 0 && btWins > locWins {
+            lines.append("• Bluetooth detectou primeiro em \(btWins)/\(locWins + btWins) beacons → melhor pra real-time aqui.")
+        } else if both > 0 {
+            lines.append("• Empate técnico de latência entre os olhos.")
+        }
+
+        if locOnly > 0 {
+            lines.append("• \(locOnly) beacon(s) só apareceu(ram) via Location — BT pode estar bloqueado ou fora de range.")
+        }
+        if btOnly > 0 {
+            lines.append("• \(btOnly) beacon(s) só apareceu(ram) via BT — provavelmente Precise Location off, ou o beacon não está na region monitorada.")
+        }
+
+        lines.append("→ Use Location pra acordar o app (kernel level, fires mesmo terminated).")
+        lines.append("→ Use Bluetooth pra contagem ao vivo + RSSI fino + metadata (battery, temp).")
+
+        return lines.joined(separator: "\n")
     }
 
     /// Compact legend reminding the user what each mode/transition means. Stuck below the

@@ -109,6 +109,12 @@ class BeaconViewModel: NSObject, ObservableObject, BeAroundSDKDelegate {
     /// RIGHT EYE — Unique beacon keys ever seen by the Bluetooth eye in this session.
     @Published var bluetoothBeaconKeysSeen: Set<String> = []
 
+    /// First-detection timestamp per beacon per eye. Used by the comparative analysis block
+    /// to measure latency — for any beacon both eyes saw, we know which eye fired first and
+    /// by how much. Populated lazily in didUpdateBeacons (first sighting only — no overwrites).
+    @Published var firstSeenByLocation: [String: Date] = [:]
+    @Published var firstSeenByBluetooth: [String: Date] = [:]
+
     /// LEFT EYE — Beacons currently visible to the Location eye (have `.coreLocation` in sources).
     /// Live-derived from `beacons` so it tracks comings and goings without extra state.
     var locationBeaconsNow: Int {
@@ -120,6 +126,75 @@ class BeaconViewModel: NSObject, ObservableObject, BeAroundSDKDelegate {
         beacons.filter {
             $0.discoverySources.contains(.serviceUUID) || $0.discoverySources.contains(.name)
         }.count
+    }
+
+    // MARK: - Comparative Analysis (v2.5)
+    //
+    // These derived values power the "Análise comparativa" block on the dedicated screen.
+    // They answer: which eye is more useful in YOUR environment right now?
+
+    /// Beacon keys this session was seen ONLY by the Location eye (never by BT).
+    /// Indicates beacons that BT can't reach — could be permission off, BT-disabled beacons,
+    /// or out of BLE scan range while still in iBeacon region range.
+    var locationOnlyKeys: Set<String> {
+        locationBeaconKeysSeen.subtracting(bluetoothBeaconKeysSeen)
+    }
+
+    /// Beacon keys ONLY seen by the Bluetooth eye (never by Location).
+    /// Indicates beacons that CL doesn't pick up — Precise Location off, distance > region trigger,
+    /// or beacon advertises the BEAD service but isn't a CLBeaconRegion target.
+    var bluetoothOnlyKeys: Set<String> {
+        bluetoothBeaconKeysSeen.subtracting(locationBeaconKeysSeen)
+    }
+
+    /// Beacon keys seen by BOTH eyes — the overlap. Only these have meaningful latency data.
+    var bothEyesKeys: Set<String> {
+        locationBeaconKeysSeen.intersection(bluetoothBeaconKeysSeen)
+    }
+
+    /// Per-beacon winner: which eye fired first for each beacon in the overlap.
+    /// Returns (locationWins, bluetoothWins, averageLeadSeconds). Lead is positive when the
+    /// winning eye saw it earlier — averaged across all beacons.
+    /// (locationWins, bluetoothWins) won't always sum to bothEyesKeys.count because ties exist.
+    var detectionRace: (locationWins: Int, bluetoothWins: Int, ties: Int, avgLeadSeconds: Double) {
+        var locWins = 0
+        var btWins = 0
+        var ties = 0
+        var leadsSeconds: [Double] = []
+
+        for key in bothEyesKeys {
+            guard let locFirst = firstSeenByLocation[key],
+                  let btFirst = firstSeenByBluetooth[key] else { continue }
+            let delta = btFirst.timeIntervalSince(locFirst)  // positive = location was earlier
+            // Treat anything within 100ms as a tie — beneath the resolution of our event loop.
+            if abs(delta) < 0.1 {
+                ties += 1
+            } else if delta > 0 {
+                locWins += 1
+                leadsSeconds.append(delta)
+            } else {
+                btWins += 1
+                leadsSeconds.append(-delta)
+            }
+        }
+
+        let avg = leadsSeconds.isEmpty ? 0.0 : leadsSeconds.reduce(0, +) / Double(leadsSeconds.count)
+        return (locWins, btWins, ties, avg)
+    }
+
+    /// RSSI statistics from the BT eye for beacons currently in range.
+    /// Returns (avg, min, max). Defaults to (0,0,0) when no beacons are visible.
+    /// CoreLocation does NOT give us raw RSSI (only CLProximity buckets), which is one
+    /// concrete reason to keep the Bluetooth eye even when Location is working — it's the
+    /// only source of fine-grained signal strength.
+    var bluetoothRSSIStats: (avg: Int, min: Int, max: Int) {
+        let rssiValues = beacons.compactMap { beacon -> Int? in
+            let hasBLE = beacon.discoverySources.contains(.serviceUUID) || beacon.discoverySources.contains(.name)
+            return hasBLE ? beacon.rssi : nil
+        }
+        guard !rssiValues.isEmpty else { return (0, 0, 0) }
+        let avg = rssiValues.reduce(0, +) / rssiValues.count
+        return (avg, rssiValues.min() ?? 0, rssiValues.max() ?? 0)
     }
 
     // MARK: - Duty Cycle (v2.5)
@@ -549,13 +624,22 @@ extension BeaconViewModel {
 
             // v2.5 — Two Eyes — accumulate unique beacon keys per detection source so each
             // EyeCard can show "Total detectados" independently. Sets dedupe automatically.
+            // Also stamp the FIRST sighting per eye so the comparative analysis can compute
+            // latency (who saw which beacon first, and by how many seconds).
+            let now = Date()
             for beacon in sortedBeacons {
                 let key = "\(beacon.major).\(beacon.minor)"
                 if beacon.discoverySources.contains(.coreLocation) {
                     self.locationBeaconKeysSeen.insert(key)
+                    if self.firstSeenByLocation[key] == nil {
+                        self.firstSeenByLocation[key] = now
+                    }
                 }
                 if beacon.discoverySources.contains(.serviceUUID) || beacon.discoverySources.contains(.name) {
                     self.bluetoothBeaconKeysSeen.insert(key)
+                    if self.firstSeenByBluetooth[key] == nil {
+                        self.firstSeenByBluetooth[key] = now
+                    }
                 }
             }
 
