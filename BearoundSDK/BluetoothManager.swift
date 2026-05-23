@@ -88,6 +88,33 @@ class BluetoothManager: NSObject {
     /// Called when tracked beacons list changes (add/remove/update)
     var onBeaconsUpdated: (([TrackedBLEBeacon]) -> Void)?
 
+    // MARK: - BLE-only Zone Detection (v2.5)
+    //
+    // Independent of CoreLocation region monitoring. Drives the "Bluetooth eye":
+    //  - Rising edge: first beacon seen while currentlyInZone == false → onBluetoothZoneEnter
+    //  - Falling edge: zoneExitGracePeriod elapses with no beacon seen → onBluetoothZoneExit
+    //
+    // The grace period absorbs transient RSSI dropouts so the zone state doesn't flicker.
+
+    /// True when the BLE eye currently sees the device inside a beacon zone.
+    private(set) var isInBluetoothZone: Bool = false
+
+    /// How long the BLE eye waits without any beacon detection before declaring "zone exited".
+    /// Mirrors `beaconGracePeriod` so a beacon momentarily out of range doesn't flip the eye.
+    private let zoneExitGracePeriod: TimeInterval = 10.0
+
+    /// Timer that checks tracked beacons and flips the zone state when grace expires.
+    private var zonePresenceTimer: DispatchSourceTimer?
+
+    /// Tick interval for the zone-presence evaluator.
+    private let zonePresenceTickInterval: TimeInterval = 2.0
+
+    /// Fires once when the BLE eye sees a beacon and the zone was previously empty (rising edge).
+    var onBluetoothZoneEnter: (() -> Void)?
+
+    /// Fires once when the BLE eye has not seen any beacon for `zoneExitGracePeriod` (falling edge).
+    var onBluetoothZoneExit: (() -> Void)?
+
     var isPoweredOn: Bool {
         centralManager.state == .poweredOn
     }
@@ -161,6 +188,7 @@ class BluetoothManager: NSObject {
         isScanning = true
         beginScan()
         startCleanupTimer()
+        startZonePresenceTimer()
         os_log("[BLE] startScanning() SUCCESS", log: bleLog, type: .info)
     }
 
@@ -192,8 +220,17 @@ class BluetoothManager: NSObject {
         isScanning = false
         centralManager.stopScan()
         stopCleanupTimer()
+        stopZonePresenceTimer()
         lastSeenBeacons.removeAll()
         trackedBeacons.removeAll()
+
+        // When the BLE eye is shut off we surface a falling edge so consumers can
+        // drop their "in zone" state — even though the cause is scan-stopped, not
+        // "no beacons in range". Without this the UI would stay stuck on "in zone".
+        if isInBluetoothZone {
+            isInBluetoothZone = false
+            onBluetoothZoneExit?()
+        }
 
         print("[BluetoothManager] Stopped BLE scanning")
     }
@@ -285,6 +322,13 @@ class BluetoothManager: NSObject {
 
         trackedBeacons[key] = tracked
         onBeaconsUpdated?(Array(trackedBeacons.values))
+
+        // Rising edge: any beacon seen flips the BLE eye to "in zone" if it was previously out.
+        // Subsequent detections while in-zone are no-ops — the falling edge is timer-driven.
+        if !isInBluetoothZone {
+            isInBluetoothZone = true
+            onBluetoothZoneEnter?()
+        }
     }
 
     private func startCleanupTimer() {
@@ -317,6 +361,49 @@ class BluetoothManager: NSObject {
 
         if didRemove {
             onBeaconsUpdated?(Array(trackedBeacons.values))
+        }
+    }
+
+    // MARK: - Bluetooth Zone Presence (v2.5)
+
+    /// Starts the timer that evaluates BLE-zone falling edges. The rising edge is event-driven
+    /// (fired inline from `trackBeacon`); the falling edge needs a periodic check because the
+    /// "no beacons in range" event has no native callback — it's the absence of detections.
+    private func startZonePresenceTimer() {
+        stopZonePresenceTimer()
+
+        let timer = DispatchSource.makeTimerSource(queue: bleQueue)
+        timer.schedule(deadline: .now() + zonePresenceTickInterval, repeating: zonePresenceTickInterval)
+        timer.setEventHandler { [weak self] in
+            self?.evaluateZonePresence()
+        }
+        zonePresenceTimer = timer
+        timer.resume()
+    }
+
+    private func stopZonePresenceTimer() {
+        zonePresenceTimer?.cancel()
+        zonePresenceTimer = nil
+    }
+
+    /// Called by the zone-presence timer. Flips `isInBluetoothZone` from true to false when
+    /// no beacon has been seen for `zoneExitGracePeriod`. The rising edge is handled inline.
+    private func evaluateZonePresence() {
+        guard isInBluetoothZone else { return }
+
+        let now = Date()
+        let lastBeaconSeen = trackedBeacons.values.map(\.lastSeen).max()
+
+        guard let last = lastBeaconSeen else {
+            // No tracked beacons at all — cleanup already evicted them. Treat as zone exit.
+            isInBluetoothZone = false
+            onBluetoothZoneExit?()
+            return
+        }
+
+        if now.timeIntervalSince(last) > zoneExitGracePeriod {
+            isInBluetoothZone = false
+            onBluetoothZoneExit?()
         }
     }
 

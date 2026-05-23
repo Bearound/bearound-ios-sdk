@@ -31,6 +31,9 @@ struct GeofenceEvent: Identifiable {
         case captureCompletedNoFix
         case scanResumed
         case scanPaused
+        // v2.5 — Two Eyes
+        case bluetoothZoneEnter
+        case bluetoothZoneExit
     }
 
     let id = UUID()
@@ -38,6 +41,14 @@ struct GeofenceEvent: Identifiable {
     let timestamp: Date
     /// Free-form detail line (reason / outcome / coordinates).
     let detail: String
+}
+
+/// Which "eye" is being mirrored by a Debug Geofence card.
+/// LEFT  = Location (CoreLocation region monitoring)
+/// RIGHT = Bluetooth (CBCentralManager scan, BLE-only zone detector)
+enum GeofenceEye {
+    case location
+    case bluetooth
 }
 
 class BeaconViewModel: NSObject, ObservableObject, BeAroundSDKDelegate {
@@ -65,9 +76,32 @@ class BeaconViewModel: NSObject, ObservableObject, BeAroundSDKDelegate {
     // BLE Diagnostic
     @Published var bleDiagnostic: String = "..."
 
-    // MARK: - Geofence Debug (v2.4)
-    /// True while iOS reports the device is inside the beacon region (BLE proximity).
+    // MARK: - Geofence Debug — Two Eyes (v2.5)
+    //
+    // Two independent presence signals, each rendered in its own card:
+    //   👁 LEFT  — Location:  isInBeaconRegion + lastLocationEnter/Exit + locationRegionEnterCount
+    //   👁 RIGHT — Bluetooth: isInBluetoothZone + lastBluetoothEnter/Exit + bluetoothZoneEnterCount
+
+    /// LEFT EYE (Location) — True while CoreLocation reports the device is inside the iBeacon region.
+    /// Works even if the user has BT permission off (iOS manages BLE at the system level).
     @Published var isInBeaconRegion: Bool = false
+    /// LEFT EYE — When the Location eye most recently saw a region ENTER. Resets per session.
+    @Published var lastLocationEnter: Date?
+    /// LEFT EYE — When the Location eye most recently saw a region EXIT. Resets per session.
+    @Published var lastLocationExit: Date?
+    /// LEFT EYE — Number of region enters observed in this session.
+    @Published var locationRegionEnterCount: Int = 0
+
+    /// RIGHT EYE (Bluetooth) — True while the BLE-only zone detector sees at least one beacon
+    /// in its rolling window. Works even if the user has Location off (region monitoring inactive).
+    @Published var isInBluetoothZone: Bool = false
+    /// RIGHT EYE — When the Bluetooth eye most recently entered the zone. Resets per session.
+    @Published var lastBluetoothEnter: Date?
+    /// RIGHT EYE — When the Bluetooth eye most recently exited the zone. Resets per session.
+    @Published var lastBluetoothExit: Date?
+    /// RIGHT EYE — Number of Bluetooth zone enters observed in this session.
+    @Published var bluetoothZoneEnterCount: Int = 0
+
     /// True when active scanning (ranging + BLE) is running. Outside a region this stays false.
     @Published var isActiveScanRunning: Bool = false
     /// True while a beacon-triggered GPS capture window is open.
@@ -285,7 +319,7 @@ class BeaconViewModel: NSObject, ObservableObject, BeAroundSDKDelegate {
     @MainActor
     private func initializeSDK() {
         BeAroundSDK.shared.configure(
-            businessToken: "BUSINESS_TOKEN",
+            businessToken: "ee2ec9c46d2b2ad99bddcdd0afe224e6",
             scanPrecision: scanPrecision,
             maxQueuedPayloads: queueSize
         )
@@ -319,7 +353,7 @@ class BeaconViewModel: NSObject, ObservableObject, BeAroundSDKDelegate {
         }
 
         BeAroundSDK.shared.configure(
-            businessToken: "BUSINESS_TOKEN",
+            businessToken: "ee2ec9c46d2b2ad99bddcdd0afe224e6",
             scanPrecision: scanPrecision,
             maxQueuedPayloads: queueSize
         )
@@ -607,22 +641,56 @@ extension BeaconViewModel {
 
     func didEnterBeaconRegion() {
         DispatchQueue.main.async {
+            let now = Date()
             self.isInBeaconRegion = true
+            self.lastLocationEnter = now
+            self.locationRegionEnterCount += 1
             self.appendGeofenceEvent(.init(
                 kind: .regionEnter,
-                timestamp: Date(),
-                detail: "iOS reportou entrada na região do beacon (BLE)"
+                timestamp: now,
+                detail: "👁 LOCATION (esquerdo) — iOS reportou entrada na região (CLBeaconRegion)"
             ))
         }
     }
 
     func didExitBeaconRegion() {
         DispatchQueue.main.async {
+            let now = Date()
             self.isInBeaconRegion = false
+            self.lastLocationExit = now
             self.appendGeofenceEvent(.init(
                 kind: .regionExit,
-                timestamp: Date(),
-                detail: "iOS reportou saída da região do beacon"
+                timestamp: now,
+                detail: "👁 LOCATION (esquerdo) — iOS reportou saída da região"
+            ))
+        }
+    }
+
+    // MARK: - Bluetooth Zone Delegate (v2.5) — RIGHT EYE
+
+    func didEnterBluetoothZone() {
+        DispatchQueue.main.async {
+            let now = Date()
+            self.isInBluetoothZone = true
+            self.lastBluetoothEnter = now
+            self.bluetoothZoneEnterCount += 1
+            self.appendGeofenceEvent(.init(
+                kind: .bluetoothZoneEnter,
+                timestamp: now,
+                detail: "👁 BLUETOOTH (direito) — BLE detectou beacon (CBCentralManager)"
+            ))
+        }
+    }
+
+    func didExitBluetoothZone() {
+        DispatchQueue.main.async {
+            let now = Date()
+            self.isInBluetoothZone = false
+            self.lastBluetoothExit = now
+            self.appendGeofenceEvent(.init(
+                kind: .bluetoothZoneExit,
+                timestamp: now,
+                detail: "👁 BLUETOOTH (direito) — zona vazia por 10s (graça expirou)"
             ))
         }
     }

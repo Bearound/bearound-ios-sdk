@@ -584,15 +584,15 @@ struct BeaconRow: View {
     }
 }
 
-// MARK: - Geofence Debug
+// MARK: - Geofence Debug — Two Eyes (v2.5)
 
 struct GeofenceDebugCard: View {
     @ObservedObject var viewModel: BeaconViewModel
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: 12) {
             HStack {
-                Text("Debug Geofence")
+                Text("Debug Geofence — Dois Olhos")
                     .font(.headline)
                 Spacer()
                 if !viewModel.geofenceEventLog.isEmpty {
@@ -604,18 +604,37 @@ struct GeofenceDebugCard: View {
                 }
             }
 
-            VStack(alignment: .leading, spacing: 6) {
-                statusRow(
-                    icon: "mappin.and.ellipse",
-                    label: "Zona do beacon:",
-                    value: viewModel.isInBeaconRegion ? "DENTRO" : "fora",
-                    color: viewModel.isInBeaconRegion ? .green : .secondary,
-                    bold: viewModel.isInBeaconRegion
+            // Two eyes side by side. On narrow screens iOS stacks them automatically.
+            HStack(alignment: .top, spacing: 10) {
+                EyeCard(
+                    eye: .location,
+                    isInZone: viewModel.isInBeaconRegion,
+                    lastEnter: viewModel.lastLocationEnter,
+                    lastExit: viewModel.lastLocationExit,
+                    enterCount: viewModel.locationRegionEnterCount
                 )
+
+                EyeCard(
+                    eye: .bluetooth,
+                    isInZone: viewModel.isInBluetoothZone,
+                    lastEnter: viewModel.lastBluetoothEnter,
+                    lastExit: viewModel.lastBluetoothExit,
+                    enterCount: viewModel.bluetoothZoneEnterCount
+                )
+            }
+
+            // GPS capture is driven by the Location eye specifically (region entry → ranging → fix).
+            // Bluetooth eye does NOT trigger GPS — it just observes BLE presence. So this block
+            // stays scoped to the Location eye.
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Captura GPS (👁 olho Location)")
+                    .font(.caption)
+                    .fontWeight(.semibold)
+                    .foregroundColor(.secondary)
 
                 statusRow(
                     icon: "antenna.radiowaves.left.and.right",
-                    label: "Scan ativo:",
+                    label: "Scan ativo (ranging):",
                     value: viewModel.isActiveScanRunning ? "LIGADO" : "desligado",
                     color: viewModel.isActiveScanRunning ? .green : .secondary,
                     bold: viewModel.isActiveScanRunning
@@ -709,6 +728,104 @@ struct GeofenceDebugCard: View {
     }
 }
 
+// MARK: - Single Eye Card (v2.5)
+
+/// One Debug Geofence card representing a single "eye" — Location or Bluetooth.
+/// Both cards are rendered side-by-side inside GeofenceDebugCard.
+struct EyeCard: View {
+    let eye: GeofenceEye
+    let isInZone: Bool
+    let lastEnter: Date?
+    let lastExit: Date?
+    let enterCount: Int
+
+    /// Display labels per eye, kept here so the parent stays mechanism-agnostic.
+    private var title: String {
+        switch eye {
+        case .location:  return "👁 Location"
+        case .bluetooth: return "👁 Bluetooth"
+        }
+    }
+
+    private var subtitle: String {
+        switch eye {
+        case .location:  return "CLBeaconRegion"
+        case .bluetooth: return "CBCentralManager"
+        }
+    }
+
+    /// Accent color used for the in-zone state. Distinct between the two eyes so they're
+    /// visually separable at a glance even before reading the labels.
+    private var accentColor: Color {
+        switch eye {
+        case .location:  return .green
+        case .bluetooth: return .blue
+        }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            // Eye label + mechanism subtitle
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title)
+                    .font(.caption)
+                    .fontWeight(.bold)
+                Text(subtitle)
+                    .font(.system(size: 9, design: .monospaced))
+                    .foregroundColor(.secondary)
+            }
+
+            // Big presence indicator — flips green/blue when "in zone", gray when out.
+            HStack(spacing: 6) {
+                Circle()
+                    .fill(isInZone ? accentColor : Color.gray)
+                    .frame(width: 10, height: 10)
+                Text(isInZone ? "DENTRO" : "fora")
+                    .font(.caption)
+                    .fontWeight(isInZone ? .bold : .medium)
+                    .foregroundColor(isInZone ? accentColor : .secondary)
+            }
+
+            Divider()
+
+            VStack(alignment: .leading, spacing: 3) {
+                detailRow(label: "Entrou:",  value: formatTimestamp(lastEnter))
+                detailRow(label: "Saiu:",    value: formatTimestamp(lastExit))
+                detailRow(label: "Entradas:", value: "\(enterCount)")
+            }
+        }
+        .padding(10)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            RoundedRectangle(cornerRadius: 8)
+                .fill(isInZone ? accentColor.opacity(0.12) : Color.gray.opacity(0.08))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 8)
+                .stroke(isInZone ? accentColor : Color.gray.opacity(0.3), lineWidth: isInZone ? 1.5 : 1)
+        )
+    }
+
+    /// "—" when nil, otherwise local time (HH:mm:ss).
+    private func formatTimestamp(_ date: Date?) -> String {
+        guard let date else { return "—" }
+        return date.formatted(date: .omitted, time: .standard)
+    }
+
+    private func detailRow(label: String, value: String) -> some View {
+        HStack(alignment: .top) {
+            Text(label)
+                .font(.system(size: 10))
+                .foregroundColor(.secondary)
+            Spacer()
+            Text(value)
+                .font(.system(size: 10, design: .monospaced))
+                .foregroundColor(.primary)
+                .lineLimit(1)
+        }
+    }
+}
+
 struct GeofenceEventRow: View {
     let event: GeofenceEvent
 
@@ -747,18 +864,22 @@ struct GeofenceEventRow: View {
         case .captureCompletedNoFix: .red
         case .scanResumed: .mint
         case .scanPaused: .gray
+        case .bluetoothZoneEnter: .blue
+        case .bluetoothZoneExit: .orange
         }
     }
 
     private var title: String {
         switch event.kind {
-        case .regionEnter: "ENTROU NA ZONA"
-        case .regionExit: "SAIU DA ZONA"
+        case .regionEnter: "LOCATION → DENTRO"
+        case .regionExit: "LOCATION → FORA"
         case .captureStarted: "GPS DISPARADO"
         case .captureCompletedWithFix: "FIX OK"
         case .captureCompletedNoFix: "SEM FIX"
         case .scanResumed: "SCAN LIGADO"
         case .scanPaused: "SCAN PAUSADO"
+        case .bluetoothZoneEnter: "BLUETOOTH → DENTRO"
+        case .bluetoothZoneExit: "BLUETOOTH → FORA"
         }
     }
 }
