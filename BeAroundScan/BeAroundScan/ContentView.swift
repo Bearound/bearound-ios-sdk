@@ -806,11 +806,15 @@ struct TwoEyesDebugScreen: View {
         let granularity = evaluateGranularity(hasBT: hasBT)
         let stability = evaluateStability(hasBT: hasBT, range: rssiRange, avg: avgRSSI)
 
-        // Scoreboard tally
+        // Scoreboard tally — including a 'no-data' bucket for dimensions that can't be
+        // judged in the current setup (e.g. BT off → granularity/stability are unmeasurable).
+        // This matters: without it, the silent eye looks like it 'won' those dimensions when
+        // really it just had no competition.
         let dimensions = [coverage, speed, granularity, stability]
         let locScore = dimensions.filter { $0.winner == .location }.count
         let btScore = dimensions.filter { $0.winner == .bluetooth }.count
         let tieScore = dimensions.filter { $0.winner == .tie }.count
+        let noDataScore = dimensions.filter { $0.winner == .none }.count
 
         VStack(alignment: .leading, spacing: 10) {
             Text("Quem é mais preciso?")
@@ -824,7 +828,7 @@ struct TwoEyesDebugScreen: View {
 
             // Final scoreboard — one big row showing the tally with explicit framing
             // so the user reads "X-Y" rather than re-counting badges above.
-            scoreboardRow(loc: locScore, bt: btScore, ties: tieScore)
+            scoreboardRow(loc: locScore, bt: btScore, ties: tieScore, noData: noDataScore)
         }
         .padding(12)
         .background(Color.gray.opacity(0.05))
@@ -890,46 +894,46 @@ struct TwoEyesDebugScreen: View {
     }
 
     /// Final scoreboard row — visual tally. Bigger numbers, more impact.
-    private func scoreboardRow(loc: Int, bt: Int, ties: Int) -> some View {
-        HStack(spacing: 14) {
-            VStack(spacing: 2) {
-                Text("\(loc)")
-                    .font(.system(size: 22, weight: .bold, design: .rounded))
-                    .foregroundColor(.green)
-                Text("LOCATION")
-                    .font(.system(size: 9, weight: .semibold, design: .monospaced))
-                    .foregroundColor(.secondary)
-            }
-            Text("—")
-                .font(.title3)
-                .foregroundColor(.secondary)
-            VStack(spacing: 2) {
-                Text("\(bt)")
-                    .font(.system(size: 22, weight: .bold, design: .rounded))
-                    .foregroundColor(.blue)
-                Text("BLUETOOTH")
-                    .font(.system(size: 9, weight: .semibold, design: .monospaced))
-                    .foregroundColor(.secondary)
-            }
-            if ties > 0 {
-                Text("·")
-                    .font(.title3)
-                    .foregroundColor(.secondary)
-                VStack(spacing: 2) {
-                    Text("\(ties)")
-                        .font(.system(size: 22, weight: .bold, design: .rounded))
-                        .foregroundColor(.gray)
-                    Text("EMPATE")
-                        .font(.system(size: 9, weight: .semibold, design: .monospaced))
-                        .foregroundColor(.secondary)
+    /// Includes a S/ DADOS column when dimensions couldn't be judged (e.g. one eye silent)
+    /// so the user sees the result is incomplete rather than a fake 'sweep'.
+    private func scoreboardRow(loc: Int, bt: Int, ties: Int, noData: Int) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 14) {
+                scoreColumn(value: loc, label: "LOCATION", color: .green)
+                Text("—").font(.title3).foregroundColor(.secondary)
+                scoreColumn(value: bt, label: "BLUETOOTH", color: .blue)
+                if ties > 0 {
+                    Text("·").font(.title3).foregroundColor(.secondary)
+                    scoreColumn(value: ties, label: "EMPATE", color: .gray)
                 }
+                if noData > 0 {
+                    Text("·").font(.title3).foregroundColor(.secondary)
+                    scoreColumn(value: noData, label: "S/ DADOS", color: .gray)
+                }
+                Spacer()
             }
-            Spacer()
+            if noData > 0 {
+                Text("\(noData) dimensão(ões) sem comparação — um dos olhos precisa estar ativo pra eu medir.")
+                    .font(.system(size: 10))
+                    .foregroundColor(.secondary)
+                    .padding(.leading, 4)
+            }
         }
         .padding(10)
         .background(Color.gray.opacity(0.08))
         .cornerRadius(8)
         .padding(.top, 4)
+    }
+
+    private func scoreColumn(value: Int, label: String, color: Color) -> some View {
+        VStack(spacing: 2) {
+            Text("\(value)")
+                .font(.system(size: 22, weight: .bold, design: .rounded))
+                .foregroundColor(color)
+            Text(label)
+                .font(.system(size: 9, weight: .semibold, design: .monospaced))
+                .foregroundColor(.secondary)
+        }
     }
 
     // MARK: - Per-dimension evaluation logic
@@ -1000,7 +1004,9 @@ struct TwoEyesDebugScreen: View {
     }
 
     /// 🔍 Granularidade — qual olho dá leitura mais fina por beacon.
-    /// Esta é estrutural — Bluetooth sempre vence porque CL nunca expõe RSSI puro.
+    /// BT é estruturalmente mais granular (RSSI em dBm vs 4 proximity buckets do CL).
+    /// Quando BT está off, NÃO atribuímos vitória pra Location aqui — esta dimensão simplesmente
+    /// não tem dado pra comparar. Dar ponto pra Location seria enganoso (ela não substitui o RSSI).
     private func evaluateGranularity(hasBT: Bool) -> PrecisionEvaluation {
         if hasBT {
             return .init(
@@ -1010,42 +1016,41 @@ struct TwoEyesDebugScreen: View {
             )
         } else {
             return .init(
-                winner: .location,
-                valueText: "Sem dado BT — só Location ativo",
-                why: "Sem BT no momento. Location dá os buckets de proximidade, que é o que tem."
+                winner: .none,
+                valueText: "Sem dado BT — comparação impossível",
+                why: "Granularidade só é mensurável via Bluetooth (RSSI puro). Com BT off, Location não consegue 'substituir' essa dimensão — ela simplesmente não tem essa informação. Liga o BT pra ver."
             )
         }
     }
 
     /// 📊 Estabilidade — qual eye mantém leitura consistente.
-    /// Usamos o range do RSSI atual como proxy: range curto = beacons clusters perto, leitura estável.
-    /// Range largo = mistura distância, ou sinal flutuando — menos preciso.
+    /// Esta dimensão SÓ É MENSURÁVEL via Bluetooth (Location não expõe variância). Quando BT
+    /// tem dados, BT vence (com label de qualidade variando BAIXA/MÉDIA/ALTA). Quando BT está
+    /// off, retornamos .none — atribuir vitória pra Location aqui é enganoso porque ela
+    /// "parece estável" só porque não mede nada.
     private func evaluateStability(hasBT: Bool, range: (min: Int, max: Int), avg: Int) -> PrecisionEvaluation {
         guard hasBT else {
             return .init(
-                winner: .location,
-                valueText: "Sem dado BT",
-                why: "Location mantém proximity buckets estáveis (iOS faz suavização interna)."
+                winner: .none,
+                valueText: "Sem dado BT — comparação impossível",
+                why: "Estabilidade só é mensurável via BT (variância do RSSI). Location 'parece estável' só porque não expõe esse dado — não é uma vitória real, é a ausência de medição."
             )
         }
         let spread = range.max - range.min
-        let winner: PrecisionWinner
+        // BT always wins this dimension when it has data — only it can measure variance.
+        // The quality label is what shifts (BAIXA / MÉDIA / ALTA), not the winner.
         let stability: String
         if spread <= 10 {
-            winner = .bluetooth
             stability = "Variação BAIXA (\(spread) dB) — sinal muito estável"
         } else if spread <= 25 {
-            winner = .bluetooth
             stability = "Variação MÉDIA (\(spread) dB) — sinal aceitável"
         } else {
-            winner = .location
-            stability = "Variação ALTA (\(spread) dB) — beacons em distâncias muito diferentes"
+            stability = "Variação ALTA (\(spread) dB) — beacons em distâncias diferentes ou sinal oscilando"
         }
-
         return .init(
-            winner: winner,
+            winner: .bluetooth,
             valueText: "BT range: \(range.min)…\(range.max) dBm   •   Δ \(spread) dB",
-            why: "\(stability). Location não tem esse dado bruto — sempre 'estável' por construção (suavizado pelo iOS)."
+            why: "\(stability). Location não tem esse dado bruto — não consegue competir nessa dimensão."
         )
     }
 
