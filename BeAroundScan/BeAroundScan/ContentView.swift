@@ -5,6 +5,10 @@ import SwiftUI
 struct ContentView: View {
     @ObservedObject var viewModel: BeaconViewModel
     @State private var showSettings = false
+    /// Toggles the dedicated focused screen for the two-eyes debug panel.
+    /// Sheet so the user can still feel "inside the same app" — full-screen cover
+    /// would make it feel like a separate app and lose the breadcrumb back.
+    @State private var showTwoEyesScreen = false
 
     var body: some View {
         NavigationView {
@@ -20,6 +24,34 @@ struct ContentView: View {
                             .foregroundColor(.secondary)
                             .multilineTextAlignment(.center)
                             .padding(.horizontal)
+
+                        // Prominent entry point for the focused two-eyes debug screen.
+                        // Sits right under the title so it's the first thing the tester sees.
+                        Button {
+                            showTwoEyesScreen = true
+                        } label: {
+                            HStack(spacing: 6) {
+                                Text("👁 👁")
+                                    .font(.title3)
+                                Text("Abrir Debug — Dois Olhos")
+                                    .font(.subheadline)
+                                    .fontWeight(.semibold)
+                                Image(systemName: "chevron.right")
+                                    .font(.caption)
+                            }
+                            .foregroundColor(.white)
+                            .padding(.horizontal, 16)
+                            .padding(.vertical, 10)
+                            .background(
+                                LinearGradient(
+                                    colors: [.green, .blue],
+                                    startPoint: .leading,
+                                    endPoint: .trailing
+                                )
+                            )
+                            .cornerRadius(20)
+                        }
+                        .padding(.top, 4)
                     }
 
                 VStack(alignment: .leading, spacing: 8) {
@@ -301,6 +333,9 @@ struct ContentView: View {
             .sheet(isPresented: $showSettings) {
                 SettingsView(viewModel: viewModel)
             }
+            .sheet(isPresented: $showTwoEyesScreen) {
+                TwoEyesDebugScreen(viewModel: viewModel)
+            }
         }  // NavigationView
     }
 
@@ -581,6 +616,203 @@ struct BeaconRow: View {
         case .name: .teal
         case .coreLocation: .indigo
         }
+    }
+}
+
+// MARK: - Two Eyes Dedicated Screen (v2.5)
+
+/// Focused debug screen for the two-eyes model. Presented as a sheet from the main
+/// ContentView. Shows the two EyeCards big, with a live event log below — all the
+/// state the user needs to validate the duty cycle, region wake-up, and BLE detection
+/// behavior in one place, without scrolling past the other diagnostics.
+struct TwoEyesDebugScreen: View {
+    @ObservedObject var viewModel: BeaconViewModel
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 16) {
+                    // Header summary — one line that captures the dual state at a glance.
+                    summaryStrip
+
+                    // The two big cards. Reuses the same EyeCard component as the
+                    // inline panel in ContentView, so visual + behavior stay in sync.
+                    HStack(alignment: .top, spacing: 10) {
+                        EyeCard(
+                            eye: .location,
+                            isInZone: viewModel.isInBeaconRegion,
+                            lastEnter: viewModel.lastLocationEnter,
+                            lastExit: viewModel.lastLocationExit,
+                            enterCount: viewModel.locationRegionEnterCount,
+                            beaconsNow: viewModel.locationBeaconsNow,
+                            totalDetected: viewModel.locationBeaconKeysSeen.count,
+                            modeLabel: viewModel.isActiveScanRunning ? "RANGING" : "REGION",
+                            modeIsActive: viewModel.isActiveScanRunning,
+                            cadenceLabel: viewModel.isActiveScanRunning ? "~1Hz iOS" : "kernel-level",
+                            nextScanAt: nil,
+                            nowTick: viewModel.nowTick
+                        )
+
+                        EyeCard(
+                            eye: .bluetooth,
+                            isInZone: viewModel.isInBluetoothZone,
+                            lastEnter: viewModel.lastBluetoothEnter,
+                            lastExit: viewModel.lastBluetoothExit,
+                            enterCount: viewModel.bluetoothZoneEnterCount,
+                            beaconsNow: viewModel.bluetoothBeaconsNow,
+                            totalDetected: viewModel.bluetoothBeaconKeysSeen.count,
+                            modeLabel: viewModel.bluetoothScanMode == .active ? "ATIVO" : "STANDBY",
+                            modeIsActive: viewModel.bluetoothScanMode == .active,
+                            cadenceLabel: viewModel.bluetoothScanMode == .active ? "10s tick" : "5min cycle",
+                            nextScanAt: viewModel.bluetoothNextIdleScanAt,
+                            nowTick: viewModel.nowTick
+                        )
+                    }
+
+                    // Quick legend so the user remembers what each mode means without
+                    // having to scroll back to docs. Kept compact.
+                    legendBlock
+
+                    // Live event log — same data as the inline panel but with more rows visible
+                    // and a clear-all button.
+                    eventsBlock
+                }
+                .padding(16)
+            }
+            .navigationTitle("👁 👁 Dois Olhos")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    Button("Fechar") { dismiss() }
+                        .font(.subheadline)
+                }
+            }
+        }
+    }
+
+    /// One-line summary at the top — at-a-glance status of both eyes.
+    private var summaryStrip: some View {
+        HStack(spacing: 8) {
+            eyeBadge(
+                title: "Location",
+                color: .green,
+                isOn: viewModel.isInBeaconRegion,
+                detail: "\(viewModel.locationBeaconsNow) beacon(s) agora"
+            )
+            eyeBadge(
+                title: "Bluetooth",
+                color: .blue,
+                isOn: viewModel.isInBluetoothZone,
+                detail: "\(viewModel.bluetoothScanMode == .active ? "ATIVO" : "STANDBY") · \(viewModel.bluetoothBeaconsNow) agora"
+            )
+        }
+    }
+
+    private func eyeBadge(title: String, color: Color, isOn: Bool, detail: String) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            HStack(spacing: 4) {
+                Circle()
+                    .fill(isOn ? color : Color.gray)
+                    .frame(width: 8, height: 8)
+                Text(title)
+                    .font(.caption)
+                    .fontWeight(.semibold)
+            }
+            Text(detail)
+                .font(.system(size: 10, design: .monospaced))
+                .foregroundColor(.secondary)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(8)
+        .background(
+            RoundedRectangle(cornerRadius: 8)
+                .fill(isOn ? color.opacity(0.12) : Color.gray.opacity(0.08))
+        )
+    }
+
+    /// Compact legend reminding the user what each mode/transition means. Stuck below the
+    /// cards so it's always in view without scrolling. Designed to be informative for a
+    /// first-time tester reading the screen cold.
+    private var legendBlock: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("Como ler")
+                .font(.caption)
+                .fontWeight(.semibold)
+                .foregroundColor(.secondary)
+
+            legendRow(
+                color: .green,
+                title: "Location",
+                text: "iBeacon region monitoring do iOS (kernel level). Funciona mesmo se BT estiver bloqueado no app."
+            )
+            legendRow(
+                color: .blue,
+                title: "Bluetooth",
+                text: "CBCentralManager scan ativo. STANDBY = scanner off, peek de 10s a cada 5min. ATIVO = scan contínuo."
+            )
+            legendRow(
+                color: .orange,
+                title: "Wake-up",
+                text: "Quando Location entra na zona, o BT eye é acordado pra ATIVO imediatamente — não espera o ciclo."
+            )
+        }
+        .padding(12)
+        .background(Color.gray.opacity(0.08))
+        .cornerRadius(8)
+    }
+
+    private func legendRow(color: Color, title: String, text: String) -> some View {
+        HStack(alignment: .top, spacing: 8) {
+            Circle()
+                .fill(color)
+                .frame(width: 8, height: 8)
+                .padding(.top, 4)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title)
+                    .font(.system(size: 11, weight: .semibold))
+                Text(text)
+                    .font(.system(size: 11))
+                    .foregroundColor(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+    }
+
+    /// Live event log — most recent first, capped at 20 visible rows. The full 30 still
+    /// lives in the view model.
+    private var eventsBlock: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Text("Eventos ao vivo")
+                    .font(.caption)
+                    .fontWeight(.semibold)
+                    .foregroundColor(.secondary)
+                Spacer()
+                if !viewModel.geofenceEventLog.isEmpty {
+                    Button("Limpar") { viewModel.clearGeofenceLog() }
+                        .font(.caption2)
+                        .foregroundColor(.secondary)
+                }
+            }
+
+            if viewModel.geofenceEventLog.isEmpty {
+                Text("Nenhum evento ainda — aproxime de um beacon para disparar.")
+                    .font(.system(size: 11))
+                    .foregroundColor(.secondary)
+                    .padding(.vertical, 12)
+                    .frame(maxWidth: .infinity, alignment: .center)
+            } else {
+                VStack(alignment: .leading, spacing: 6) {
+                    ForEach(viewModel.geofenceEventLog.prefix(20)) { event in
+                        GeofenceEventRow(event: event)
+                    }
+                }
+            }
+        }
+        .padding(12)
+        .background(Color.gray.opacity(0.05))
+        .cornerRadius(8)
     }
 }
 
