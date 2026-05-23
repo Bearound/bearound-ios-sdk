@@ -102,6 +102,26 @@ class BeaconViewModel: NSObject, ObservableObject, BeAroundSDKDelegate {
     /// RIGHT EYE — Number of Bluetooth zone enters observed in this session.
     @Published var bluetoothZoneEnterCount: Int = 0
 
+    /// LEFT EYE — Unique beacon keys (`major.minor`) ever seen by the Location eye in this session.
+    /// Used to compute the "Total detectados" pill on the card. Survives beacons going out of range.
+    @Published var locationBeaconKeysSeen: Set<String> = []
+
+    /// RIGHT EYE — Unique beacon keys ever seen by the Bluetooth eye in this session.
+    @Published var bluetoothBeaconKeysSeen: Set<String> = []
+
+    /// LEFT EYE — Beacons currently visible to the Location eye (have `.coreLocation` in sources).
+    /// Live-derived from `beacons` so it tracks comings and goings without extra state.
+    var locationBeaconsNow: Int {
+        beacons.filter { $0.discoverySources.contains(.coreLocation) }.count
+    }
+
+    /// RIGHT EYE — Beacons currently visible to the Bluetooth eye (have `.serviceUUID` or `.name` in sources).
+    var bluetoothBeaconsNow: Int {
+        beacons.filter {
+            $0.discoverySources.contains(.serviceUUID) || $0.discoverySources.contains(.name)
+        }.count
+    }
+
     /// True when active scanning (ranging + BLE) is running. Outside a region this stays false.
     @Published var isActiveScanRunning: Bool = false
     /// True while a beacon-triggered GPS capture window is open.
@@ -498,6 +518,18 @@ extension BeaconViewModel {
             self.wasInBeaconRegion = isNowInBeaconRegion
             self.beacons = sortedBeacons
             self.lastScanTime = Date()
+
+            // v2.5 — Two Eyes — accumulate unique beacon keys per detection source so each
+            // EyeCard can show "Total detectados" independently. Sets dedupe automatically.
+            for beacon in sortedBeacons {
+                let key = "\(beacon.major).\(beacon.minor)"
+                if beacon.discoverySources.contains(.coreLocation) {
+                    self.locationBeaconKeysSeen.insert(key)
+                }
+                if beacon.discoverySources.contains(.serviceUUID) || beacon.discoverySources.contains(.name) {
+                    self.bluetoothBeaconKeysSeen.insert(key)
+                }
+            }
 
             // Record detection log entries
             let isBackground = UIApplication.shared.applicationState != .active

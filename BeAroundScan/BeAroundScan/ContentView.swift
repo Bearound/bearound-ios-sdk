@@ -611,7 +611,9 @@ struct GeofenceDebugCard: View {
                     isInZone: viewModel.isInBeaconRegion,
                     lastEnter: viewModel.lastLocationEnter,
                     lastExit: viewModel.lastLocationExit,
-                    enterCount: viewModel.locationRegionEnterCount
+                    enterCount: viewModel.locationRegionEnterCount,
+                    beaconsNow: viewModel.locationBeaconsNow,
+                    totalDetected: viewModel.locationBeaconKeysSeen.count
                 )
 
                 EyeCard(
@@ -619,7 +621,9 @@ struct GeofenceDebugCard: View {
                     isInZone: viewModel.isInBluetoothZone,
                     lastEnter: viewModel.lastBluetoothEnter,
                     lastExit: viewModel.lastBluetoothExit,
-                    enterCount: viewModel.bluetoothZoneEnterCount
+                    enterCount: viewModel.bluetoothZoneEnterCount,
+                    beaconsNow: viewModel.bluetoothBeaconsNow,
+                    totalDetected: viewModel.bluetoothBeaconKeysSeen.count
                 )
             }
 
@@ -738,6 +742,10 @@ struct EyeCard: View {
     let lastEnter: Date?
     let lastExit: Date?
     let enterCount: Int
+    /// Beacons currently visible to this eye, derived live from the viewModel's beacons array.
+    let beaconsNow: Int
+    /// Cumulative count of unique beacons (by major.minor) this eye has detected this session.
+    let totalDetected: Int
 
     /// Display labels per eye, kept here so the parent stays mechanism-agnostic.
     private var title: String {
@@ -786,11 +794,20 @@ struct EyeCard: View {
                     .foregroundColor(isInZone ? accentColor : .secondary)
             }
 
+            // Two big pills with the detection counts — what this eye SEES right now and
+            // what it has seen ever this session. These are the primary signal for the
+            // user during testing: a card with "Beacons agora: 0" and "Total: 0" means
+            // that eye is not picking up anything.
+            HStack(spacing: 6) {
+                countPill(label: "Agora",  value: beaconsNow,     emphasize: beaconsNow > 0)
+                countPill(label: "Total",  value: totalDetected,  emphasize: false)
+            }
+
             Divider()
 
             VStack(alignment: .leading, spacing: 3) {
-                detailRow(label: "Entrou:",  value: formatTimestamp(lastEnter))
-                detailRow(label: "Saiu:",    value: formatTimestamp(lastExit))
+                detailRow(label: "Entrou:",   value: formatTimestamp(lastEnter))
+                detailRow(label: "Saiu:",     value: formatTimestamp(lastExit))
                 detailRow(label: "Entradas:", value: "\(enterCount)")
             }
         }
@@ -823,6 +840,29 @@ struct EyeCard: View {
                 .foregroundColor(.primary)
                 .lineLimit(1)
         }
+    }
+
+    /// Compact count badge — "Agora 3", "Total 7". When `emphasize` the pill takes on
+    /// the eye's accent color so a non-zero "live" count visually pops.
+    private func countPill(label: String, value: Int, emphasize: Bool) -> some View {
+        let bg = emphasize ? accentColor.opacity(0.18) : Color.gray.opacity(0.12)
+        let fg = emphasize ? accentColor : Color.primary
+        return VStack(alignment: .leading, spacing: 1) {
+            Text(label.uppercased())
+                .font(.system(size: 8, weight: .semibold, design: .monospaced))
+                .foregroundColor(.secondary)
+            Text("\(value)")
+                .font(.system(size: 16, weight: .bold, design: .rounded))
+                .foregroundColor(fg)
+                .contentTransition(.numericText())
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.vertical, 4)
+        .padding(.horizontal, 6)
+        .background(
+            RoundedRectangle(cornerRadius: 6)
+                .fill(bg)
+        )
     }
 }
 
