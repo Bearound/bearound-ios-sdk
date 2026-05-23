@@ -737,6 +737,8 @@ struct TwoEyesDebugScreen: View {
 
     /// "Análise comparativa" — answers the user's question: "which eye is more precise?"
     /// Pulls live aggregates from the view model. Each row is a different lens on the data.
+    /// Every number is paired with a quality pill (EXCELENTE/BOM/FRACO/RUIM) + a one-line
+    /// natural-language interpretation so a non-RF person can read it cold.
     private var analysisBlock: some View {
         let race = viewModel.detectionRace
         let rssi = viewModel.bluetoothRSSIStats
@@ -759,44 +761,99 @@ struct TwoEyesDebugScreen: View {
                     .foregroundColor(.secondary)
                     .padding(.vertical, 8)
             } else {
+                // Top-line verdict — the single answer to "quem está melhor agora?".
+                // Synthesized from coverage + RSSI + latency. Color-coded big pill at the
+                // top so the user sees the conclusion before reading the numbers.
+                verdictPill(locOnly: locOnly, btOnly: btOnly, both: both,
+                            avgRSSI: rssi.avg, hasBT: hasBT,
+                            locWins: race.locationWins, btWins: race.bluetoothWins)
+
                 // 1. Cobertura — Venn-style breakdown across the two sources.
-                analysisGroup(title: "Cobertura (beacons únicos vistos)") {
-                    statRow(label: "👁 Só Location",   value: "\(locOnly)", emphasis: .green)
-                    statRow(label: "👁 Só Bluetooth",  value: "\(btOnly)",  emphasis: .blue)
-                    statRow(label: "✓ Ambos",          value: "\(both)",    emphasis: .primary)
+                analysisGroup(
+                    title: "Cobertura (beacons únicos vistos)",
+                    hint: locOnly + btOnly == 0
+                        ? "Os dois olhos viram todos os beacons disponíveis — ideal."
+                        : "Quando um número é maior que zero, aquele olho está perdendo beacons que o outro vê."
+                ) {
+                    statRowWithBadge(
+                        label: "👁 Só Location",
+                        value: "\(locOnly)",
+                        valueColor: .green,
+                        badge: locOnly == 0 ? .init("OK", .green) : .init("LACUNA", .orange)
+                    )
+                    statRowWithBadge(
+                        label: "👁 Só Bluetooth",
+                        value: "\(btOnly)",
+                        valueColor: .blue,
+                        badge: btOnly == 0 ? .init("OK", .green) : .init("LACUNA", .orange)
+                    )
+                    statRowWithBadge(
+                        label: "✓ Ambos",
+                        value: "\(both)",
+                        valueColor: .primary,
+                        badge: both > 0 ? .init("OVERLAP", .green) : nil
+                    )
                 }
 
                 // 2. Quem detectou primeiro — only computable for beacons in the overlap.
-                analysisGroup(title: "Latência (quem viu primeiro)") {
+                analysisGroup(
+                    title: "Latência (quem viu primeiro)",
+                    hint: both == 0
+                        ? "Precisa de pelo menos 1 beacon visto pelos 2 olhos pra eu medir."
+                        : "Vantagem alta (>5s) = um olho está bem mais rápido. Próxima de zero = empate técnico."
+                ) {
                     if both == 0 {
                         statRow(label: "—", value: "sem overlap ainda", emphasis: .muted)
                     } else {
-                        statRow(label: "Location ganhou", value: "\(race.locationWins)x", emphasis: .green)
-                        statRow(label: "Bluetooth ganhou", value: "\(race.bluetoothWins)x", emphasis: .blue)
+                        statRowWithBadge(
+                            label: "Location ganhou",
+                            value: "\(race.locationWins)x",
+                            valueColor: .green,
+                            badge: race.locationWins > race.bluetoothWins ? .init("VENCEDOR", .green) : nil
+                        )
+                        statRowWithBadge(
+                            label: "Bluetooth ganhou",
+                            value: "\(race.bluetoothWins)x",
+                            valueColor: .blue,
+                            badge: race.bluetoothWins > race.locationWins ? .init("VENCEDOR", .blue) : nil
+                        )
                         if race.ties > 0 {
                             statRow(label: "Empate (<100ms)", value: "\(race.ties)x", emphasis: .muted)
                         }
-                        statRow(
+                        let leadQ = latencyQuality(seconds: race.avgLeadSeconds)
+                        statRowWithBadge(
                             label: "Vantagem média",
                             value: race.avgLeadSeconds < 0.01 ? "—" : String(format: "%.2fs", race.avgLeadSeconds),
-                            emphasis: .muted
+                            valueColor: .primary,
+                            badge: race.avgLeadSeconds < 0.01 ? nil : .init(leadQ.label, leadQ.color)
                         )
                     }
                 }
 
-                // 3. RSSI — exclusive to the Bluetooth eye. CL only gives us proximity buckets.
-                analysisGroup(title: "Signal strength (RSSI — só BT)") {
+                // 3. RSSI — exclusive to the Bluetooth eye. Indicator pill + hint translates
+                // raw dBm into "BOM", "FRACO" etc. so user doesn't need to know the scale.
+                analysisGroup(
+                    title: "Signal strength (RSSI — só BT)",
+                    hint: hasBT
+                        ? "RSSI = força do sinal em dBm. Quanto MAIS PERTO de zero, MELHOR. -50 = colado no beacon, -90 = no limite."
+                        : "RSSI só existe via Bluetooth — CoreLocation não expõe esse dado puro."
+                ) {
                     if !hasBT {
                         statRow(label: "—", value: "nenhum beacon BT no momento", emphasis: .muted)
                     } else {
-                        statRow(label: "Médio",  value: "\(rssi.avg) dBm",  emphasis: .blue)
-                        statRow(label: "Range",  value: "\(rssi.min)…\(rssi.max) dBm", emphasis: .muted)
+                        let q = rssiQuality(avg: rssi.avg)
+                        statRowWithBadge(
+                            label: "Médio",
+                            value: "\(rssi.avg) dBm",
+                            valueColor: .blue,
+                            badge: .init(q.label, q.color)
+                        )
+                        statRow(label: "Range", value: "\(rssi.min)…\(rssi.max) dBm", emphasis: .muted)
                     }
                 }
 
-                // 4. Recommendation — synthesized from the numbers above. Honest about
-                // the fact that the two eyes are complementary, not competitive.
-                analysisGroup(title: "Recomendação") {
+                // 4. Recommendation — synthesized prose from the numbers above. Plain language.
+                analysisGroup(title: "Recomendação", hint: nil) {
                     Text(recommendation(locOnly: locOnly, btOnly: btOnly, both: both,
                                         locWins: race.locationWins, btWins: race.bluetoothWins))
                         .font(.system(size: 12))
@@ -808,6 +865,144 @@ struct TwoEyesDebugScreen: View {
         .padding(12)
         .background(Color.gray.opacity(0.08))
         .cornerRadius(8)
+    }
+
+    // MARK: - Quality thresholds (RSSI + Latency)
+
+    /// Maps an RSSI value (in dBm) to a human-readable quality bucket + color.
+    /// Thresholds chosen from typical BLE deployment ranges:
+    ///   ≥ -55 dBm: practically touching the beacon
+    ///   -55..-70: normal indoor working range, very reliable
+    ///   -70..-85: still detectable but flaky, may drop in/out
+    ///   < -85: edge of receiver sensitivity, expect frequent misses
+    private func rssiQuality(avg: Int) -> (label: String, color: Color) {
+        switch avg {
+        case (-54)... :    return ("EXCELENTE", .green)
+        case (-70) ... (-55): return ("BOM",     .green)
+        case (-85) ... (-71): return ("FRACO",   .orange)
+        default:               return ("RUIM",    .red)
+        }
+    }
+
+    /// Maps the average latency lead (positive seconds) between eyes to a quality bucket.
+    /// Closer to zero = the two eyes are tightly synchronized. Larger numbers = one eye is
+    /// clearly ahead — usually means the slower one is being throttled by iOS.
+    private func latencyQuality(seconds: Double) -> (label: String, color: Color) {
+        switch seconds {
+        case 0..<0.5:  return ("MUITO RÁPIDO", .green)
+        case 0.5..<3:  return ("OK",            .green)
+        case 3..<10:   return ("LENTO",         .orange)
+        default:        return ("BEM LENTO",     .red)
+        }
+    }
+
+    // MARK: - Verdict pill
+
+    /// Big colored pill at the top of the analysis block. Synthesizes everything into
+    /// a single conclusion the user can read in 1 second.
+    @ViewBuilder
+    private func verdictPill(
+        locOnly: Int, btOnly: Int, both: Int,
+        avgRSSI: Int, hasBT: Bool,
+        locWins: Int, btWins: Int
+    ) -> some View {
+        let v = computeVerdict(
+            locOnly: locOnly, btOnly: btOnly, both: both,
+            avgRSSI: avgRSSI, hasBT: hasBT,
+            locWins: locWins, btWins: btWins
+        )
+
+        HStack(alignment: .top, spacing: 10) {
+            Text(v.emoji)
+                .font(.title2)
+            VStack(alignment: .leading, spacing: 2) {
+                Text("VEREDITO")
+                    .font(.system(size: 9, weight: .bold, design: .monospaced))
+                    .foregroundColor(.secondary)
+                Text(v.headline)
+                    .font(.system(size: 14, weight: .bold))
+                    .foregroundColor(v.color)
+                Text(v.subline)
+                    .font(.system(size: 11))
+                    .foregroundColor(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Spacer()
+        }
+        .padding(12)
+        .background(
+            RoundedRectangle(cornerRadius: 10)
+                .fill(v.color.opacity(0.12))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 10)
+                .stroke(v.color, lineWidth: 1.5)
+        )
+    }
+
+    /// Computes the verdict from the current session's numbers. Priority order:
+    ///   1. RSSI too weak (universal problem regardless of which eye)
+    ///   2. One eye is silent (only the other is delivering data)
+    ///   3. One eye is faster than the other in latency races
+    ///   4. Default: both healthy
+    private func computeVerdict(
+        locOnly: Int, btOnly: Int, both: Int,
+        avgRSSI: Int, hasBT: Bool,
+        locWins: Int, btWins: Int
+    ) -> (emoji: String, headline: String, subline: String, color: Color) {
+        // 1. Weak signal everywhere — neither eye is doing great
+        if hasBT && avgRSSI < -85 {
+            return (
+                "⚠️",
+                "Sinal fraco — chega mais perto do beacon",
+                "Os dois olhos estão capturando, mas o RSSI está no limite. Pode haver perda de detecção a qualquer momento.",
+                .orange
+            )
+        }
+
+        // 2. One eye is silent
+        if locOnly + both > 0 && btOnly + both == 0 {
+            return (
+                "🟢",
+                "Location está dominando — Bluetooth silencioso",
+                "Só a Location está vendo beacons. Verifica a permissão de Bluetooth do app ou se BT está ligado no celular.",
+                .green
+            )
+        }
+        if btOnly + both > 0 && locOnly + both == 0 {
+            return (
+                "🔵",
+                "Bluetooth está dominando — Location silencioso",
+                "Só o BT está vendo beacons. Verifica permissão Location, Precise Location, ou se o beacon é um CLBeaconRegion válido.",
+                .blue
+            )
+        }
+
+        // 3. Clear winner in latency races
+        if both >= 2 && locWins > btWins * 2 {
+            return (
+                "🟢",
+                "Location é mais rápido aqui",
+                "Em \(locWins) de \(locWins + btWins) corridas, Location detectou primeiro. Use ele pra acordar o app.",
+                .green
+            )
+        }
+        if both >= 2 && btWins > locWins * 2 {
+            return (
+                "🔵",
+                "Bluetooth é mais rápido aqui",
+                "Em \(btWins) de \(locWins + btWins) corridas, BT detectou primeiro. Talvez Location esteja sendo throttled pelo iOS.",
+                .blue
+            )
+        }
+
+        // 4. Both healthy
+        return (
+            "✅",
+            "Os dois olhos estão precisos",
+            "Cobertura completa, sinal bom, latência baixa. Use Location pra wake-up + BT pra precisão fina.",
+            .green
+        )
     }
 
     private enum StatEmphasis {
@@ -823,7 +1018,7 @@ struct TwoEyesDebugScreen: View {
         }
     }
 
-    private func analysisGroup<Content: View>(title: String, @ViewBuilder content: () -> Content) -> some View {
+    private func analysisGroup<Content: View>(title: String, hint: String? = nil, @ViewBuilder content: () -> Content) -> some View {
         VStack(alignment: .leading, spacing: 4) {
             Text(title)
                 .font(.system(size: 11, weight: .semibold))
@@ -832,6 +1027,13 @@ struct TwoEyesDebugScreen: View {
                 content()
             }
             .padding(.leading, 4)
+            if let hint {
+                Text(hint)
+                    .font(.system(size: 10))
+                    .foregroundColor(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.top, 2)
+            }
         }
     }
 
@@ -844,6 +1046,44 @@ struct TwoEyesDebugScreen: View {
             Text(value)
                 .font(.system(size: 12, weight: .semibold, design: .monospaced))
                 .foregroundColor(emphasis.color)
+        }
+    }
+
+    /// Carrier for the colored quality badge shown next to a value.
+    /// nil-able so we can skip the badge for neutral/contextual rows.
+    private struct QualityBadge {
+        let text: String
+        let color: Color
+        init(_ text: String, _ color: Color) { self.text = text; self.color = color }
+    }
+
+    /// Variant of statRow that appends a small colored badge (EXCELENTE / BOM / FRACO / RUIM /
+    /// LACUNA / VENCEDOR / OK / OVERLAP) so the user can interpret the number without
+    /// knowing the underlying scale.
+    private func statRowWithBadge(label: String, value: String, valueColor: Color, badge: QualityBadge?) -> some View {
+        HStack(spacing: 6) {
+            Text(label)
+                .font(.system(size: 12))
+                .foregroundColor(.primary)
+            Spacer()
+            Text(value)
+                .font(.system(size: 12, weight: .semibold, design: .monospaced))
+                .foregroundColor(valueColor)
+            if let badge {
+                Text(badge.text)
+                    .font(.system(size: 9, weight: .bold, design: .monospaced))
+                    .foregroundColor(badge.color)
+                    .padding(.horizontal, 5)
+                    .padding(.vertical, 1)
+                    .background(
+                        RoundedRectangle(cornerRadius: 4)
+                            .fill(badge.color.opacity(0.18))
+                    )
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 4)
+                            .stroke(badge.color, lineWidth: 0.8)
+                    )
+            }
         }
     }
 
