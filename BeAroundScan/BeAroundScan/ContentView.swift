@@ -613,7 +613,16 @@ struct GeofenceDebugCard: View {
                     lastExit: viewModel.lastLocationExit,
                     enterCount: viewModel.locationRegionEnterCount,
                     beaconsNow: viewModel.locationBeaconsNow,
-                    totalDetected: viewModel.locationBeaconKeysSeen.count
+                    totalDetected: viewModel.locationBeaconKeysSeen.count,
+                    // Location eye doesn't have a BLE-style duty cycle. We map its current
+                    // operating state to the same Modo/Cadência slots so both cards look symmetric:
+                    //   - "Ranging" (active) when iOS is currently delivering beacon updates
+                    //   - "Region monitor" (idle) when only kernel-level region monitoring is on
+                    modeLabel: viewModel.isActiveScanRunning ? "RANGING" : "REGION",
+                    modeIsActive: viewModel.isActiveScanRunning,
+                    cadenceLabel: viewModel.isActiveScanRunning ? "~1Hz iOS" : "kernel-level",
+                    nextScanAt: nil,
+                    nowTick: viewModel.nowTick
                 )
 
                 EyeCard(
@@ -623,7 +632,12 @@ struct GeofenceDebugCard: View {
                     lastExit: viewModel.lastBluetoothExit,
                     enterCount: viewModel.bluetoothZoneEnterCount,
                     beaconsNow: viewModel.bluetoothBeaconsNow,
-                    totalDetected: viewModel.bluetoothBeaconKeysSeen.count
+                    totalDetected: viewModel.bluetoothBeaconKeysSeen.count,
+                    modeLabel: viewModel.bluetoothScanMode == .active ? "ATIVO" : "STANDBY",
+                    modeIsActive: viewModel.bluetoothScanMode == .active,
+                    cadenceLabel: viewModel.bluetoothScanMode == .active ? "10s tick" : "5min cycle",
+                    nextScanAt: viewModel.bluetoothNextIdleScanAt,
+                    nowTick: viewModel.nowTick
                 )
             }
 
@@ -746,6 +760,17 @@ struct EyeCard: View {
     let beaconsNow: Int
     /// Cumulative count of unique beacons (by major.minor) this eye has detected this session.
     let totalDetected: Int
+    /// Short label for the current operating mode (e.g. "ATIVO", "STANDBY", "RANGING", "REGION").
+    let modeLabel: String
+    /// True when the eye is in its "high-frequency / actively detecting" mode. Used for color.
+    let modeIsActive: Bool
+    /// Sub-label describing the cadence the user can expect ("10s tick", "5min cycle", "~1Hz iOS").
+    let cadenceLabel: String
+    /// When non-nil, render a live countdown to this date — the next idle peek time for BT eye.
+    /// Location eye passes nil (no scheduled peek concept on its side).
+    let nextScanAt: Date?
+    /// 1Hz heartbeat from the view model. Triggering re-renders ages the countdown.
+    let nowTick: Date
 
     /// Display labels per eye, kept here so the parent stays mechanism-agnostic.
     private var title: String {
@@ -803,6 +828,11 @@ struct EyeCard: View {
                 countPill(label: "Total",  value: totalDetected,  emphasize: false)
             }
 
+            // Mode / cadence — the duty cycle of this eye. For BT this flips between
+            // STANDBY (5min) and ATIVO (10s tick). For Location it shows whether iOS
+            // is currently ranging or just monitoring the region in the background.
+            modeBlock
+
             Divider()
 
             VStack(alignment: .leading, spacing: 3) {
@@ -821,6 +851,69 @@ struct EyeCard: View {
             RoundedRectangle(cornerRadius: 8)
                 .stroke(isInZone ? accentColor : Color.gray.opacity(0.3), lineWidth: isInZone ? 1.5 : 1)
         )
+    }
+
+    /// Composite view that renders Modo (mode label) + Cadência + optional Próx scan countdown.
+    /// Kept as a computed `@ViewBuilder` so the body() above stays scannable.
+    @ViewBuilder
+    private var modeBlock: some View {
+        let bg = modeIsActive ? accentColor.opacity(0.18) : Color.gray.opacity(0.12)
+        let fg = modeIsActive ? accentColor : Color.secondary
+
+        VStack(alignment: .leading, spacing: 3) {
+            // Top line: MODO + status pill
+            HStack(spacing: 4) {
+                Text("MODO")
+                    .font(.system(size: 8, weight: .semibold, design: .monospaced))
+                    .foregroundColor(.secondary)
+                Text(modeLabel)
+                    .font(.system(size: 11, weight: .bold, design: .rounded))
+                    .foregroundColor(fg)
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 1)
+                    .background(
+                        RoundedRectangle(cornerRadius: 4).fill(bg)
+                    )
+                Spacer()
+            }
+
+            // Cadência — how often this eye produces a detection beat
+            HStack {
+                Text("Cadência:")
+                    .font(.system(size: 10))
+                    .foregroundColor(.secondary)
+                Spacer()
+                Text(cadenceLabel)
+                    .font(.system(size: 10, design: .monospaced))
+                    .foregroundColor(.primary)
+            }
+
+            // Live countdown to next idle peek. Only rendered for the BT eye in STANDBY.
+            // We deliberately depend on `nowTick` so SwiftUI re-renders this row every second
+            // without touching anything else.
+            if let next = nextScanAt {
+                HStack {
+                    Text("Próx. scan:")
+                        .font(.system(size: 10))
+                        .foregroundColor(.secondary)
+                    Spacer()
+                    Text(countdownString(to: next, now: nowTick))
+                        .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                        .foregroundColor(.primary)
+                }
+            }
+        }
+        .padding(.vertical, 4)
+    }
+
+    /// Formats a countdown to `target` as "Xm Ys" (or "Ys" if under a minute).
+    /// Returns "agora" once we pass the target, since the SDK should be peeking at that point.
+    private func countdownString(to target: Date, now: Date) -> String {
+        let delta = max(0, Int(target.timeIntervalSince(now)))
+        if delta <= 0 { return "agora" }
+        let minutes = delta / 60
+        let seconds = delta % 60
+        return minutes > 0 ? "\(minutes)m \(seconds)s" : "\(seconds)s"
     }
 
     /// "—" when nil, otherwise local time (HH:mm:ss).

@@ -288,15 +288,23 @@ public class BeAroundSDK {
         }
 
         // v2.4 — surface region transitions and location-capture lifecycle to the host app
+        // v2.5 — region transitions also drive the BT eye duty-cycle wake/sleep
         beaconManager.onRegionEnter = { [weak self] in
+            guard let self else { return }
+            // Wake the Bluetooth eye: region entry is the canonical "user is at a beacon"
+            // signal, fires from kernel-level CL monitoring even when the app is suspended.
+            self.bluetoothManager.wakeToActive()
             DispatchQueue.main.async {
-                self?.delegate?.didEnterBeaconRegion()
+                self.delegate?.didEnterBeaconRegion()
             }
         }
 
         beaconManager.onRegionExit = { [weak self] in
+            guard let self else { return }
+            // Put the Bluetooth eye back to sleep — user left the zone, stop burning battery.
+            self.bluetoothManager.sleepToIdle()
             DispatchQueue.main.async {
-                self?.delegate?.didExitBeaconRegion()
+                self.delegate?.didExitBeaconRegion()
             }
         }
 
@@ -358,6 +366,16 @@ public class BeAroundSDK {
             DispatchQueue.main.async {
                 self?.delegate?.didExitBluetoothZone()
             }
+        }
+
+        // v2.5 — surface duty-cycle mode transitions of the BT eye to the host.
+        // notifyScanModeChanged already dispatches on main, but we re-route through
+        // the same path the other delegate calls use for consistency.
+        bluetoothManager.onScanModeChanged = { [weak self] mode, nextIdleScanAt in
+            NSLog("[SDK] BT scan mode → %@ (nextIdleScanAt=%@)",
+                  mode.rawValue,
+                  nextIdleScanAt.map { "\($0)" } ?? "nil")
+            self?.delegate?.didChangeBluetoothScanMode(mode, nextIdleScanAt: nextIdleScanAt)
         }
 
         bluetoothManager.onBeaconsUpdated = { [weak self] trackedBeacons in

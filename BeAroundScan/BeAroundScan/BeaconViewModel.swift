@@ -122,6 +122,21 @@ class BeaconViewModel: NSObject, ObservableObject, BeAroundSDKDelegate {
         }.count
     }
 
+    // MARK: - Duty Cycle (v2.5)
+
+    /// RIGHT EYE — Current scan mode of the Bluetooth eye. Drives the "Modo" pill on the card.
+    /// Defaults to `.idle` so the UI renders correctly even before the SDK fires its first event.
+    @Published var bluetoothScanMode: BluetoothScanMode = .idle
+
+    /// RIGHT EYE — Absolute time of the next idle peek. Non-nil only while bluetoothScanMode == .idle.
+    /// Used together with `nowTick` to render the live "Próx. scan em Xs" countdown.
+    @Published var bluetoothNextIdleScanAt: Date?
+
+    /// 1Hz heartbeat used to age the countdown ("4:23 → 4:22 → 4:21...") without forcing the
+    /// BluetoothManager to fire an SDK event every second. Updated by `tickTimer`.
+    @Published var nowTick: Date = Date()
+    private var tickTimer: Timer?
+
     /// True when active scanning (ranging + BLE) is running. Outside a region this stays false.
     @Published var isActiveScanRunning: Bool = false
     /// True while a beacon-triggered GPS capture window is open.
@@ -184,6 +199,18 @@ class BeaconViewModel: NSObject, ObservableObject, BeAroundSDKDelegate {
         requestTrackingPermission()
         initializeSDK()
         startDiagnosticTimer()
+        startTickTimer()
+    }
+
+    /// 1Hz heartbeat that re-publishes `nowTick`. SwiftUI views observing the view model
+    /// re-render with each tick, which is how the EyeCard's countdown stays live.
+    private func startTickTimer() {
+        tickTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
+            guard let self else { return }
+            DispatchQueue.main.async {
+                self.nowTick = Date()
+            }
+        }
     }
 
     private func setupLockObservers() {
@@ -456,6 +483,7 @@ class BeaconViewModel: NSObject, ObservableObject, BeAroundSDKDelegate {
 
     deinit {
         diagnosticTimer?.invalidate()
+        tickTimer?.invalidate()
     }
 }
 
@@ -724,6 +752,16 @@ extension BeaconViewModel {
                 timestamp: now,
                 detail: "👁 BLUETOOTH (direito) — zona vazia por 10s (graça expirou)"
             ))
+        }
+    }
+
+    // v2.5 — Duty cycle mode transition (Bluetooth eye)
+    // BluetoothManager flips between .idle (5min cycle) and .active (continuous + 10s tick).
+    // SDK already dispatches this on main, but we wrap defensively anyway.
+    func didChangeBluetoothScanMode(_ mode: BluetoothScanMode, nextIdleScanAt: Date?) {
+        DispatchQueue.main.async {
+            self.bluetoothScanMode = mode
+            self.bluetoothNextIdleScanAt = nextIdleScanAt
         }
     }
 

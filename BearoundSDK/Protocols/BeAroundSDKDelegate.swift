@@ -109,6 +109,14 @@ public protocol BeAroundSDKDelegate: AnyObject {
     /// Called when the BLE scanner has seen zero beacons for the configured empty-tick threshold.
     /// Fires even when the Location eye still reports we are inside its monitored region.
     func didExitBluetoothZone()
+
+    /// Called whenever the Bluetooth eye's duty-cycle mode changes. The two modes are:
+    ///   .idle   — scanner OFF most of the time; peeks for 10s every 5 min
+    ///   .active — scanner ON continuously; UI gets a tick every 10s
+    /// - Parameters:
+    ///   - mode: the new mode the BT eye just entered
+    ///   - nextIdleScanAt: absolute time of the next idle peek; non-nil only when mode is .idle
+    func didChangeBluetoothScanMode(_ mode: BluetoothScanMode, nextIdleScanAt: Date?)
 }
 
 // Default implementations (all optional except didUpdateBeacons)
@@ -125,4 +133,5 @@ extension BeAroundSDKDelegate {
     public func didChangeActiveScanState(isActive _: Bool) {}
     public func didEnterBluetoothZone() {}
     public func didExitBluetoothZone() {}
+    public func didChangeBluetoothScanMode(_: BluetoothScanMode, nextIdleScanAt _: Date?) {}
 }
