@@ -226,47 +226,6 @@ class APIClient {
             payload["availableStorageMb"] = availableStorageMb
         }
 
-        if let location = device.deviceLocation {
-            var locationDict: [String: Any] = [
-                "latitude": location.latitude,
-                "longitude": location.longitude,
-                "timestamp": Int(location.timestamp.timeIntervalSince1970 * 1000),
-            ]
-
-            if let accuracy = location.accuracy {
-                locationDict["accuracy"] = accuracy
-            }
-            if let altitude = location.altitude {
-                locationDict["altitude"] = altitude
-            }
-            if let altitudeAccuracy = location.altitudeAccuracy {
-                locationDict["altitudeAccuracy"] = altitudeAccuracy
-            }
-            if let heading = location.heading {
-                locationDict["heading"] = heading
-            }
-            if let course = location.course {
-                locationDict["course"] = course
-            }
-            if let courseAccuracy = location.courseAccuracy {
-                locationDict["courseAccuracy"] = courseAccuracy
-            }
-            if let speed = location.speed {
-                locationDict["speed"] = speed
-            }
-            if let speedAccuracy = location.speedAccuracy {
-                locationDict["speedAccuracy"] = speedAccuracy
-            }
-            if let floor = location.floor {
-                locationDict["floor"] = floor
-            }
-            if let sourceInfo = location.sourceInfo {
-                locationDict["sourceInfo"] = sourceInfo
-            }
-
-            payload["deviceLocation"] = locationDict
-        }
-
         return payload
     }
 }

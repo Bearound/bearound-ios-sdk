@@ -334,23 +334,6 @@ public class BeAroundSDK {
             }
         }
 
-        beaconManager.onLocationCaptureStarted = { [weak self] reason in
-            DispatchQueue.main.async {
-                self?.delegate?.didStartLocationCapture(reason: reason)
-            }
-        }
-
-        beaconManager.onLocationCaptureCompleted = { [weak self] location, openingReason, outcome in
-            let result = BeAroundLocationCapture(
-                reason: openingReason,
-                location: location,
-                outcome: outcome
-            )
-            DispatchQueue.main.async {
-                self?.delegate?.didCompleteLocationCapture(result)
-            }
-        }
-
         bluetoothManager.delegate = self
 
         // v2.5 — Bluetooth eye: BLE-only zone presence, independent of CoreLocation region.
@@ -874,8 +857,7 @@ public class BeAroundSDK {
             let userDevice = deviceInfoCollector.collectDeviceInfo(
                 locationPermission: locationPermission,
                 bluetoothState: bluetoothState,
-                appInForeground: appInForeground,
-                location: beaconManager.lastLocation
+                appInForeground: appInForeground
             )
 
             let trigger = self.syncTrigger
@@ -1042,8 +1024,7 @@ public class BeAroundSDK {
             let userDevice = self.deviceInfoCollector.collectDeviceInfo(
                 locationPermission: locationPermission,
                 bluetoothState: bluetoothState,
-                appInForeground: appInForeground,
-                location: self.beaconManager.lastLocation
+                appInForeground: appInForeground
             )
 
             apiClient.sendBeacons(
