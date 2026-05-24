@@ -70,13 +70,13 @@ Add the following keys to your `Info.plist`:
 
 ```xml
 <key>NSLocationWhenInUseUsageDescription</key>
-<string>Precisamos da sua localização para mostrar conteúdos próximos.</string>
+<string>We use your location to show nearby content.</string>
 <key>NSLocationAlwaysAndWhenInUseUsageDescription</key>
-<string>Precisamos da sua localização mesmo em segundo plano para enviar notificações relevantes.</string>
+<string>We use your location in the background to deliver timely notifications.</string>
 <key>NSBluetoothAlwaysUsageDescription</key>
-<string>Este aplicativo precisa acessar o Bluetooth para se conectar a dispositivos próximos.</string>
+<string>This app uses Bluetooth to discover and connect to nearby devices.</string>
 <key>NSUserTrackingUsageDescription</key>
-<string>Precisamos do seu consentimento para rastrear sua atividade e oferecer uma experiência personalizada.</string>
+<string>Your consent lets us tailor the experience and measure how features are used.</string>
 ```
 
 For background mode support, add:
@@ -444,7 +444,6 @@ The SDK runs a **hybrid two-eye model** — each "eye" is an independent wake-up
 | | Bluetooth eye (Path A) | Location eye (Path B) |
 |---|---|---|
 | Permission required | Bluetooth | Location **Always** + Bluetooth |
-| Beacon firmware needed | Service UUID `BEAD` advertisement | iBeacon UUID advertisement |
 | Foreground detection | ✅ | ✅ |
 | Background detection | ✅ | ✅ |
 | App killed by **iOS** (memory/battery pressure) | ✅ via `willRestoreState` | ✅ via `didEnterRegion` |
@@ -453,45 +452,6 @@ The SDK runs a **hybrid two-eye model** — each "eye" is an independent wake-up
 | Privacy footprint | Bluetooth only | Bluetooth + Location prompt |
 
 > **Empirical note (v3.0):** A live capture from `bluetoothd` on a real iPhone confirmed that after the user manually force-quits the app via swipe-up, iOS removes the SDK's BLE scan filter from the kernel — `won't resurrect. Reason: killed by user`. The Bluetooth eye alone cannot survive that gesture. The Location eye remains the only path that survives a user force-quit, because CLBeaconRegion monitoring is registered with `locationd` and persists independently.
-
-#### Why can't this work like an AirTag?
-
-A common question: AirTags "just sit there" and the owner gets a location update without anyone opening anything — why can't we do the same? The architectures look similar at the BLE layer but diverge at the OS layer.
-
-```
-AirTag broadcast BLE  ─►  iPhone DE OUTRA PESSOA detecta
-                              │
-                              ▼
-                         searchpartyd (daemon do iOS)
-                              │
-                              ▼
-                         Encrypted report to Apple's servers
-                              │
-                              ▼
-                         AirTag owner sees update in Find My app
-```
-
-The "wake-up" doesn't happen on the AirTag — it's just a passive transmitter. The wake-up happens on **other people's iPhones**, where Apple's `searchpartyd` daemon runs at the OS level, 24/7, immune to swipe-up because it isn't an app.
-
-| | Find My (AirTag/SmartTag) | Third-party SDK (this one) |
-|---|---|---|
-| Who runs the BLE scan | `searchpartyd` system daemon | Your app process |
-| Lifecycle | Boots with the OS, never killed | Subject to iOS background quotas + swipe-up |
-| Survives force-quit | ✅ Yes (not an app) | ❌ No (it's an app) |
-| Available to third-party developers | ❌ No (Apple-only daemon) | — |
-
-Apple deliberately reserves this privilege to its own services. Apple's Bug Bounty pays up to US$1M for exploits that grant a third-party app this level of background access — it's intentional gatekeeping, not an oversight. **No third-party SDK on iOS can replicate Find My's wake-up model.**
-
-What's available to third-party developers:
-
-| Approach | Detects | Receives the event | Notes |
-|---|---|---|---|
-| **CoreBluetooth state restoration** (Path A) | iPhone scans for beacon | Visitor's app | Killed by swipe-up |
-| **CoreLocation region monitoring** (Path B) | iPhone scans for beacon | Visitor's app | Survives swipe-up but requires Location |
-| **Find My Network Accessory Program** (MFi) | Random iPhones scan for beacon | Beacon **owner** (not the visitor's app) | Inverts the data flow — venue learns who showed up, visitor's app learns nothing |
-| **Connected beacon** (WiFi/LTE/NB-IoT) + APNs | Beacon scans for iPhone advertisements | Visitor's app | Requires beacon-side connectivity; iPhone MAC randomization complicates identification |
-
-If the business model requires "detect a visitor without them having an app open", that is fundamentally a different architecture than a phone-side SDK — either Find My Network (data goes to the venue) or connected beacons + APNs (data goes via the cloud). The Location eye is the only path that combines "visitor's app receives the event" with "survives force-quit" on iOS today.
 
 **Recommended posture:**
 

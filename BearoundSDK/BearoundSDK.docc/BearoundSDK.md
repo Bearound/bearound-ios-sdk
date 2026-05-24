@@ -68,13 +68,13 @@ Add the following keys to your `Info.plist`:
 
 ```xml
 <key>NSLocationWhenInUseUsageDescription</key>
-<string>Precisamos da sua localização para mostrar conteúdos próximos.</string>
+<string>We use your location to show nearby content.</string>
 <key>NSLocationAlwaysAndWhenInUseUsageDescription</key>
-<string>Precisamos da sua localização mesmo em segundo plano para enviar notificações relevantes.</string>
+<string>We use your location in the background to deliver timely notifications.</string>
 <key>NSBluetoothAlwaysUsageDescription</key>
-<string>Este aplicativo precisa acessar o Bluetooth para se conectar a dispositivos próximos.</string>
+<string>This app uses Bluetooth to discover and connect to nearby devices.</string>
 <key>NSUserTrackingUsageDescription</key>
-<string>Precisamos do seu consentimento para rastrear sua atividade e oferecer uma experiência personalizada.</string>
+<string>Your consent lets us tailor the experience and measure how features are used.</string>
 ```
 
 For background mode support, add:

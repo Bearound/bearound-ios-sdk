@@ -1,47 +1,47 @@
-# Publicando uma Nova Versao do BearoundSDK (iOS)
+# Publishing a New Version of BearoundSDK (iOS)
 
-## Pre-requisitos
+## Prerequisites
 
-- Acesso ao repositorio [Bearound/bearound-ios-sdk](https://github.com/Bearound/bearound-ios-sdk)
-- CocoaPods trunk configurado no Mac (`pod trunk register`)
-- Token do CocoaPods configurado no GitHub Secrets (`COCOAPODS_TRUNK_TOKEN`)
+- Write access to the [Bearound/bearound-ios-sdk](https://github.com/Bearound/bearound-ios-sdk) repository
+- CocoaPods trunk configured on your Mac (`pod trunk register`)
+- CocoaPods trunk token stored in GitHub Secrets as `COCOAPODS_TRUNK_TOKEN`
 
 ---
 
-## Passo a Passo
+## Step-by-step
 
-### 1. Atualizar a versao nos 3 arquivos
+### 1. Update the version in 3 files
 
-A versao precisa ser identica nos 3 locais:
+The version must be identical in all three locations:
 
-| Arquivo | Local | Exemplo |
-|---------|-------|---------|
-| `BearoundSDK/BearoundSDK.swift` | Linha 21: `return "X.Y.Z"` | `return "2.4.0"` |
-| `BearoundSDK.podspec` | `spec.version = "X.Y.Z"` | `spec.version = "2.4.0"` |
-| `CHANGELOG.md` | `## [X.Y.Z] - YYYY-MM-DD` | `## [2.4.0] - 2026-02-20` |
+| File | Where | Example |
+|------|-------|---------|
+| `BearoundSDK/BearoundSDK.swift` | Line 21: `return "X.Y.Z"` | `return "3.0.0"` |
+| `BearoundSDK.podspec` | `spec.version = "X.Y.Z"` | `spec.version = "3.0.0"` |
+| `CHANGELOG.md` | `## [X.Y.Z] - YYYY-MM-DD` | `## [3.0.0] - 2026-05-24` |
 
-### 2. Atualizar o CHANGELOG.md
+### 2. Update CHANGELOG.md
 
-Adicionar uma nova secao no topo do arquivo (abaixo do cabecalho), seguindo o formato:
+Add a new section at the top of the file (just below the header) using this format:
 
 ```markdown
 ## [X.Y.Z] - YYYY-MM-DD
 
 ### Added
-- Descricao das features adicionadas
+- Description of new features
 
 ### Changed
-- Descricao das alteracoes
+- Description of changes
 
 ### Fixed
-- Descricao dos bugs corrigidos
+- Description of bug fixes
 
 ---
 ```
 
-> O workflow valida que `## [X.Y.Z]` existe no CHANGELOG.md. Se nao existir, o release falha.
+> The workflow validates that `## [X.Y.Z]` exists in CHANGELOG.md. If it does not, the release fails.
 
-### 3. Commit e push
+### 3. Commit and push
 
 ```bash
 git add BearoundSDK/BearoundSDK.swift BearoundSDK.podspec CHANGELOG.md
@@ -49,105 +49,105 @@ git commit -m "bump: version X.Y.Z"
 git push origin main
 ```
 
-### 4. Criar e publicar a tag
+### 4. Create and push the tag
 
 ```bash
 git tag vX.Y.Z
 git push origin vX.Y.Z
 ```
 
-> O push da tag (`v*`) dispara automaticamente o workflow **iOS SDK Release** no GitHub Actions.
+> Pushing the tag (`v*`) automatically triggers the **iOS SDK Release** workflow on GitHub Actions.
 
-### 5. Acompanhar o workflow
+### 5. Watch the workflow
 
-O workflow executa 4 jobs em sequencia:
+The workflow runs 4 jobs in sequence:
 
 ```
 1. Pre-Release Validation
-   - Verifica se a versao da tag == podspec == changelog
-   - Roda pod lib lint
-   - Builda o XCFramework
+   - Verifies tag version == podspec == changelog
+   - Runs pod lib lint
+   - Builds the XCFramework
 
 2. Publish to CocoaPods
-   - Verifica se a versao ja esta publicada (skip se ja estiver)
-   - Executa pod trunk push
+   - Checks whether the version is already published (skipped if it is)
+   - Runs pod trunk push
 
 3. Create GitHub Release
-   - Cria a release no GitHub com as notas do CHANGELOG
-   - Anexa o XCFramework.zip como asset
+   - Creates the release on GitHub with notes from the CHANGELOG
+   - Attaches XCFramework.zip as a release asset
 
 4. Release Success
-   - Confirma que tudo passou
+   - Confirms every job passed
 ```
 
-Acompanhe em: https://github.com/Bearound/bearound-ios-sdk/actions
+Follow it at: https://github.com/Bearound/bearound-ios-sdk/actions
 
-### 6. (Fallback) Publicar manualmente no CocoaPods
+### 6. (Fallback) Publish manually to CocoaPods
 
-Caso o workflow falhe no step do CocoaPods, publique manualmente no Mac:
+If the CocoaPods step in the workflow fails, publish manually from your Mac:
 
 ```bash
 pod trunk push BearoundSDK.podspec --allow-warnings --skip-import-validation --synchronous
 ```
 
-> Requer `COCOAPODS_TRUNK_TOKEN` configurado ou sessao ativa via `pod trunk register`.
+> Requires `COCOAPODS_TRUNK_TOKEN` configured or an active session via `pod trunk register`.
 
 ---
 
-## Checklist Rapido
+## Quick Checklist
 
 ```
-[ ] Versao atualizada em BearoundSDK.swift
-[ ] Versao atualizada em BearoundSDK.podspec
-[ ] CHANGELOG.md atualizado com secao da nova versao
-[ ] Commit e push para main
-[ ] Tag criada: git tag vX.Y.Z
-[ ] Tag publicada: git push origin vX.Y.Z
-[ ] Workflow passou no GitHub Actions
-[ ] Versao aparece no CocoaPods (pod search BearoundSDK)
+[ ] Version updated in BearoundSDK.swift
+[ ] Version updated in BearoundSDK.podspec
+[ ] CHANGELOG.md updated with a section for the new version
+[ ] Commit and push to main
+[ ] Tag created: git tag vX.Y.Z
+[ ] Tag pushed: git push origin vX.Y.Z
+[ ] Workflow green on GitHub Actions
+[ ] Version visible on CocoaPods (pod search BearoundSDK)
 ```
 
 ---
 
-## Erros Comuns
+## Common Errors
 
 ### "Version mismatch between tag and podspec"
-A versao na tag (`vX.Y.Z`) nao bate com `spec.version` no podspec. Corrija o podspec, commit, delete e recrie a tag:
+The version in the tag (`vX.Y.Z`) does not match `spec.version` in the podspec. Fix the podspec, commit, then delete and recreate the tag:
 ```bash
 git tag -d vX.Y.Z
 git push origin :refs/tags/vX.Y.Z
-# corrija o podspec, commit, push
+# fix the podspec, commit, push
 git tag vX.Y.Z
 git push origin vX.Y.Z
 ```
 
 ### "Version X.Y.Z not documented in CHANGELOG.md"
-Falta a secao `## [X.Y.Z]` no CHANGELOG.md. Adicione, commit, delete e recrie a tag.
+The `## [X.Y.Z]` section is missing from CHANGELOG.md. Add it, commit, then delete and recreate the tag.
 
 ### "Authentication token is invalid or unverified"
-O `COCOAPODS_TRUNK_TOKEN` no GitHub Secrets expirou. Gere um novo:
+The `COCOAPODS_TRUNK_TOKEN` GitHub Secret has expired. Generate a new one:
 ```bash
-pod trunk register email@example.com 'Nome' --description='GitHub Actions'
-# Confirme no email
-# Copie o token de ~/.netrc
+pod trunk register email@example.com 'Name' --description='GitHub Actions'
+# Confirm via email
+# Copy the token from ~/.netrc
 ```
-Atualize o secret em: Settings > Secrets and variables > Actions > `COCOAPODS_TRUNK_TOKEN`
+Update the secret at: Settings > Secrets and variables > Actions > `COCOAPODS_TRUNK_TOKEN`
 
 ### "Version already published on CocoaPods"
-O workflow detecta automaticamente e pula o `pod trunk push`. Nao e um erro.
+The workflow detects this automatically and skips `pod trunk push`. Not an error.
 
-### Tag conflita com branch de mesmo nome
-Use refspec completo:
+### Tag conflicts with a branch of the same name
+Use the full refspec:
 ```bash
 git push origin refs/tags/vX.Y.Z
 ```
 
 ---
 
-## Versionamento
+## Versioning
 
-Seguimos [Semantic Versioning](https://semver.org/):
+We follow [Semantic Versioning](https://semver.org/):
 
-- **MAJOR** (X.0.0): Breaking changes na API publica
-- **MINOR** (0.X.0): Novas features sem quebrar compatibilidade
-- **PATCH** (0.0.X): Bug fixes e melhorias internas
+- **MAJOR** (X.0.0): breaking changes to the public API
+- **MINOR** (0.X.0): new features without breaking compatibility
+- **PATCH** (0.0.X): bug fixes and internal improvements
