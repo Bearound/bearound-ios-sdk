@@ -5,6 +5,38 @@ All notable changes to BearoundSDK for iOS will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.0.0] - 2026-05-24
+
+### Breaking changes
+
+- **Removed GPS coordinate capture.** The SDK no longer collects latitude/longitude. Beacon presence detection (region monitoring + ranging) and the BLE eye remain fully functional — only the beacon-gated location window was removed.
+- **Removed `BeAroundLocationCapture` public struct.**
+- **Removed delegate methods** `didStartLocationCapture(reason:)` and `didCompleteLocationCapture(_:)`. Host apps that observed these must drop the implementations.
+- **Internal `DeviceLocation` struct and `UserDevice.deviceLocation` field removed.** Ingest payload no longer carries a `deviceLocation` field.
+
+### Added
+
+- **`BeAroundSDK.requestLocationAuthorization(_:)`** — ergonomic API for opting into the Location eye (CLBeaconRegion monitoring) without importing CoreLocation directly. Accepts `.always` (recommended for force-quit survival) or `.whenInUse`.
+- **`BeAroundLocationAuthorization`** public enum — the authorization level passed to `requestLocationAuthorization`.
+- **Hybrid two-eye documentation.** README + DocC now explicitly state which wake-up path survives which kind of termination, including a force-quit decision table.
+- **AirTag/Find My architecture explainer** in README. Explains why third-party SDKs cannot replicate Find My's wake-up behavior (system daemons vs. apps) and lists the realistic alternatives (Location eye, Find My Network MFi, connected beacons + APNs).
+
+### Fixed
+
+- **BLE scan stays ACTIVE across the SDK lifetime.** Previously `startScanning()` entered an IDLE duty cycle in foreground with the scanner OFF, and only registered the kernel BLE filter 5 minutes later via the first idle peek. A user who tapped Start and immediately swiped the app away never registered the filter and never got BT wake-up. The IDLE branch in `startScanning()` is removed; `sleepToIdle()` and `pauseScanning()` no longer call `stopScan()` (they were silently unregistering the kernel filter mid-session). The scan is now registered for the entire SDK process lifetime — exactly what CoreBluetooth state preservation & restoration requires.
+
+### Empirical evidence
+
+A live capture from `bluetoothd` on a real iPhone confirmed that after the user force-quits the app via swipe-up, iOS removes the SDK's BLE scan filter from the kernel — `won't resurrect. Reason: killed by user`. The documentation now states this as fact (replacing the previous, incorrect note that Path A "historically survives force-quit better than Path B"). The Location eye is the only path that survives a user force-quit on iOS.
+
+### Migration
+
+- If you implemented `didStartLocationCapture` / `didCompleteLocationCapture`, delete those methods (or leave them — they are no-ops).
+- If you read `UserDevice.deviceLocation` server-side, the field is gone from the ingest payload.
+- If your app needs force-quit-survival: call `BeAroundSDK.shared.requestLocationAuthorization(.always)` during onboarding (or wherever you currently prompt for permissions), and ensure `NSLocationAlwaysAndWhenInUseUsageDescription` + `NSLocationWhenInUseUsageDescription` are present in Info.plist.
+
+---
+
 ## [2.4.0] - 2026-05-21
 
 ### Changed
