@@ -366,6 +366,18 @@ class BeaconManager: NSObject {
         locationManager.desiredAccuracy = accuracy
     }
 
+    /// Triggers the iOS Location authorization prompt at the requested level.
+    /// Internal — exposed publicly via ``BeAroundSDK/requestLocationAuthorization(_:)``.
+    func requestLocationAuthorization(_ level: BeAroundLocationAuthorization) {
+        switch level {
+        case .always:
+            locationManager.requestAlwaysAuthorization()
+        case .whenInUse:
+            locationManager.requestWhenInUseAuthorization()
+        }
+        NSLog("[BeAroundSDK] Requested Location authorization (level=%@)", level.rawValue)
+    }
+
     // MARK: - Region Monitoring (CRITICAL for terminated app)
 
     private func startMonitoring() {

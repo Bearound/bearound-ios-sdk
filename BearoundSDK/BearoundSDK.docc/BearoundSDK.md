@@ -442,20 +442,35 @@ struct MyApp: App {
 |-----------|--------|
 | Background scan latency | Foreground sub-second; background typically 10–30s, can stretch to minutes under memory/battery pressure |
 | Bluetooth toggle off | Kills the path entirely until BT is turned back on |
-| Force-quit by user (swipe up) | iOS still attempts to honor BT restoration but delivery is less reliable than for backgrounded apps |
+| **Force-quit by user (swipe up in app switcher)** | **Kills the BT eye permanently for that install.** Confirmed empirically via `bluetoothd` log: iOS marks the process `won't resurrect. Reason: killed by user` and deletes the scan filter from the kernel. The user must re-launch the app for the BT eye to come back online. The Location eye is **not** affected by force-quit — see "Choosing between the two eyes" below. |
 | Low Power Mode | Reduces wake-up frequency |
 | `stopScanning()` was called before termination | SDK persists `isScanning=false` and will **not** auto-resume on relaunch (intentional — respects user intent) |
 
 #### Choosing between the two eyes
 
-| Scenario | Eye that fires | Permission needed |
-|----------|----------------|-------------------|
-| User has Location "Always" + BT on | Both — Location wakes first (kernel-level region monitoring), BLE confirms with metadata | Location + BT |
-| User has BT on but Location off/denied | **BLE only** (this section) | BT only |
-| User has Location "Always" but BT off | Region monitoring only — no BLE detail/metadata | Location only |
+| Scenario | Eye that fires | Survives force-quit? |
+|----------|----------------|---------------------|
+| Location "Always" + BT on | Both (Location wakes first via kernel region monitoring; BLE confirms with metadata) | ✅ via Location eye |
+| BT on, Location off/denied | **BLE only** | ❌ Force-quit kills wake-up until next manual launch |
+| Location "Always", BT off | Region monitoring only — no BLE metadata | ✅ via Location eye |
 | Both off | Nothing | — |
 
-The Bluetooth eye is the only path that works when Location is unavailable — make sure your onboarding flow gracefully handles the BT-only case if Location consent is optional in your app.
+**Decision rule:** If the host app needs the SDK to survive a user force-quit, you **must** opt into the Location eye. The Bluetooth eye alone covers system-initiated termination (memory/battery pressure) but cannot survive an explicit `swipe-up`. Apps that genuinely cannot ask for Location should document this trade-off to users.
+
+#### Opting into the Location eye
+
+```swift
+// Ask the user for Location "Always". The SDK keeps both eyes running side-by-side.
+BeAroundSDK.shared.requestLocationAuthorization(.always)
+
+// Start scanning — whichever eye has its permissions satisfied will run.
+BeAroundSDK.shared.startScanning()
+```
+
+Required `Info.plist` keys for the Location eye:
+- `NSLocationWhenInUseUsageDescription`
+- `NSLocationAlwaysAndWhenInUseUsageDescription`
+- `location` in `UIBackgroundModes`
 
 ### Error Handling & Retry Logic
 

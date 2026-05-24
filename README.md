@@ -438,7 +438,33 @@ Background tasks are managed with `UIBackgroundTaskIdentifier` to ensure data sy
 
 ### Terminated App Detection
 
-The SDK supports **two independent wake-up paths** when the app is fully terminated. The host app should configure both for maximum reliability — but each works on its own.
+The SDK runs a **hybrid two-eye model** — each "eye" is an independent wake-up path. The host app picks which eyes to enable based on its permission posture and force-quit-survival needs.
+
+| | Bluetooth eye (Path A) | Location eye (Path B) |
+|---|---|---|
+| Permission required | Bluetooth | Location **Always** + Bluetooth |
+| Beacon firmware needed | Service UUID `BEAD` advertisement | iBeacon UUID advertisement |
+| Foreground detection | ✅ | ✅ |
+| Background detection | ✅ | ✅ |
+| App killed by **iOS** (memory/battery pressure) | ✅ via `willRestoreState` | ✅ via `didEnterRegion` |
+| App killed by **user** (swipe-up in app switcher) | ❌ iOS purges BT state restoration | ✅ Region monitoring persists |
+| Battery cost | Low (BLE filter) | Low (kernel region monitoring) |
+| Privacy footprint | Bluetooth only | Bluetooth + Location prompt |
+
+> **Empirical note (v2.6):** A live capture from `bluetoothd` on a real iPhone confirmed that after the user manually force-quits the app via swipe-up, iOS removes the SDK's BLE scan filter from the kernel — `won't resurrect. Reason: killed by user`. The Bluetooth eye alone cannot survive that gesture. The Location eye remains the only path that survives a user force-quit, because CLBeaconRegion monitoring is registered with `locationd` and persists independently.
+
+**Recommended posture:**
+
+- **Privacy-first apps** that cannot ask for Location: ship with the Bluetooth eye only. Document to users that the app must not be swipe-up'd from the app switcher (system-initiated termination still wakes it).
+- **Apps that need bulletproof wake-up:** opt into the Location eye via `BeAroundSDK.shared.requestLocationAuthorization(.always)`. The SDK keeps both eyes running side-by-side — whichever path fires first triggers ingest.
+
+```swift
+// Opt into the Location eye (force-quit survival)
+BeAroundSDK.shared.requestLocationAuthorization(.always)
+
+// Then start scanning. Both eyes will run if their permissions are granted.
+BeAroundSDK.shared.startScanning()
+```
 
 #### Path A — Bluetooth-only (Location off or denied)
 
@@ -538,7 +564,7 @@ struct MyApp: App {
 - iOS may delay the wake-up — not instant by design
 - Low Power Mode dramatically reduces background wake-up frequency
 - iOS rate-limits how often it will wake your app
-- Force-quit by the user (swipe up from app switcher) makes both paths less reliable, but Path A historically survives better than Path B
+- **Force-quit by the user (swipe up) purges Path A's BLE state restoration from the kernel.** Only Path B (CoreLocation region monitoring) survives this gesture. Apps that need force-quit-survival must enable the Location eye via `requestLocationAuthorization(.always)`.
 
 ### Error Handling & Retry Logic
 
