@@ -1443,11 +1443,9 @@ struct GeofenceDebugCard: View {
                 )
             }
 
-            // GPS capture is driven by the Location eye specifically (region entry → ranging → fix).
-            // Bluetooth eye does NOT trigger GPS — it just observes BLE presence. So this block
-            // stays scoped to the Location eye.
+            // Active scan status — surfaces ranging + BLE central state for the Location eye.
             VStack(alignment: .leading, spacing: 6) {
-                Text("Captura GPS (👁 olho Location)")
+                Text("Scan ativo (👁 olho Location)")
                     .font(.caption)
                     .fontWeight(.semibold)
                     .foregroundColor(.secondary)
@@ -1459,38 +1457,6 @@ struct GeofenceDebugCard: View {
                     color: viewModel.isActiveScanRunning ? .green : .secondary,
                     bold: viewModel.isActiveScanRunning
                 )
-
-                statusRow(
-                    icon: "location.fill",
-                    label: "Captura GPS:",
-                    value: viewModel.isCapturingLocation ? "EM ANDAMENTO…" : "idle",
-                    color: viewModel.isCapturingLocation ? .blue : .secondary,
-                    bold: viewModel.isCapturingLocation
-                )
-
-                Divider()
-
-                detailRow(label: "Última abertura:", value: viewModel.lastCaptureOpenReason)
-                detailRow(label: "Último fechamento:", value: viewModel.lastCaptureOutcome)
-
-                if let loc = viewModel.lastCapturedLocation {
-                    detailRow(
-                        label: "Última coord:",
-                        value: String(format: "%.5f, %.5f ±%dm",
-                                      loc.coordinate.latitude,
-                                      loc.coordinate.longitude,
-                                      Int(loc.horizontalAccuracy))
-                    )
-                } else {
-                    detailRow(label: "Última coord:", value: "—")
-                }
-
-                if let completedAt = viewModel.lastCaptureCompletedAt {
-                    detailRow(
-                        label: "Concluído em:",
-                        value: completedAt.formatted(date: .omitted, time: .standard)
-                    )
-                }
             }
             .padding(12)
             .background(Color.gray.opacity(0.1))
@@ -1794,9 +1760,6 @@ struct GeofenceEventRow: View {
         switch event.kind {
         case .regionEnter: .green
         case .regionExit: .orange
-        case .captureStarted: .blue
-        case .captureCompletedWithFix: .green
-        case .captureCompletedNoFix: .red
         case .scanResumed: .mint
         case .scanPaused: .gray
         case .bluetoothZoneEnter: .blue
@@ -1808,9 +1771,6 @@ struct GeofenceEventRow: View {
         switch event.kind {
         case .regionEnter: "LOCATION → DENTRO"
         case .regionExit: "LOCATION → FORA"
-        case .captureStarted: "GPS DISPARADO"
-        case .captureCompletedWithFix: "FIX OK"
-        case .captureCompletedNoFix: "SEM FIX"
         case .scanResumed: "SCAN LIGADO"
         case .scanPaused: "SCAN PAUSADO"
         case .bluetoothZoneEnter: "BLUETOOTH → DENTRO"

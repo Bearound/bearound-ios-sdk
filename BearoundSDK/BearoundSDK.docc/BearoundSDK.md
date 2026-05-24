@@ -68,13 +68,13 @@ Add the following keys to your `Info.plist`:
 
 ```xml
 <key>NSLocationWhenInUseUsageDescription</key>
-<string>Precisamos da sua localização para mostrar conteúdos próximos.</string>
+<string>We use your location to show nearby content.</string>
 <key>NSLocationAlwaysAndWhenInUseUsageDescription</key>
-<string>Precisamos da sua localização mesmo em segundo plano para enviar notificações relevantes.</string>
+<string>We use your location in the background to deliver timely notifications.</string>
 <key>NSBluetoothAlwaysUsageDescription</key>
-<string>Este aplicativo precisa acessar o Bluetooth para se conectar a dispositivos próximos.</string>
+<string>This app uses Bluetooth to discover and connect to nearby devices.</string>
 <key>NSUserTrackingUsageDescription</key>
-<string>Precisamos do seu consentimento para rastrear sua atividade e oferecer uma experiência personalizada.</string>
+<string>Your consent lets us tailor the experience and measure how features are used.</string>
 ```
 
 For background mode support, add:
@@ -358,6 +358,119 @@ The SDK intelligently manages background operation:
 4. **Return to Foreground**: Restores original configuration
 
 Background tasks are managed with `UIBackgroundTaskIdentifier` to ensure data syncs even when backgrounded.
+
+### Bluetooth-only Wake-up (Location off)
+
+Since v2.5 the SDK exposes a **two-eye** model that can wake the host app from a fully terminated state **without requiring CoreLocation permission**. The Bluetooth eye uses `CBCentralManager` state preservation & restoration over the `bluetooth-central` background mode, completely independent of region monitoring.
+
+#### How it works
+
+iOS keeps low-power BLE scanning alive while the app is suspended *or* terminated. When an advertisement matching the registered service UUID is observed, iOS relaunches the process in background and delivers `centralManager(_:willRestoreState:)`. The SDK then resumes scanning in ACTIVE mode and surfaces `didEnterBluetoothZone()` to the host delegate.
+
+The end-to-end path:
+
+1. Beacon broadcasts the Bearound BLE service UUID
+2. iOS matches the saved scan filter under `bluetooth-central` mode
+3. iOS launches the app process in background and provides `launchOptions[.bluetoothCentrals]`
+4. Host app touches `BeAroundSDK.shared` in `application(_:didFinishLaunchingWithOptions:)`
+5. SDK auto-configures from persisted storage and rebuilds the `CBCentralManager` with the same restore identifier
+6. iOS delivers `willRestoreState` → SDK enters ACTIVE mode
+7. First matching advertisement triggers `didEnterBluetoothZone()`
+
+#### Beacon firmware requirement
+
+CoreBluetooth background scanning **only matches on advertised 16-/128-bit service UUIDs**. A pure iBeacon advertisement (Apple manufacturer-data, company ID `0x004C`) carries **no** service UUID and therefore cannot wake a terminated app through CoreBluetooth — only through CoreLocation region monitoring (which requires Location permission).
+
+The Bearound firmware emits a **dual advertisement**:
+- iBeacon frame — used by CoreLocation for ranging and region monitoring
+- Service-UUID frame (`BEAD`) — used by CoreBluetooth for terminated-app wake-up
+
+If you ship third-party beacons with the SDK, they **must** include the Bearound service UUID in the advertisement, otherwise the Bluetooth-only wake-up path is unavailable.
+
+#### Device pre-conditions
+
+| Condition | Required for BT wake-up |
+|-----------|------------------------|
+| Bluetooth toggled on in Control Center | ✅ Yes |
+| App-level Bluetooth authorization (`.allowedAlways`) | ✅ Yes |
+| Location authorization | ❌ No — explicitly not required |
+| At least one app launch since install | ✅ Yes (to register the restore identifier) |
+| Device unlocked at least once since reboot | ✅ Yes (iOS 13+ "First Unlock" gate) |
+| Scanning was active before termination (`startScanning()` had been called) | ✅ Yes |
+
+#### Host app integration checklist
+
+For the Bluetooth-only wake-up path to fire reliably, the host app **must**:
+
+- [ ] Include `bluetooth-central` in `UIBackgroundModes` (Info.plist)
+- [ ] Provide `NSBluetoothAlwaysUsageDescription` (Info.plist)
+- [ ] Reference `BeAroundSDK.shared` synchronously inside `application(_:didFinishLaunchingWithOptions:)` — **before** any SwiftUI view appears. The singleton's `init()` rebuilds the `CBCentralManager` with the restore identifier, which is what iOS targets when delivering `willRestoreState`. Touching the SDK only inside a view's `onAppear` will miss the restore window.
+- [ ] Call `BeAroundSDK.shared.startScanning()` at least once during normal foreground use — the SDK persists `isScanning=true`, which is what `autoConfigureFromStorage()` reads on relaunch
+- [ ] *Recommended:* inspect `launchOptions?[.bluetoothCentrals]` in `didFinishLaunchingWithOptions` for diagnostics
+
+Minimal AppDelegate:
+
+```swift
+class AppDelegate: NSObject, UIApplicationDelegate {
+    func application(
+        _ application: UIApplication,
+        didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil
+    ) -> Bool {
+
+        // Force singleton init — this rebuilds the CBCentralManager with the
+        // restore identifier that iOS targets when relaunching us for a BLE match.
+        _ = BeAroundSDK.shared
+
+        if launchOptions?[.bluetoothCentrals] != nil {
+            NSLog("Relaunched by iOS due to BLE state restoration")
+        }
+
+        return true
+    }
+}
+
+@main
+struct MyApp: App {
+    @UIApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
+    // ...
+}
+```
+
+#### Known limitations
+
+| Limitation | Impact |
+|-----------|--------|
+| Background scan latency | Foreground sub-second; background typically 10–30s, can stretch to minutes under memory/battery pressure |
+| Bluetooth toggle off | Kills the path entirely until BT is turned back on |
+| **Force-quit by user (swipe up in app switcher)** | **Kills the BT eye permanently for that install.** Confirmed empirically via `bluetoothd` log: iOS marks the process `won't resurrect. Reason: killed by user` and deletes the scan filter from the kernel. The user must re-launch the app for the BT eye to come back online. The Location eye is **not** affected by force-quit — see "Choosing between the two eyes" below. |
+| Low Power Mode | Reduces wake-up frequency |
+| `stopScanning()` was called before termination | SDK persists `isScanning=false` and will **not** auto-resume on relaunch (intentional — respects user intent) |
+
+#### Choosing between the two eyes
+
+| Scenario | Eye that fires | Survives force-quit? |
+|----------|----------------|---------------------|
+| Location "Always" + BT on | Both (Location wakes first via kernel region monitoring; BLE confirms with metadata) | ✅ via Location eye |
+| BT on, Location off/denied | **BLE only** | ❌ Force-quit kills wake-up until next manual launch |
+| Location "Always", BT off | Region monitoring only — no BLE metadata | ✅ via Location eye |
+| Both off | Nothing | — |
+
+**Decision rule:** If the host app needs the SDK to survive a user force-quit, you **must** opt into the Location eye. The Bluetooth eye alone covers system-initiated termination (memory/battery pressure) but cannot survive an explicit `swipe-up`. Apps that genuinely cannot ask for Location should document this trade-off to users.
+
+#### Opting into the Location eye
+
+```swift
+// Ask the user for Location "Always". The SDK keeps both eyes running side-by-side.
+BeAroundSDK.shared.requestLocationAuthorization(.always)
+
+// Start scanning — whichever eye has its permissions satisfied will run.
+BeAroundSDK.shared.startScanning()
+```
+
+Required `Info.plist` keys for the Location eye:
+- `NSLocationWhenInUseUsageDescription`
+- `NSLocationAlwaysAndWhenInUseUsageDescription`
+- `location` in `UIBackgroundModes`
 
 ### Error Handling & Retry Logic
 

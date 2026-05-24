@@ -7,22 +7,6 @@
 
 import Foundation
 
-struct DeviceLocation {
-    let latitude: Double
-    let longitude: Double
-    let accuracy: Double?
-    let altitude: Double?
-    let altitudeAccuracy: Double?
-    let heading: Double?
-    let speed: Double?
-    let speedAccuracy: Double?
-    let course: Double?
-    let courseAccuracy: Double?
-    let floor: Int?
-    let timestamp: Date
-    let sourceInfo: String?
-}
-
 struct UserDevice {
     let deviceId: String
     let manufacturer: String
@@ -52,7 +36,6 @@ struct UserDevice {
     let connectionMetered: Bool?
     let connectionExpensive: Bool?
     let os: String?
-    let deviceLocation: DeviceLocation?
     let deviceName: String
     let carrierName: String?
     let availableStorageMb: Int?
@@ -60,4 +43,3 @@ struct UserDevice {
     let thermalState: String
     let systemUptimeMs: Int
 }
-

@@ -96,8 +96,7 @@ final class DeviceInfoCollector: @unchecked Sendable {
 	func collectDeviceInfo(
 		locationPermission: CLAuthorizationStatus,
 		bluetoothState: String,
-		appInForeground: Bool,
-		location: CLLocation? = nil
+		appInForeground: Bool
 	) -> UserDevice {
 		let device = UIDevice.current
 		let screen = UIScreen.main
@@ -109,42 +108,6 @@ final class DeviceInfoCollector: @unchecked Sendable {
 
 		if !isCacheReady {
 			print("BeAroundSDK: Notification permission cache not ready yet, using default value")
-		}
-
-		let deviceLocation: DeviceLocation?
-		if let loc = location {
-			var sourceInfo: String?
-			if #available(iOS 15.0, *) {
-				sourceInfo = loc.sourceInformation?.description
-			}
-
-			var speedAcc: Double?
-			if #available(iOS 10.0, *) {
-				speedAcc = loc.speedAccuracy >= 0 ? loc.speedAccuracy : nil
-			}
-
-			var courseAcc: Double?
-			if #available(iOS 13.4, *) {
-				courseAcc = loc.courseAccuracy >= 0 ? loc.courseAccuracy : nil
-			}
-
-			deviceLocation = DeviceLocation(
-				latitude: loc.coordinate.latitude,
-				longitude: loc.coordinate.longitude,
-				accuracy: loc.horizontalAccuracy >= 0 ? loc.horizontalAccuracy : nil,
-				altitude: loc.altitude,
-				altitudeAccuracy: loc.verticalAccuracy >= 0 ? loc.verticalAccuracy : nil,
-				heading: loc.course >= 0 ? loc.course : nil,
-				speed: loc.speed >= 0 ? loc.speed : nil,
-				speedAccuracy: speedAcc,
-				course: loc.course >= 0 ? loc.course : nil,
-				courseAccuracy: courseAcc,
-				floor: loc.floor?.level,
-				timestamp: loc.timestamp,
-				sourceInfo: sourceInfo
-			)
-		} else {
-			deviceLocation = nil
 		}
 
 		return UserDevice(
@@ -176,7 +139,6 @@ final class DeviceInfoCollector: @unchecked Sendable {
 			connectionMetered: connectionMetered(),
 			connectionExpensive: connectionExpensive(),
 			os: "iOS",
-			deviceLocation: deviceLocation,
 			deviceName: deviceName(),
 			carrierName: carrierName(),
 			availableStorageMb: availableStorageMb(),

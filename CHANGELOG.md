@@ -5,6 +5,36 @@ All notable changes to BearoundSDK for iOS will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.0.0] - 2026-05-24
+
+### Breaking changes
+
+- **Removed GPS coordinate capture.** The SDK no longer collects latitude/longitude. Beacon presence detection (region monitoring + ranging) and the BLE eye remain fully functional — only the beacon-gated location window was removed.
+- **Removed `BeAroundLocationCapture` public struct.**
+- **Removed delegate methods** `didStartLocationCapture(reason:)` and `didCompleteLocationCapture(_:)`. Host apps that observed these must drop the implementations.
+- **Internal `DeviceLocation` struct and `UserDevice.deviceLocation` field removed.** Ingest payload no longer carries a `deviceLocation` field.
+
+### Added
+
+- **`BeAroundSDK.requestLocationAuthorization(_:)`** — ergonomic API for opting into the Location eye (CLBeaconRegion monitoring) without importing CoreLocation directly. Accepts `.always` (recommended for force-quit survival) or `.whenInUse`.
+- **`BeAroundLocationAuthorization`** public enum — the authorization level passed to `requestLocationAuthorization`.
+- **Hybrid two-eye documentation.** README + DocC now explicitly state which wake-up path survives which kind of termination, including a force-quit decision table.
+### Fixed
+
+- **BLE scan stays ACTIVE across the SDK lifetime.** Previously `startScanning()` entered an IDLE duty cycle in foreground with the scanner OFF, and only registered the kernel BLE filter 5 minutes later via the first idle peek. A user who tapped Start and immediately swiped the app away never registered the filter and never got BT wake-up. The IDLE branch in `startScanning()` is removed; `sleepToIdle()` and `pauseScanning()` no longer call `stopScan()` (they were silently unregistering the kernel filter mid-session). The scan is now registered for the entire SDK process lifetime — exactly what CoreBluetooth state preservation & restoration requires.
+
+### Empirical evidence
+
+A live capture from `bluetoothd` on a real iPhone confirmed that after the user force-quits the app via swipe-up, iOS removes the SDK's BLE scan filter from the kernel — `won't resurrect. Reason: killed by user`. The documentation now states this as fact (replacing the previous, incorrect note that Path A "historically survives force-quit better than Path B"). The Location eye is the only path that survives a user force-quit on iOS.
+
+### Migration
+
+- If you implemented `didStartLocationCapture` / `didCompleteLocationCapture`, delete those methods (or leave them — they are no-ops).
+- If you read `UserDevice.deviceLocation` server-side, the field is gone from the ingest payload.
+- If your app needs force-quit-survival: call `BeAroundSDK.shared.requestLocationAuthorization(.always)` during onboarding (or wherever you currently prompt for permissions), and ensure `NSLocationAlwaysAndWhenInUseUsageDescription` + `NSLocationWhenInUseUsageDescription` are present in Info.plist.
+
+---
+
 ## [2.4.0] - 2026-05-21
 
 ### Changed
@@ -755,82 +785,82 @@ No breaking changes for public API consumers. The changes are internal to payloa
 ## [1.2.0] - 2025-12-08
 
 ### Added
-- **DeviceInfoService**: Novo serviço singleton para coleta abrangente de informações do dispositivo
-  - Informações do SDK (versão, plataforma, app ID, build)
-  - Informações completas do dispositivo do usuário:
-    - Fabricante, modelo, OS, versão do OS
+- **DeviceInfoService**: new singleton service for comprehensive device information collection
+  - SDK information (version, platform, app ID, build)
+  - Full user device information:
+    - Manufacturer, model, OS, OS version
     - Timestamp, timezone
-    - Nível de bateria, status de carregamento
-    - Modo de economia de energia
-    - Estado do Bluetooth
-    - Permissões de localização e precisão
-    - Permissões de notificações
-    - Tipo de rede (WiFi, Cellular, Ethernet)
-    - Geração celular (2G, 3G, 4G, 5G)
-    - Status de roaming
-    - Informações de memória RAM
-    - Resolução da tela
-    - Advertising ID (IDFA) e status de tracking
-    - Estado do app (foreground/background)
-    - Tempo de atividade do app
-    - Detecção de cold start
-  - Contexto do scan:
-    - RSSI (força do sinal)
+    - Battery level, charging status
+    - Low Power Mode
+    - Bluetooth state
+    - Location permission and accuracy
+    - Notification permission
+    - Network type (Wi-Fi, cellular, Ethernet)
+    - Cellular generation (2G, 3G, 4G, 5G)
+    - Roaming status
+    - RAM information
+    - Screen resolution
+    - Advertising ID (IDFA) and tracking status
+    - App state (foreground/background)
+    - App uptime
+    - Cold-start detection
+  - Scan context:
+    - RSSI (signal strength)
     - TX Power
-    - Distância aproximada em metros
-    - ID da sessão de scan
-    - Timestamp da detecção
+    - Approximate distance in meters
+    - Scan-session ID
+    - Detection timestamp
 
-- **IngestPayload**: Novo modelo de dados estruturado para o endpoint de ingest
-  - `BeaconPayload`: Representa um beacon individual
-  - `SDKInfo`: Informações do SDK
-  - `UserDeviceInfo`: Informações completas do dispositivo
-  - `ScanContext`: Contexto do scan de beacons
+- **IngestPayload**: new structured data model for the ingest endpoint
+  - `BeaconPayload`: represents a single beacon
+  - `SDKInfo`: SDK information
+  - `UserDeviceInfo`: full device information
+  - `ScanContext`: beacon scan context
 
-- **Novos métodos públicos no Bearound SDK**:
-  - `createIngestPayload(for:sdkVersion:)`: Cria um payload completo de ingest
-  - `sendBeaconsWithFullInfo(_:completion:)`: Envia beacons com telemetria completa
+- **New public methods on BearoundSDK**:
+  - `createIngestPayload(for:sdkVersion:)`: builds a complete ingest payload
+  - `sendBeaconsWithFullInfo(_:completion:)`: sends beacons with full telemetry
 
-- **BeAroundSDKConfig**: Nova estrutura centralizada para configurações do SDK
-  - `version`: Versão do SDK (único ponto de definição)
-  - `name`: Nome do SDK ("BeAroundSDK")
-  - `logTag`: Tag usada em todos os logs ("[BeAroundSDK]")
+- **BeAroundSDKConfig**: new centralized struct for SDK configuration
+  - `version`: SDK version (single source of truth)
+  - `name`: SDK name (`"BeAroundSDK"`)
+  - `logTag`: tag used across all logs (`"[BeAroundSDK]"`)
 
 ### Changed
-- **APIService**: 
-  - Removido `PostData` legado (não mantemos mais compatibilidade com versões antigas)
-  - Removido método `sendBeacons(_:completion:)` legado
-  - Mantido apenas `sendIngestPayload(_:completion:)` para o novo formato
+- **APIService**:
+  - Removed the legacy `PostData` type (no longer compatible with older versions)
+  - Removed the legacy `sendBeacons(_:completion:)` method
+  - Only `sendIngestPayload(_:completion:)` remains, for the new format
 
 - **BearoundSDK**:
-  - Método interno `sendBeacons(type:_:)` agora usa o novo formato `IngestPayload`
-  - Todas as comunicações com a API agora incluem telemetria completa do dispositivo
-  - Método `createIngestPayload()` agora usa `BeAroundSDKConfig.version` como default
-  - Log de inicialização em `startServices()` atualizado para usar versão centralizada
+  - Internal `sendBeacons(type:_:)` now uses the new `IngestPayload` format
+  - Every API call now includes full device telemetry
+  - `createIngestPayload()` now defaults to `BeAroundSDKConfig.version`
+  - Initialization log in `startServices()` updated to use the centralized version
 
 - **Constants.swift**:
-  - Reestruturado para centralizar configurações do SDK
-  - Introduzido `BeAroundSDKConfig` como struct pública para configs globais
-  - `Constants` agora é internal e usa valores de `BeAroundSDKConfig`
-  
+  - Restructured to centralize SDK configuration
+  - Introduced `BeAroundSDKConfig` as the public struct for global settings
+  - `Constants` is now `internal` and reads from `BeAroundSDKConfig`
+
 - **DeviceInfoService**:
-  - `getSDKInfo()` agora usa `BeAroundSDKConfig.version` como valor default
+  - `getSDKInfo()` now defaults to `BeAroundSDKConfig.version`
 
 ### Removed
-- `PostData` struct (formato legado descontinuado)
-- Método `sendBeacons(_:completion:)` do APIService
+- `PostData` struct (legacy format, discontinued)
+- `APIService.sendBeacons(_:completion:)` method
 
 ### Deprecated
-- `SDK.version` (use `BeAroundSDKConfig.version` em vez disso)
-- `DesignSystemVersion.current` (use `BeAroundSDKConfig.version` em vez disso)
+- `SDK.version` (use `BeAroundSDKConfig.version` instead)
+- `DesignSystemVersion.current` (use `BeAroundSDKConfig.version` instead)
 
 ### Migration Guide
 
-Se você estava usando a API legada, atualize seu código da seguinte forma:
+If you were using the legacy API, update your code as follows:
 
-#### Antes (formato legado - não funciona mais):
+#### Before (legacy format — no longer supported):
 ```swift
-// Este código não funciona mais
+// This code no longer works
 let postData = PostData(
     deviceType: "iOS",
     clientToken: token,
@@ -842,61 +872,61 @@ let postData = PostData(
 )
 ```
 
-#### Agora (novo formato):
+#### After (new format):
 ```swift
-// Opção 1: Usar o método de conveniência (recomendado)
+// Option 1: use the convenience method (recommended)
 await sdk.sendBeaconsWithFullInfo(beacons) { result in
     switch result {
     case .success(let data):
-        print("Beacons enviados com sucesso")
+        print("Beacons sent successfully")
     case .failure(let error):
-        print("Erro: \(error)")
+        print("Error: \(error)")
     }
 }
 
-// Opção 2: Criar o payload manualmente
+// Option 2: build the payload manually
 let payload = await sdk.createIngestPayload(for: beacons)
-// Use o payload como necessário
+// Use the payload as needed
 ```
 
 ### Technical Details
 
-#### DeviceInfoService - Novas funcionalidades:
+#### DeviceInfoService — new capabilities:
 ```swift
-// Singleton para acesso global
+// Singleton for global access
 let service = DeviceInfoService.shared
 
-// Obter informações do SDK (usa BeAroundSDKConfig.version automaticamente)
+// Get SDK info (defaults to BeAroundSDKConfig.version)
 let sdkInfo = service.getSDKInfo()
 
-// Ou especificar versão customizada se necessário
+// Or pass a custom version when needed
 let customSdkInfo = service.getSDKInfo(version: "1.2.0")
 
-// Obter informações do dispositivo (async)
+// Get device info (async)
 let deviceInfo = await service.getUserDeviceInfo()
 
-// Criar contexto de scan
+// Build a scan context
 let scanContext = service.createScanContext(
     rssi: -63,
     txPower: -59,
     approxDistanceMeters: 1.8
 )
 
-// Gerar novo ID de sessão de scan
+// Generate a new scan-session ID
 service.generateNewScanSession()
 
-// Marcar que o cold start terminou
+// Mark the end of cold start
 service.markWarmStart()
 ```
 
-#### BeAroundSDKConfig - Versão centralizada:
+#### BeAroundSDKConfig — centralized version:
 ```swift
-// ✅ FORMA CORRETA: Usar BeAroundSDKConfig
+// ✅ CORRECT: use BeAroundSDKConfig
 let version = BeAroundSDKConfig.version // "1.2.0"
 let sdkName = BeAroundSDKConfig.name    // "BeAroundSDK"
 let logTag = BeAroundSDKConfig.logTag   // "[BeAroundSDK]"
 
-// ❌ DEPRECATED: Não usar mais
+// ❌ DEPRECATED: do not use
 let oldVersion1 = SDK.version              // Deprecated
 let oldVersion2 = DesignSystemVersion.current // Deprecated
 ```
@@ -955,32 +985,32 @@ O novo formato enviado ao endpoint `/ingest`:
 ```
 
 ### Breaking Changes
-⚠️ **ATENÇÃO**: Esta versão contém breaking changes!
+**Heads-up**: this release contains breaking changes.
 
-1. O struct `PostData` foi removido
-2. O método `APIService.sendBeacons(_:completion:)` foi removido
-3. Não há mais compatibilidade com o formato legado de payload
+1. The `PostData` struct was removed
+2. `APIService.sendBeacons(_:completion:)` was removed
+3. The legacy payload format is no longer supported
 
-Se você precisa migrar de versões anteriores, você **DEVE** atualizar seu código para usar o novo formato `IngestPayload`.
+If you are migrating from a prior version, you **must** update your code to use the new `IngestPayload` format.
 
 ### Improvements
-✅ **Melhorias de arquitetura**:
+Architecture improvements:
 
-1. **Versão centralizada**: A versão do SDK agora está definida em um único local (`BeAroundSDKConfig.version`)
-2. **Código mais limpo**: Eliminação de duplicação de strings de versão
-3. **Melhor manutenibilidade**: Para atualizar a versão, basta modificar um único valor em `Constants.swift`
-4. **APIs deprecadas marcadas**: Structs antigos (`SDK`, `DesignSystemVersion`) agora mostram avisos de compilação
+1. **Centralized version**: the SDK version now lives in a single location (`BeAroundSDKConfig.version`)
+2. **Cleaner code**: eliminated duplicated version strings
+3. **Better maintainability**: to bump the version, change a single value in `Constants.swift`
+4. **Deprecated APIs flagged**: legacy structs (`SDK`, `DesignSystemVersion`) now emit compiler warnings
 
 ### How to Update SDK Version
-Para atualizar a versão do SDK no futuro:
+To bump the SDK version in the future:
 
-1. Abra `Constants.swift`
-2. Localize `BeAroundSDKConfig.version`
-3. Altere o valor: `public static let version: String = "X.Y.Z"`
-4. Atualize este CHANGELOG.md
-5. Commit e crie uma tag: `git tag vX.Y.Z`
+1. Open `Constants.swift`
+2. Find `BeAroundSDKConfig.version`
+3. Update the value: `public static let version: String = "X.Y.Z"`
+4. Update this CHANGELOG.md
+5. Commit and tag: `git tag vX.Y.Z`
 
-**Importante**: Nunca altere a versão em outros arquivos. Todos devem usar `BeAroundSDKConfig.version`.
+**Important**: never change the version in any other file. Everything must read from `BeAroundSDKConfig.version`.
 
 ### Requirements
 - iOS 13.0+

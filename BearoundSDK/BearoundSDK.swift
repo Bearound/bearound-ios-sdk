@@ -14,6 +14,24 @@ import UIKit
 
 private let sdkLog = OSLog(subsystem: "com.bearound.sdk", category: "SDK")
 
+/// Level of Location authorization to request when opting into the **Location eye**.
+///
+/// The SDK runs in **Bluetooth-only** by default — no Location permission required,
+/// no `Info.plist` `NSLocation*UsageDescription` keys needed. Beacons are detected in
+/// foreground, background, and after iOS-initiated termination (state restoration).
+///
+/// Opt into the Location eye if you need the SDK to **survive a user force-quit**
+/// (swipe-up in the app switcher). The Location eye uses kernel-level region
+/// monitoring that iOS preserves across force-quit. Requires `.always`.
+public enum BeAroundLocationAuthorization: String {
+    /// Allows ranging while the app is in foreground only. Insufficient for terminated-app
+    /// wake-up; provided for apps that only need foreground beacon proximity data.
+    case whenInUse
+    /// Required for region-monitoring wake-up of a terminated/force-quit app.
+    /// Host app must declare `NSLocationAlwaysAndWhenInUseUsageDescription` in Info.plist.
+    case always
+}
+
 public class BeAroundSDK {
 
     // MARK: - Singleton
@@ -21,7 +39,7 @@ public class BeAroundSDK {
     public static let shared = BeAroundSDK()
 
     public static var version: String {
-        return "2.4.0"
+        return "3.0.0"
     }
 
     // MARK: - Public Properties
@@ -334,23 +352,6 @@ public class BeAroundSDK {
             }
         }
 
-        beaconManager.onLocationCaptureStarted = { [weak self] reason in
-            DispatchQueue.main.async {
-                self?.delegate?.didStartLocationCapture(reason: reason)
-            }
-        }
-
-        beaconManager.onLocationCaptureCompleted = { [weak self] location, openingReason, outcome in
-            let result = BeAroundLocationCapture(
-                reason: openingReason,
-                location: location,
-                outcome: outcome
-            )
-            DispatchQueue.main.async {
-                self?.delegate?.didCompleteLocationCapture(result)
-            }
-        }
-
         bluetoothManager.delegate = self
 
         // v2.5 — Bluetooth eye: BLE-only zone presence, independent of CoreLocation region.
@@ -622,6 +623,24 @@ public class BeAroundSDK {
         }
     }
 
+    /// Opts the SDK into the **Location eye** by requesting Location authorization
+    /// from the user. Calling this method is the only way to unlock force-quit-survival
+    /// wake-up; without it, the SDK runs in Bluetooth-only mode.
+    ///
+    /// - Parameter level: `.always` (default) enables terminated-app wake-up via
+    ///   CLBeaconRegion monitoring. `.whenInUse` only adds foreground ranging.
+    ///
+    /// The host app must declare the matching `Info.plist` key:
+    /// - `NSLocationWhenInUseUsageDescription` for both levels
+    /// - `NSLocationAlwaysAndWhenInUseUsageDescription` for `.always`
+    ///
+    /// This is a no-op if authorization has already been granted at the requested level.
+    /// Authorization is asynchronous; observe `BeAroundSDKDelegate.didChangeScanning`
+    /// or query ``authorizationStatus()`` to react to the user's decision.
+    public func requestLocationAuthorization(_ level: BeAroundLocationAuthorization = .always) {
+        beaconManager.requestLocationAuthorization(level)
+    }
+
     // MARK: - Sync Timer
 
     private func startSyncTimer() {
@@ -874,8 +893,7 @@ public class BeAroundSDK {
             let userDevice = deviceInfoCollector.collectDeviceInfo(
                 locationPermission: locationPermission,
                 bluetoothState: bluetoothState,
-                appInForeground: appInForeground,
-                location: beaconManager.lastLocation
+                appInForeground: appInForeground
             )
 
             let trigger = self.syncTrigger
@@ -1042,8 +1060,7 @@ public class BeAroundSDK {
             let userDevice = self.deviceInfoCollector.collectDeviceInfo(
                 locationPermission: locationPermission,
                 bluetoothState: bluetoothState,
-                appInForeground: appInForeground,
-                location: self.beaconManager.lastLocation
+                appInForeground: appInForeground
             )
 
             apiClient.sendBeacons(

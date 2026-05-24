@@ -26,9 +26,6 @@ struct GeofenceEvent: Identifiable {
     enum Kind {
         case regionEnter
         case regionExit
-        case captureStarted
-        case captureCompletedWithFix
-        case captureCompletedNoFix
         case scanResumed
         case scanPaused
         // v2.5 — Two Eyes
@@ -214,17 +211,7 @@ class BeaconViewModel: NSObject, ObservableObject, BeAroundSDKDelegate {
 
     /// True when active scanning (ranging + BLE) is running. Outside a region this stays false.
     @Published var isActiveScanRunning: Bool = false
-    /// True while a beacon-triggered GPS capture window is open.
-    @Published var isCapturingLocation: Bool = false
-    /// Why the most recent capture window opened.
-    @Published var lastCaptureOpenReason: String = "—"
-    /// Outcome label of the most recent capture window.
-    @Published var lastCaptureOutcome: String = "—"
-    /// Coordinate acquired in the most recent capture window (nil if no fix).
-    @Published var lastCapturedLocation: CLLocation?
-    /// When the most recent capture window closed.
-    @Published var lastCaptureCompletedAt: Date?
-    /// Rolling log of geofence/capture events (most recent first, max 30).
+    /// Rolling log of geofence events (most recent first, max 30).
     @Published var geofenceEventLog: [GeofenceEvent] = []
     private let maxGeofenceLogEntries = 30
 
@@ -858,44 +845,6 @@ extension BeaconViewModel {
                 detail: isActive
                     ? "Scan ativo (ranging + BLE) LIGADO"
                     : "Scan ativo (ranging + BLE) DESLIGADO — só region monitoring rodando"
-            ))
-        }
-    }
-
-    func didStartLocationCapture(reason: String) {
-        DispatchQueue.main.async {
-            self.isCapturingLocation = true
-            self.lastCaptureOpenReason = reason
-            self.appendGeofenceEvent(.init(
-                kind: .captureStarted,
-                timestamp: Date(),
-                detail: "Janela GPS aberta — motivo: \(reason)"
-            ))
-        }
-    }
-
-    func didCompleteLocationCapture(_ result: BeAroundLocationCapture) {
-        DispatchQueue.main.async {
-            self.isCapturingLocation = false
-            self.lastCaptureOutcome = result.outcome
-            self.lastCaptureCompletedAt = result.timestamp
-            self.lastCapturedLocation = result.location
-
-            let detail: String
-            let kind: GeofenceEvent.Kind
-            if let loc = result.location {
-                let acc = Int(loc.horizontalAccuracy)
-                detail = "Fix obtido — \(String(format: "%.5f, %.5f", loc.coordinate.latitude, loc.coordinate.longitude)) (±\(acc)m). Motivo abertura: \(result.reason). Fechou: \(result.outcome)"
-                kind = .captureCompletedWithFix
-            } else {
-                detail = "Sem fix — motivo abertura: \(result.reason). Fechou: \(result.outcome)"
-                kind = .captureCompletedNoFix
-            }
-
-            self.appendGeofenceEvent(.init(
-                kind: kind,
-                timestamp: result.timestamp,
-                detail: detail
             ))
         }
     }
