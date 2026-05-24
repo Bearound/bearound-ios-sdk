@@ -143,14 +143,15 @@ func application(_ application: UIApplication, performFetchWithCompletionHandler
 
 The SDK uses multiple mechanisms to ensure beacon data is synced even when the app is closed:
 
-| Mechanism | Trigger | Reliability |
-|-----------|---------|-------------|
-| **Region Monitoring** | iOS detects beacon region entry/exit | High - works even when terminated |
-| **Significant Location Changes** | User moves ~500m | Medium - depends on movement |
-| **Background Fetch** | iOS periodically wakes app | Low - not guaranteed timing |
-| **BGTaskScheduler** | iOS schedules when resources available | Medium - opportunistic |
+| Mechanism | Trigger | Permission required | Reliability |
+|-----------|---------|--------------------|-------------|
+| **CoreBluetooth State Restoration** | iOS detects BLE advertisement with Bearound service UUID | **Bluetooth only** | High — works when terminated, **independent of Location** |
+| **CoreLocation Region Monitoring** | iOS detects beacon region entry/exit | Location "Always" | High — works when terminated |
+| **Significant Location Changes** | User moves ~500m | Location "Always" | Medium — depends on movement |
+| **Background Fetch** | iOS periodically wakes app | — | Low — not guaranteed timing |
+| **BGTaskScheduler** | iOS schedules when resources available | — | Medium — opportunistic |
 
-**Note**: When the user force-quits the app (swipe up from app switcher), most background execution is disabled by iOS. This is expected system behavior.
+**Note**: When the user force-quits the app (swipe up from app switcher), most background execution is disabled by iOS. CoreBluetooth State Restoration still attempts to deliver but is less reliable in this case. This is expected system behavior.
 
 ### Basic Usage
 
@@ -437,34 +438,107 @@ Background tasks are managed with `UIBackgroundTaskIdentifier` to ensure data sy
 
 ### Terminated App Detection
 
-The SDK uses CoreLocation Region Monitoring to detect beacons even when the app is completely closed/terminated:
+The SDK supports **two independent wake-up paths** when the app is fully terminated. The host app should configure both for maximum reliability — but each works on its own.
 
-**Requirements:**
-1. **Background Modes**: Must include `fetch` in UIBackgroundModes (in addition to `location` and `bluetooth-central`)
-2. **Location Permission**: User must grant "Always" permission (not "When In Use")
-3. **Background App Refresh**: User must have Background App Refresh enabled in device Settings
-4. **How it works**:
-   - CoreLocation monitors beacon regions even with app terminated
-   - When beacon detected, iOS wakes up the app in background
-   - App has ~30 seconds to scan and sync beacons
-   - Then iOS may suspend the app again
+#### Path A — Bluetooth-only (Location off or denied)
 
-**Testing terminated app detection:**
-1. Grant "Always" location permission to the app
+Uses `CBCentralManager` state preservation & restoration over the `bluetooth-central` background mode. **No Location permission required.**
+
+**Beacon firmware requirement:** the beacon must advertise the Bearound BLE service UUID alongside (or instead of) the iBeacon frame. Pure iBeacon advertisements use Apple manufacturer data and carry no service UUID — CoreBluetooth background matching cannot fire on them. The Bearound reference firmware emits a dual advertisement (iBeacon + service UUID) and works out of the box.
+
+**Host app requirements:**
+1. `bluetooth-central` in `UIBackgroundModes` (Info.plist)
+2. `NSBluetoothAlwaysUsageDescription` in Info.plist
+3. **Touch `BeAroundSDK.shared` synchronously inside `application(_:didFinishLaunchingWithOptions:)`** — before any SwiftUI view renders. The singleton's `init()` rebuilds the `CBCentralManager` with the same restore identifier, which is what iOS targets when relaunching the process. Touching the SDK only from a view's `onAppear` will miss the restore window.
+4. The user must have called `startScanning()` at least once during a foreground session (the SDK persists this and only auto-resumes if scanning was active before termination)
+5. Bluetooth must be toggled on in Control Center and the app must hold `.allowedAlways` Bluetooth authorization
+
+**How it works:**
+- iOS keeps a low-power BLE scan filtered by the Bearound service UUID running while the app is suspended or terminated
+- When a matching advertisement is seen, iOS relaunches the app in background and provides `launchOptions[.bluetoothCentrals]`
+- The SDK receives `centralManager(_:willRestoreState:)`, switches to ACTIVE scan mode, and fires `didEnterBluetoothZone()` on the delegate
+
+#### Path B — CoreLocation Region Monitoring (Location authorized)
+
+Uses iBeacon region monitoring. **Requires "Always" Location permission.**
+
+**Host app requirements:**
+1. `location` in `UIBackgroundModes` (and `fetch` for periodic sync)
+2. `NSLocationAlwaysAndWhenInUseUsageDescription` + `NSLocationWhenInUseUsageDescription` in Info.plist
+3. User grants "Always" permission (not "When In Use")
+4. Background App Refresh enabled in device Settings
+
+**How it works:**
+- CoreLocation monitors beacon regions at the kernel level even with the app terminated
+- When a beacon region is entered, iOS wakes the app and provides `launchOptions[.location]`
+- The SDK has ~30 seconds to scan, sync, and then may be suspended again
+
+#### Host app integration checklist
+
+For wake-up to work reliably, your AppDelegate must look like this:
+
+```swift
+class AppDelegate: NSObject, UIApplicationDelegate {
+    func application(
+        _ application: UIApplication,
+        didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil
+    ) -> Bool {
+
+        // CRITICAL: touch the singleton synchronously here. This rebuilds the
+        // CBCentralManager with the restore identifier that iOS targets when
+        // relaunching the process for a BLE match.
+        BeAroundSDK.shared.registerBackgroundTasks()
+
+        if launchOptions?[.bluetoothCentrals] != nil {
+            NSLog("Relaunched by iOS due to BLE state restoration")
+        }
+        if launchOptions?[.location] != nil {
+            NSLog("Relaunched by iOS due to CoreLocation region event")
+        }
+
+        return true
+    }
+}
+
+@main
+struct MyApp: App {
+    @UIApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
+    // ...
+}
+```
+
+#### Testing terminated app detection
+
+**Path A (Bluetooth-only):**
+1. Install the app, open it once
+2. Grant Bluetooth permission. **Deny Location** (to prove independence)
+3. Tap **Start Scanning** in the app
+4. Close the app via swipe-up in the app switcher
+5. Move away from the beacon for ~1 minute
+6. Walk back into beacon range
+7. In Console.app (filter by your app name), expect to see:
+   - `App launched due to BLUETOOTH event (state restoration)`
+   - `[BluetoothManager] State restoration triggered (BT wake-up path)`
+   - `[BluetoothManager] Restored: was scanning for BEAD service UUID — will enter ACTIVE mode`
+   - `didEnterBluetoothZone()` firing on the delegate
+8. Latency: typically 10–30s in background, can be longer under battery/memory pressure
+
+**Path B (CoreLocation Region Monitoring):**
+1. Grant **"Always"** location permission
 2. Ensure Background App Refresh is enabled (Settings > General > Background App Refresh)
-3. Start scanning in the app
-4. Close the app completely (swipe up in app switcher)
+3. Tap **Start Scanning** in the app
+4. Close the app completely
 5. Walk near a beacon
-6. Check Xcode Console or Console.app - you should see:
-   - `"App launched in background (likely by beacon monitoring)"`
-   - `"Entered beacon region"`
+6. In Console.app, expect:
+   - `App launched due to LOCATION event (beacon region entry)`
+   - `Entered beacon region`
    - Beacons being detected and synced
 
-**Important Notes:**
-- iOS may delay the wake-up (not instant)
-- Low Power Mode disables background wake-ups
-- iOS limits how often it will wake the app
-- Works best with "Always" location permission
+**Important notes (apply to both paths):**
+- iOS may delay the wake-up — not instant by design
+- Low Power Mode dramatically reduces background wake-up frequency
+- iOS rate-limits how often it will wake your app
+- Force-quit by the user (swipe up from app switcher) makes both paths less reliable, but Path A historically survives better than Path B
 
 ### Error Handling & Retry Logic
 
