@@ -230,14 +230,19 @@ class BluetoothManager: NSObject {
 
     // MARK: - Public Methods
 
-    /// Starts the BLE eye. v2.5.1: chooses initial scan mode based on app state.
+    /// Starts the BLE eye. v2.6: scan is **always** registered with iOS immediately
+    /// (ACTIVE mode), regardless of foreground/background.
     ///
-    /// FOREGROUND start → IDLE (scanner off, peek every 5 min) — battery saver.
-    /// BACKGROUND start → ACTIVE (scanner on continuously) — keeps iOS able to wake
-    /// the app from terminated state via willRestoreState. Without the scanner running
-    /// when the app suspends, iOS has nothing to preserve and BT wake-up is dead.
+    /// Rationale: CoreBluetooth state preservation & restoration only works if a scan
+    /// filter is active in the kernel at the moment the process is terminated. The
+    /// previous design started in IDLE (scanner OFF) in foreground and only registered
+    /// the filter 5 minutes later via the first idle peek — meaning a user who tapped
+    /// Start and immediately swiped the app away (the dominant real-world pattern)
+    /// would never get BT wake-up. iOS handles its own background duty-cycling for
+    /// power; we don't need to layer a second one on top and risk breaking the wake-up.
     ///
-    /// External wake-ups (Location eye region enter) flip the mode to active immediately.
+    /// External wake-ups (Location eye region enter) call wakeToActive() which is now
+    /// a no-op if already active — we're already in the right state.
     func startScanning() {
         os_log("[BLE] startScanning() — state=%{public}ld isScanning=%{public}d isInBackground=%{public}d",
                log: bleLog, type: .info, centralManager.state.rawValue, isScanning ? 1 : 0, isInBackground ? 1 : 0)
@@ -255,22 +260,15 @@ class BluetoothManager: NSObject {
         startCleanupTimer()
         startZonePresenceTimer()
 
-        if isInBackground {
-            // Background: stay ACTIVE so the scanner is running when the app suspends.
-            // iOS will keep low-power scanning under bluetooth-central UIBackgroundMode
-            // and re-launch us via willRestoreState if a BEAD advertisement matches.
-            currentScanMode = .active
-            nextIdleScanAt = nil
-            beginScan()
-            scheduleActiveTick()
-            os_log("[BLE] startScanning() SUCCESS — entering ACTIVE mode (background, BT wake-up persistence)", log: bleLog, type: .info)
-        } else {
-            // Foreground: IDLE duty cycle to save battery. First peek in 5 min, unless
-            // the Location eye wakes us earlier via wakeToActive().
-            currentScanMode = .idle
-            scheduleNextIdlePeek()
-            os_log("[BLE] startScanning() SUCCESS — entering IDLE mode (foreground, 5min cycle)", log: bleLog, type: .info)
-        }
+        // ALWAYS register the scan with iOS immediately. This is mandatory for
+        // CBCentralManager state restoration to work — iOS must have an active scan
+        // filter at the moment the process is terminated, otherwise willRestoreState
+        // will never fire and the BT-only wake-up path is permanently dead.
+        currentScanMode = .active
+        nextIdleScanAt = nil
+        beginScan()
+        scheduleActiveTick()
+        os_log("[BLE] startScanning() SUCCESS — ACTIVE mode (scan registered for wake-up persistence)", log: bleLog, type: .info)
         notifyScanModeChanged()
     }
 
@@ -347,20 +345,25 @@ class BluetoothManager: NSObject {
     }
 
     /// External sleep — called by the SDK facade when the Location eye reports
-    /// region exit. Stops the continuous scan and returns to idle peek cadence.
+    /// region exit. v2.6: this is now a **UI-only** mode change. The scanner stays
+    /// registered with iOS so state restoration keeps working. Stopping the scan here
+    /// (as we used to) would unregister the kernel filter and kill BT wake-up the
+    /// moment the user wandered out of the zone.
+    ///
     /// Also called internally when active mode sees no detections for `activeToIdleGrace`.
-    /// v2.5.1: NEVER sleeps while in background — that would break iOS BT wake-up.
     func sleepToIdle() {
         guard isScanning, currentScanMode != .idle else { return }
         guard !isInBackground else {
-            os_log("[BLE] sleepToIdle blocked — in background, keeping ACTIVE for wake-up persistence", log: bleLog, type: .info)
+            os_log("[BLE] sleepToIdle blocked — in background, staying ACTIVE", log: bleLog, type: .info)
             return
         }
 
-        os_log("[BLE] SLEEP TO IDLE — stopping continuous scan (region exit or active grace expired)", log: bleLog, type: .info)
+        os_log("[BLE] SLEEP TO IDLE — UI label change only, scanner stays registered with iOS", log: bleLog, type: .info)
         currentScanMode = .idle
-        centralManager.stopScan()
-        scheduleNextIdlePeek()
+        // Do NOT call centralManager.stopScan() — that would unregister the filter and
+        // break CB state restoration. iOS auto-duty-cycles the scan for us.
+        nextIdleScanAt = nil
+        stopDutyCycleTimer()
         notifyScanModeChanged()
     }
 
@@ -380,34 +383,15 @@ class BluetoothManager: NSObject {
         timer.resume()
     }
 
-    /// Runs one 10s scan window. If a beacon is detected during the window (rising edge
-    /// fires inline from trackBeacon), wakeToActive() switches us; otherwise we go back to idle.
+    /// v2.6: no-op. The scanner stays continuously registered with iOS so there's no
+    /// "peek window" anymore — every advertisement is delivered as it arrives. Kept as
+    /// a no-op to preserve the scheduleNextIdlePeek() call site without breaking the
+    /// timer plumbing. The duty cycle is now driven entirely by iOS in background.
     private func runIdlePeek() {
         guard isScanning, currentScanMode == .idle, centralManager.state == .poweredOn else {
-            os_log("[BLE] idle peek SKIP — scanning=%{public}d mode=%{public}@ state=%{public}ld",
-                   log: bleLog, type: .info, isScanning ? 1 : 0, currentScanMode.rawValue, centralManager.state.rawValue)
             return
         }
-
-        os_log("[BLE] IDLE PEEK START (10s window)", log: bleLog, type: .info)
-        beginScan()
-
-        // After idleScanWindow, stop the peek and reschedule — unless trackBeacon already
-        // promoted us to active during this window.
-        let peekEnd = DispatchSource.makeTimerSource(queue: bleQueue)
-        peekEnd.schedule(deadline: .now() + idleScanWindow)
-        peekEnd.setEventHandler { [weak self] in
-            guard let self else { return }
-            if self.currentScanMode == .idle {
-                os_log("[BLE] IDLE PEEK END — no hit, sleeping for %{public}.0fs", log: bleLog, type: .info, self.idleCycle - self.idleScanWindow)
-                self.centralManager.stopScan()
-                self.scheduleNextIdlePeek()
-            } else {
-                os_log("[BLE] IDLE PEEK END — already promoted to active, keeping scanner on", log: bleLog, type: .info)
-            }
-        }
-        dutyCycleTimer = peekEnd
-        peekEnd.resume()
+        os_log("[BLE] IDLE PEEK (no-op in v2.6 — scanner is always registered)", log: bleLog, type: .info)
     }
 
     /// Active mode tick — fires every `activeTickCadence` while in .active. Used to detect
@@ -467,10 +451,16 @@ class BluetoothManager: NSObject {
         NSLog("[BluetoothManager] Refreshed BLE scan for Service Data (unlock event)")
     }
 
-    /// Temporarily pause BLE scanning (duty cycle control)
+    /// v2.6: Pauses host-side bookkeeping only — the underlying CB scan stays
+    /// registered with iOS so state restoration keeps working. The "pause" semantic
+    /// was inherited from the SDK-level duty cycle which originally toggled both
+    /// CoreLocation ranging AND the BLE scan. The BLE filter is cheap enough that
+    /// pausing it offered no real battery win, but the cost was lethal — every pause
+    /// unregistered the kernel filter and broke terminated-app wake-up. Now only the
+    /// cleanup timer is paused; the scan keeps running.
     func pauseScanning() {
         guard isScanning, centralManager.state == .poweredOn else { return }
-        centralManager.stopScan()
+        // Do NOT call centralManager.stopScan() — see method docstring.
         stopCleanupTimer()
     }
 
