@@ -363,6 +363,8 @@ class APIClient {
         if let pushToken = device.pushToken {
             payload["pushToken"] = pushToken
         }
+        // Which APNs endpoint the token targets (sandbox vs production) — so the backend routes right.
+        payload["apnsEnvironment"] = device.apnsEnvironment
 
         return payload
     }

@@ -111,6 +111,7 @@ final class DeviceInfoCollector: @unchecked Sendable {
 		return UserDevice(
 			deviceId: DeviceIdentifier.getDeviceId(),
 			pushToken: PushTokenStore.unsyncedToken,
+			apnsEnvironment: APNSEnvironment.current(),
 			manufacturer: "Apple",
 			model: deviceModel(),
 			osVersion: device.systemVersion,

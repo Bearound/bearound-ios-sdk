@@ -693,6 +693,18 @@ extension BeaconViewModel {
         }
     }
 
+    // Fired by the SDK after it auto-handled a Bearound silent push (swizzled). The app just
+    // surfaces it — no push code in the AppDelegate.
+    func didCompletePushScan(beaconsFound: Int, ingestStarted: Bool, pendingBatches: Int) {
+        DispatchQueue.main.async {
+            self.notificationManager.notifyPushTriggeredSync(
+                beaconsFound: beaconsFound,
+                ingestStarted: ingestStarted,
+                pendingBatches: pendingBatches
+            )
+        }
+    }
+
     // MARK: - Background Events Delegate Methods
 
     func didDetectBeaconInBackground(beacons: [Beacon]) {
