@@ -8,8 +8,14 @@
 import Foundation
 import UIKit
 
+/// Device identifier — stable for the lifetime of the install, stored in **UserDefaults**
+/// (simple local storage).
+///
+/// Priority on first generation: IDFV (`identifierForVendor`) > generated UUID.
+/// Persisted only in UserDefaults — so it is wiped when the user deletes the app (we no longer
+/// keep it in the Keychain across reinstalls). IDFV may still survive a reinstall while the vendor
+/// has other apps installed; otherwise a fresh id is generated on reinstall.
 class DeviceIdentifier {
-    private static let keychainKey = "io.bearound.sdk.deviceId"
 
     // MARK: - Persistent Cache (UserDefaults)
 
@@ -41,7 +47,7 @@ class DeviceIdentifier {
         }
     }
 
-    // MARK: - Device ID (permanent — never changes once set)
+    // MARK: - Device ID
 
     /// Initializes deviceId if it doesn't exist yet. Must be called within lock.
     private static func initializeDeviceIdIfNeeded() {
@@ -49,24 +55,18 @@ class DeviceIdentifier {
 
         guard _deviceId == nil else { return }
 
-        // First time ever: compute and persist forever
-        // Priority: Keychain UUID > IDFV > Generated UUID (never null)
+        // First time on this install: compute and persist to UserDefaults.
+        // Priority: IDFV > Generated UUID (never null).
         let id: String
         let type: String
 
-        if let keychainId = getKeychainUUID() {
-            id = keychainId
-            type = "keychain_uuid"
-        } else if let idfv = UIDevice.current.identifierForVendor?.uuidString {
+        if let idfv = UIDevice.current.identifierForVendor?.uuidString {
             id = idfv
             type = "idfv"
-            KeychainHelper.save(id, forKey: keychainKey)
         } else {
-            // Last resort (device locked on first boot) — generate and persist
-            let uuid = UUID().uuidString
-            id = uuid
+            // Device locked on first boot — IDFV unavailable; generate one.
+            id = UUID().uuidString
             type = "generated"
-            KeychainHelper.save(id, forKey: keychainKey)
         }
 
         _deviceId = id
@@ -76,12 +76,12 @@ class DeviceIdentifier {
         defaults.set(id, forKey: StorageKey.deviceId)
         defaults.set(type, forKey: StorageKey.deviceIdType)
 
-        NSLog("[BeAroundSDK] Device ID set permanently: type=%@, id=%@...", type, String(id.prefix(8)))
+        NSLog("[BeAroundSDK] Device ID set: type=%@, id=%@...", type, String(id.prefix(8)))
     }
 
     // MARK: - Public API
 
-    /// Device ID — permanent, never changes once generated
+    /// Device ID — stable for the lifetime of the install (stored in UserDefaults).
     static func getDeviceId() -> String {
         lock.lock()
         defer { lock.unlock() }
@@ -89,26 +89,11 @@ class DeviceIdentifier {
         return _deviceId!
     }
 
-    /// Type of device ID (keychain_uuid, idfv, generated)
+    /// Type of device ID (`idfv`, `generated`).
     static func getDeviceIdType() -> String {
         lock.lock()
         defer { lock.unlock() }
         initializeDeviceIdIfNeeded()
         return _deviceIdType ?? "unknown"
-    }
-
-    // MARK: - Private Helpers
-
-    private static func getKeychainUUID() -> String? {
-        if let existingId = KeychainHelper.retrieve(forKey: keychainKey) {
-            return existingId
-        }
-
-        let newId = UUID().uuidString
-        if KeychainHelper.save(newId, forKey: keychainKey) {
-            return newId
-        }
-
-        return nil
     }
 }
