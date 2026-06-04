@@ -48,8 +48,10 @@ struct DeviceIdentifierTests {
     func getDeviceIDType() {
         let idType = DeviceIdentifier.getDeviceIdType()
         
-        // Should be one of the valid types
-        let validTypes = ["idfa", "keychain_uuid", "idfv"]
+        // Should be one of the valid types.
+        // IDFA was removed from the priority chain — identity is now
+        // Keychain UUID > IDFV > generated (never null).
+        let validTypes = ["keychain_uuid", "idfv", "generated"]
         #expect(validTypes.contains(idType))
     }
     

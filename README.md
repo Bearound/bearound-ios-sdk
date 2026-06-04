@@ -102,6 +102,59 @@ For BGTaskScheduler support (iOS 13+), add:
 
 **Important**: The user must allow at least location or Bluetooth access for the SDK to function properly.
 
+### Push Notifications & Push Token
+
+The SDK captures the device's **APNs push token automatically** and sends it to the backend (mapped to the stable `deviceId`) so the device can be targeted for push — both the silent/background sync the SDK uses today and user-facing notifications in the future.
+
+#### What the SDK does for you (no code required)
+
+As soon as you call `BeAroundSDK.shared.configure(...)`, the SDK:
+
+1. Triggers APNs registration (`registerForRemoteNotifications()`) — this only fetches the token and does **not** prompt the user.
+2. Captures the token from your `AppDelegate` via method swizzling (the same technique Firebase/OneSignal use), even if your app never implements `didRegisterForRemoteNotificationsWithDeviceToken`.
+3. Stores it and sends it **once** with the next sync (as `device.pushToken`), re-sending only if the token rotates.
+
+You do **not** need to write any token-forwarding code.
+
+#### ⚠️ The one step you MUST do (it cannot be automated)
+
+Enable the **Push Notifications** capability in your app target — this adds the signed `aps-environment` entitlement, which no SDK can add on your behalf:
+
+> Xcode → your target → **Signing & Capabilities** → **+ Capability** → **Push Notifications**
+
+For the **silent background sync** to wake the app, also enable **Background Modes** and check **Remote notifications** (plus **Location updates** and **Uses Bluetooth LE accessories**):
+
+> **+ Capability** → **Background Modes** → ✅ Remote notifications
+
+Without the Push Notifications capability, APNs will not issue a token and there is nothing to capture.
+
+#### Showing user-facing notifications (separate from the token)
+
+Fetching the token needs **no** user permission. Asking permission to **display** alerts/banners (`UNUserNotificationCenter.requestAuthorization`) shows a system prompt and is intentionally left to you — call it when it makes sense in your UX, only if/when you plan to send *visible* notifications.
+
+#### Opting out / manual mode
+
+If you prefer to forward the token yourself (e.g. you already manage `UNUserNotificationCenter`, or your app has no classic `AppDelegate`), disable the automatic capture by adding to your **Info.plist**:
+
+```xml
+<key>BearoundAppDelegateProxyEnabled</key>
+<false/>
+```
+
+Then forward the token manually from your `AppDelegate`:
+
+```swift
+func application(_ application: UIApplication,
+                 didRegisterForRemoteNotificationsWithDeviceToken deviceToken: Data) {
+    let token = deviceToken.map { String(format: "%02x", $0) }.joined()
+    BeAroundSDK.shared.setPushToken(token)
+}
+```
+
+#### React Native & Flutter
+
+The capture lives in the native `configure()`, so it works **automatically** in the React Native and Flutter wrappers too — the swizzle runs on the app's native `AppDelegate` (RN's / Flutter's) when you call `configure()` from JS/Dart. The **Push Notifications capability** still has to be enabled in the wrapper app's iOS target (the unavoidable manual step above).
+
 ### Advanced Background Integration
 
 For maximum reliability when the app is completely closed, implement the following in your `AppDelegate`:
@@ -286,18 +339,25 @@ BeAroundSDK.shared.configure(
 )
 ```
 
+> **On iOS the BLE radio scans continuously in all precisions.** iOS performs its own
+> power duty-cycling for background BLE scanning, and the SDK never stops the radio in
+> steady state (stopping it would unregister the kernel scan filter and break
+> terminated-app wake-up). Therefore `scanPrecision` on iOS does **not** change the radio
+> duty cycle — it only controls the **sync cadence** and the **location accuracy**. (The
+> per-precision scan/pause duty cycle is real on Android.)
+
 **Available Configuration Options:**
 
-- **Scan Precision** (`scanPrecision`)
-  - `.high` — Continuous scanning, 15s sync interval, 10m location accuracy (real-time, higher battery usage). **Default.**
-  - `.medium` — 3 scan cycles/min (10s scan + 10s pause), 60s sync interval, 10m location accuracy (balanced)
-  - `.low` — 1 scan cycle/min (10s scan + 50s pause), 60s sync interval, 100m location accuracy (battery efficient)
+- **Scan Precision** (`scanPrecision`) — on iOS, affects sync cadence and location accuracy only; the radio is always continuous
+  - `.high` — 15s sync interval, 10m location accuracy (most frequent sync, higher battery usage). **Default.**
+  - `.medium` — 60s sync interval, 10m location accuracy (balanced)
+  - `.low` — 60s sync interval, 100m location accuracy (battery efficient)
 
-| Precision | Scan Duration | Pause Duration | Cycles/min | Sync Interval | Location Accuracy |
-|-----------|--------------|----------------|------------|---------------|-------------------|
-| **High**  | 10s          | 0s (continuous)| Continuous | 15s           | 10m               |
-| **Medium**| 10s          | 10s            | 3          | 60s           | 10m               |
-| **Low**   | 10s          | 50s            | 1          | 60s           | 100m              |
+| Precision | BLE Radio (iOS)        | Sync Interval | Location Accuracy |
+|-----------|------------------------|---------------|-------------------|
+| **High**  | Continuous             | 15s           | 10m               |
+| **Medium**| Continuous             | 60s           | 10m               |
+| **Low**   | Continuous             | 60s           | 100m              |
 
 - **Retry Queue Size** (`maxQueuedPayloads`)
   - `.small` - 50 failed batches
@@ -305,11 +365,11 @@ BeAroundSDK.shared.configure(
   - `.large` - 200 failed batches
   - `.xlarge` - 500 failed batches
 
-**How it works:**
-- SDK uses a single precision mode that controls both BLE and CoreLocation duty cycles
-- No need to configure separate foreground/background intervals — the SDK handles transitions automatically
-- CoreLocation pauses during duty cycle pauses to reduce battery drain
-- Failed API requests are queued for retry based on `maxQueuedPayloads` setting (each batch contains all beacons from one sync)
+**How it works (iOS):**
+- The BLE radio is registered with iOS and scans continuously in every precision — iOS handles its own background power duty-cycling.
+- `scanPrecision` selects the sync cadence (how often detected beacons are flushed to the API) and the CoreLocation accuracy used by the precision-location fix.
+- No need to configure separate foreground/background intervals — the SDK handles transitions automatically.
+- Failed API requests are queued for retry based on `maxQueuedPayloads` setting (each batch contains all beacons from one sync).
 
 #### Bluetooth Metadata
 

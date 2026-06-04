@@ -1,5 +1,3 @@
-import AdSupport
-import AppTrackingTransparency
 import BearoundSDK
 import Combine
 import CoreBluetooth
@@ -57,8 +55,6 @@ class BeaconViewModel: NSObject, ObservableObject, BeAroundSDKDelegate {
     @Published var sortOption: BeaconSortOption = .proximity
     @Published var bluetoothStatus: String = "Verificando..."
     @Published var notificationStatus: String = "Verificando..."
-    @Published var trackingStatus: String = "Verificando..."
-    @Published var idfaValue: String = "—"
 
     // SDK Configuration Settings
     @Published var scanPrecision: ScanPrecision = .high
@@ -215,19 +211,30 @@ class BeaconViewModel: NSObject, ObservableObject, BeAroundSDKDelegate {
     @Published var geofenceEventLog: [GeofenceEvent] = []
     private let maxGeofenceLogEntries = 30
 
-    // Detection Log — separate queues for foreground, background, and background locked
+    // Detection Log — separate queues for foreground, background, background locked, and terminated
     @Published var foregroundLog: [DetectionLogEntry] = []
     @Published var backgroundLog: [DetectionLogEntry] = []
     @Published var backgroundLockedLog: [DetectionLogEntry] = []
+    @Published var terminatedLog: [DetectionLogEntry] = []
     private let maxForegroundLogEntries = 50000
     private let maxBackgroundLogEntries = 50000
     private let maxBackgroundLockedLogEntries = 50000
+    private let maxTerminatedLogEntries = 50000
 
     /// Tracks whether the device is locked
     private(set) var isDeviceLocked: Bool = false
 
+    /// True when the process was started by iOS in the background (cold relaunch after the
+    /// app was force-quit / killed). While true, detections are tagged `.terminated` — they
+    /// happened while the app was "dead" and iOS woke it via region monitoring. Cleared the
+    /// moment the user actually opens the app (didBecomeActive).
+    private var launchedFromTerminated: Bool = false
+
+    /// Debounced disk-save handle for the detection log.
+    private var saveWorkItem: DispatchWorkItem?
+
     var detectionLog: [DetectionLogEntry] {
-        (foregroundLog + backgroundLog + backgroundLockedLog).sorted { $0.timestamp > $1.timestamp }
+        (foregroundLog + backgroundLog + backgroundLockedLog + terminatedLog).sorted { $0.timestamp > $1.timestamp }
     }
 
     // Pinned Beacons
@@ -250,7 +257,12 @@ class BeaconViewModel: NSObject, ObservableObject, BeAroundSDKDelegate {
         super.init()
         locationManager.delegate = self
 
+        // If the process is starting while not active, iOS relaunched us in the background
+        // after the app was killed — detections in this window are "terminated" state.
+        launchedFromTerminated = (UIApplication.shared.applicationState != .active)
+
         loadSavedSettings()
+        loadPersistedLogs()
         setupLockObservers()
 
         locationManager.requestAlwaysAuthorization()
@@ -258,7 +270,6 @@ class BeaconViewModel: NSObject, ObservableObject, BeAroundSDKDelegate {
         updatePermissionStatus()
         checkBluetoothStatus()
         checkNotificationStatus()
-        requestTrackingPermission()
         initializeSDK()
         startDiagnosticTimer()
         startTickTimer()
@@ -288,6 +299,18 @@ class BeaconViewModel: NSObject, ObservableObject, BeAroundSDKDelegate {
             name: UIApplication.protectedDataDidBecomeAvailableNotification,
             object: nil
         )
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(appDidBecomeActive),
+            name: UIApplication.didBecomeActiveNotification,
+            object: nil
+        )
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(appDidEnterBackground),
+            name: UIApplication.didEnterBackgroundNotification,
+            object: nil
+        )
         // Check initial state
         isDeviceLocked = !UIApplication.shared.isProtectedDataAvailable
     }
@@ -298,6 +321,16 @@ class BeaconViewModel: NSObject, ObservableObject, BeAroundSDKDelegate {
 
     @objc private func deviceDidUnlock() {
         isDeviceLocked = false
+    }
+
+    @objc private func appDidBecomeActive() {
+        // The user opened the app — the terminated-relaunch window is over.
+        launchedFromTerminated = false
+    }
+
+    @objc private func appDidEnterBackground() {
+        // Flush synchronously so nothing is lost if iOS suspends/kills us next.
+        persistDetectionLog(synchronous: true)
     }
 
     private func checkBluetoothStatus() {
@@ -318,56 +351,6 @@ class BeaconViewModel: NSObject, ObservableObject, BeAroundSDKDelegate {
                     self.notificationStatus = "Desconhecida"
                 }
             }
-        }
-    }
-
-    private func requestTrackingPermission() {
-        if #available(iOS 14, *) {
-            let currentStatus = ATTrackingManager.trackingAuthorizationStatus
-            if currentStatus == .notDetermined {
-                // Delay to avoid conflict with other permission dialogs
-                DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
-                    ATTrackingManager.requestTrackingAuthorization { [weak self] status in
-                        DispatchQueue.main.async {
-                            self?.updateTrackingStatus()
-                        }
-                    }
-                }
-            } else {
-                updateTrackingStatus()
-            }
-        } else {
-            // iOS < 14: no ATT framework
-            let enabled = ASIdentifierManager.shared().isAdvertisingTrackingEnabled
-            trackingStatus = enabled ? "Permitido" : "Negado"
-            updateIDFAValue()
-        }
-    }
-
-    private func updateTrackingStatus() {
-        if #available(iOS 14, *) {
-            switch ATTrackingManager.trackingAuthorizationStatus {
-            case .authorized:
-                trackingStatus = "Permitido"
-            case .denied:
-                trackingStatus = "Negado"
-            case .restricted:
-                trackingStatus = "Restrito"
-            case .notDetermined:
-                trackingStatus = "Não solicitado"
-            @unknown default:
-                trackingStatus = "Desconhecido"
-            }
-        }
-        updateIDFAValue()
-    }
-
-    private func updateIDFAValue() {
-        let idfa = ASIdentifierManager.shared().advertisingIdentifier.uuidString
-        if idfa == "00000000-0000-0000-0000-000000000000" {
-            idfaValue = "Indisponível"
-        } else {
-            idfaValue = idfa
         }
     }
 
@@ -586,26 +569,10 @@ extension BeaconViewModel {
         DispatchQueue.main.async {
             let sortedBeacons = self.sortBeacons(beacons, by: self.sortOption)
             
-            let isNowInBeaconRegion = !sortedBeacons.isEmpty
-            
-            // Detecta entrada na região (mudou de vazio para não-vazio)
-            // Só notifica se realmente entrou na região (estava fora e agora está dentro)
-            let shouldNotify = isNowInBeaconRegion && !self.wasInBeaconRegion
-            if shouldNotify {
-                // Só notifica se passou tempo suficiente desde o início do scan
-                // Isso evita notificações quando o app inicia já dentro da zona
-                if let startTime = self.scanStartTime {
-                    let timeSinceStart = Date().timeIntervalSince(startTime)
-                    // Aguarda 2 segundos para evitar notificações imediatas ao iniciar já na zona
-                    if timeSinceStart >= 2.0 {
-                        self.notificationManager.notifyBeaconDetectedWithDetails(beacons: sortedBeacons)
-                    }
-                }
-                // Se scanStartTime é nil, significa que o scan já estava ativo antes,
-                // então não notificamos para evitar notificações indevidas
-            }
-            
-            self.wasInBeaconRegion = isNowInBeaconRegion
+            // Notifications are driven solely by zone enter/exit transitions
+            // (didEnterBluetoothZone / didExitBluetoothZone and the Location-eye
+            // equivalents), not by every beacon update — see those delegate methods.
+            self.wasInBeaconRegion = !sortedBeacons.isEmpty
             self.beacons = sortedBeacons
             self.lastScanTime = Date()
 
@@ -690,13 +657,7 @@ extension BeaconViewModel {
     func didChangeScanning(isScanning: Bool) {
         DispatchQueue.main.async {
             self.isScanning = isScanning
-            if isScanning {
-                self.statusMessage = "Scaneando..."
-                self.notificationManager.notifyScanningStarted()
-            } else {
-                self.statusMessage = "Parado"
-                self.notificationManager.notifyScanningStopped()
-            }
+            self.statusMessage = isScanning ? "Scaneando..." : "Parado"
         }
     }
 
@@ -707,7 +668,6 @@ extension BeaconViewModel {
             NSLog("[BeaconViewModel] Sync starting with %d beacons", beaconCount)
             self.lastSyncBeaconCount = beaconCount
             self.lastSyncResult = "Enviando..."
-            self.notificationManager.notifyAPISyncStarted(beaconCount: beaconCount)
         }
     }
 
@@ -724,7 +684,12 @@ extension BeaconViewModel {
                 NSLog("[BeaconViewModel] Sync failed: %@", errorMsg)
                 self.lastSyncResult = "Falha: \(errorMsg)"
             }
-            self.notificationManager.notifyAPISyncCompleted(beaconCount: beaconCount, success: success)
+            // App-level (NOT the SDK): surface every ingest as a local notification so it's
+            // visible — including syncs that happen in background / terminated state.
+            // Only when beacons were actually sent (beaconCount > 0) to avoid no-op syncs.
+            if beaconCount > 0 {
+                self.notificationManager.notifyAPISyncCompleted(beaconCount: beaconCount, success: success)
+            }
         }
     }
 
@@ -733,7 +698,7 @@ extension BeaconViewModel {
     func didDetectBeaconInBackground(beacons: [Beacon]) {
         DispatchQueue.main.async {
             NSLog("[BeaconViewModel] Beacon detected in background: %d beacons", beacons.count)
-            self.notificationManager.notifyBeaconDetectedWithDetails(beacons: beacons, isBackground: true)
+            // No notification here — push is driven only by zone enter/exit transitions.
             self.recordDetections(beacons: beacons, isBackground: true)
         }
     }
@@ -742,23 +707,44 @@ extension BeaconViewModel {
 
     private func recordDetections(beacons: [Beacon], isBackground: Bool) {
         guard !beacons.isEmpty else { return }
-        let locked = isDeviceLocked
-        let newEntries = beacons.map { DetectionLogEntry.from(beacon: $0, isBackground: isBackground, isLocked: locked) }
-        if isBackground && locked {
-            backgroundLockedLog.insert(contentsOf: newEntries, at: 0)
-            if backgroundLockedLog.count > maxBackgroundLockedLogEntries {
-                backgroundLockedLog = Array(backgroundLockedLog.prefix(maxBackgroundLockedLogEntries))
-            }
+
+        let mode: DetectionMode
+        if launchedFromTerminated && isBackground {
+            mode = .terminated
+        } else if isBackground && isDeviceLocked {
+            mode = .backgroundLocked
         } else if isBackground {
-            backgroundLog.insert(contentsOf: newEntries, at: 0)
-            if backgroundLog.count > maxBackgroundLogEntries {
-                backgroundLog = Array(backgroundLog.prefix(maxBackgroundLogEntries))
-            }
+            mode = .background
         } else {
+            mode = .foreground
+        }
+
+        let newEntries = beacons.map { DetectionLogEntry.from(beacon: $0, mode: mode) }
+
+        switch mode {
+        case .terminated:
+            terminatedLog.insert(contentsOf: newEntries, at: 0)
+            trim(&terminatedLog, max: maxTerminatedLogEntries)
+            // Process may be killed again within seconds — persist immediately.
+            persistDetectionLog(synchronous: true)
+        case .backgroundLocked:
+            backgroundLockedLog.insert(contentsOf: newEntries, at: 0)
+            trim(&backgroundLockedLog, max: maxBackgroundLockedLogEntries)
+            scheduleDetectionLogSave()
+        case .background:
+            backgroundLog.insert(contentsOf: newEntries, at: 0)
+            trim(&backgroundLog, max: maxBackgroundLogEntries)
+            scheduleDetectionLogSave()
+        case .foreground:
             foregroundLog.insert(contentsOf: newEntries, at: 0)
-            if foregroundLog.count > maxForegroundLogEntries {
-                foregroundLog = Array(foregroundLog.prefix(maxForegroundLogEntries))
-            }
+            trim(&foregroundLog, max: maxForegroundLogEntries)
+            scheduleDetectionLogSave()
+        }
+    }
+
+    private func trim(_ log: inout [DetectionLogEntry], max: Int) {
+        if log.count > max {
+            log = Array(log.prefix(max))
         }
     }
 
@@ -766,6 +752,40 @@ extension BeaconViewModel {
         foregroundLog.removeAll()
         backgroundLog.removeAll()
         backgroundLockedLog.removeAll()
+        terminatedLog.removeAll()
+        saveWorkItem?.cancel()
+        DetectionLogStore.clear()
+    }
+
+    // MARK: - Detection Log Persistence
+
+    private func loadPersistedLogs() {
+        let snapshot = DetectionLogStore.load()
+        foregroundLog = snapshot.foreground
+        backgroundLog = snapshot.background
+        backgroundLockedLog = snapshot.backgroundLocked
+        terminatedLog = snapshot.terminated
+    }
+
+    /// Coalesces frequent foreground/background detections into a single write ~1.5s later.
+    private func scheduleDetectionLogSave() {
+        saveWorkItem?.cancel()
+        let work = DispatchWorkItem { [weak self] in self?.persistDetectionLog() }
+        saveWorkItem = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5, execute: work)
+    }
+
+    private func persistDetectionLog(synchronous: Bool = false) {
+        saveWorkItem?.cancel()
+        let fg = foregroundLog, bg = backgroundLog, lk = backgroundLockedLog, tm = terminatedLog
+        let save = {
+            DetectionLogStore.save(foreground: fg, background: bg, backgroundLocked: lk, terminated: tm)
+        }
+        if synchronous {
+            save()
+        } else {
+            DispatchQueue.global(qos: .utility).async(execute: save)
+        }
     }
 
     // MARK: - Geofence / Location Capture Delegate (v2.4)
@@ -781,6 +801,7 @@ extension BeaconViewModel {
                 timestamp: now,
                 detail: "👁 LOCATION (esquerdo) — iOS reportou entrada na região (CLBeaconRegion)"
             ))
+            self.notificationManager.notifyZoneEnter(eye: "Location")
         }
     }
 
@@ -794,6 +815,7 @@ extension BeaconViewModel {
                 timestamp: now,
                 detail: "👁 LOCATION (esquerdo) — iOS reportou saída da região"
             ))
+            self.notificationManager.notifyZoneExit(eye: "Location")
         }
     }
 
@@ -810,6 +832,7 @@ extension BeaconViewModel {
                 timestamp: now,
                 detail: "👁 BLUETOOTH (direito) — BLE detectou beacon (CBCentralManager)"
             ))
+            self.notificationManager.notifyZoneEnter(eye: "Bluetooth")
         }
     }
 
@@ -823,6 +846,7 @@ extension BeaconViewModel {
                 timestamp: now,
                 detail: "👁 BLUETOOTH (direito) — zona vazia por 10s (graça expirou)"
             ))
+            self.notificationManager.notifyZoneExit(eye: "Bluetooth")
         }
     }
 

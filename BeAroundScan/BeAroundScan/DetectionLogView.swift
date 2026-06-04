@@ -5,6 +5,7 @@ enum LogModeFilter: String, CaseIterable {
     case foreground = "FG"
     case background = "BG"
     case backgroundLocked = "BG Lock"
+    case terminated = "T"
 }
 
 enum LogTypeFilter: String, CaseIterable {
@@ -30,6 +31,7 @@ struct DetectionLogView: View {
         case .foreground: viewModel.foregroundLog
         case .background: viewModel.backgroundLog
         case .backgroundLocked: viewModel.backgroundLockedLog
+        case .terminated: viewModel.terminatedLog
         }
 
         return sourceLog.filter { entry in
@@ -49,9 +51,10 @@ struct DetectionLogView: View {
 
         return grouped.map { (components, entries) in
             let date = calendar.date(from: components) ?? Date()
-            let fgCount = entries.filter { !$0.isBackground && !$0.isLocked }.count
-            let bgCount = entries.filter { $0.isBackground && !$0.isLocked }.count
-            let lkCount = entries.filter { $0.isLocked }.count
+            let fgCount = entries.filter { $0.mode == .foreground }.count
+            let bgCount = entries.filter { $0.mode == .background }.count
+            let lkCount = entries.filter { $0.mode == .backgroundLocked }.count
+            let tmCount = entries.filter { $0.mode == .terminated }.count
             let uniqueBeacons = Set(entries.map { "\($0.major).\($0.minor)" }).count
             return MinuteGroup(
                 date: date,
@@ -59,6 +62,7 @@ struct DetectionLogView: View {
                 fgCount: fgCount,
                 bgCount: bgCount,
                 lkCount: lkCount,
+                tmCount: tmCount,
                 uniqueBeacons: uniqueBeacons
             )
         }
@@ -91,7 +95,7 @@ struct DetectionLogView: View {
                     .pickerStyle(.segmented)
 
                     HStack {
-                        Text("FG:\(viewModel.foregroundLog.count) BG:\(viewModel.backgroundLog.count) LK:\(viewModel.backgroundLockedLog.count)")
+                        Text("FG:\(viewModel.foregroundLog.count) BG:\(viewModel.backgroundLog.count) LK:\(viewModel.backgroundLockedLog.count) T:\(viewModel.terminatedLog.count)")
                             .font(.caption)
                             .foregroundColor(.secondary)
                         Spacer()
@@ -101,7 +105,7 @@ struct DetectionLogView: View {
                             Label("Limpar", systemImage: "trash")
                                 .font(.caption)
                         }
-                        .disabled(viewModel.foregroundLog.isEmpty && viewModel.backgroundLog.isEmpty && viewModel.backgroundLockedLog.isEmpty)
+                        .disabled(viewModel.foregroundLog.isEmpty && viewModel.backgroundLog.isEmpty && viewModel.backgroundLockedLog.isEmpty && viewModel.terminatedLog.isEmpty)
                     }
                 }
                 .padding(.horizontal)
@@ -148,6 +152,7 @@ private struct MinuteGroup: Identifiable {
     let fgCount: Int
     let bgCount: Int
     let lkCount: Int
+    let tmCount: Int
     let uniqueBeacons: Int
 }
 
@@ -186,6 +191,9 @@ private struct MinuteGroupRow: View {
                 }
                 if group.lkCount > 0 {
                     badgeCount("LK", count: group.lkCount, color: .red)
+                }
+                if group.tmCount > 0 {
+                    badgeCount("T", count: group.tmCount, color: .black)
                 }
 
                 Spacer()
@@ -263,11 +271,14 @@ private struct LogEntryRow: View {
 
     @ViewBuilder
     private var modeBadge: some View {
-        if entry.isLocked {
+        switch entry.mode {
+        case .terminated:
+            badgeText("T", color: .black)
+        case .backgroundLocked:
             badgeText("LK", color: .red)
-        } else if entry.isBackground {
+        case .background:
             badgeText("BG", color: .orange)
-        } else {
+        case .foreground:
             badgeText("FG", color: .green)
         }
     }

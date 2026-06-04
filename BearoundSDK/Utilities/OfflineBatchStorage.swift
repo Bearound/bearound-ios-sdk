@@ -186,6 +186,62 @@ class OfflineBatchStorage {
         }
     }
 
+    /// Saves a batch and returns its persistent identifier (the on-disk filename), so the
+    /// caller can remove exactly this batch later (used by persist-before-send: persist
+    /// before the upload starts, remove THIS batch on success, leave it on failure).
+    /// - Parameter beacons: Array of beacons to store
+    /// - Returns: The batch identifier (filename) if saved, otherwise nil
+    func saveBatchReturningId(_ beacons: [Beacon]) -> String? {
+        guard let directory = storageDirectory else { return nil }
+        guard !beacons.isEmpty else { return nil }
+
+        let batchId = UUID().uuidString
+        let timestamp = Date()
+
+        let storedBeacons = beacons.map { StoredBeacon(from: $0) }
+        let batch = StoredBatch(id: batchId, timestamp: timestamp, beacons: storedBeacons)
+
+        let timestampInt = Int(timestamp.timeIntervalSince1970)
+        let filename = "\(timestampInt)_\(batchId).json"
+        let fileURL = directory.appendingPathComponent(filename)
+
+        do {
+            let encoder = JSONEncoder()
+            encoder.dateEncodingStrategy = .iso8601
+            let data = try encoder.encode(batch)
+            try data.write(to: fileURL, options: .atomic)
+            NSLog("[BeAroundSDK] Persisted batch (pre-send) with %d beacons to %@", beacons.count, filename)
+
+            enforceMaxBatchCount()
+            return filename
+        } catch {
+            NSLog("[BeAroundSDK] Failed to persist batch (pre-send): %@", error.localizedDescription)
+            return nil
+        }
+    }
+
+    /// Removes a specific batch by its identifier (filename). Call after the batch was
+    /// successfully delivered so it is not re-sent on the next drain.
+    /// - Parameter id: The batch identifier returned by `saveBatchReturningId`
+    /// - Returns: true if the batch was removed
+    @discardableResult
+    func removeBatch(id: String) -> Bool {
+        guard let directory = storageDirectory else { return false }
+        guard !id.isEmpty else { return false }
+
+        let fileURL = directory.appendingPathComponent(id)
+        guard fileManager.fileExists(atPath: fileURL.path) else { return false }
+
+        do {
+            try fileManager.removeItem(at: fileURL)
+            NSLog("[BeAroundSDK] Removed delivered batch %@", id)
+            return true
+        } catch {
+            NSLog("[BeAroundSDK] Failed to remove batch %@: %@", id, error.localizedDescription)
+            return false
+        }
+    }
+
     /// Loads the oldest batch from storage (FIFO)
     /// - Returns: Array of beacons or nil if no batches available
     func loadOldestBatch() -> [Beacon]? {

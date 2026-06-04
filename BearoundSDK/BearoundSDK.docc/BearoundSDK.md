@@ -188,27 +188,6 @@ if BeAroundSDK.isLocationAvailable() {
 }
 ```
 
-**App Tracking Transparency (Optional):**
-```swift
-import AppTrackingTransparency
-import AdSupport
-
-if #available(iOS 14, *) {
-    ATTrackingManager.requestTrackingAuthorization { status in
-        switch status {
-        case .authorized:
-            print("ATT Authorized")
-            let idfa = ASIdentifierManager.shared().advertisingIdentifier
-            print("IDFA: \(idfa.uuidString)")
-        case .denied:
-            print("ATT Denied")
-        default:
-            break
-        }
-    }
-}
-```
-
 ### Advanced Configuration
 
 #### Periodic Scanning (Battery Efficient)
@@ -225,10 +204,15 @@ BeAroundSDK.shared.configure(
 ```
 
 **How it works:**
-- Scans for 5 seconds before each sync interval
-- Pauses scanning between sync times
-- Automatically switches to continuous mode in background
-- Ideal for battery-conscious applications
+- Controls the **sync cadence** — how often detected beacons are flushed to the API.
+- Ideal for battery-conscious applications.
+
+> **On iOS the BLE radio scans continuously regardless of this setting.** iOS performs its
+> own power duty-cycling for background BLE scanning, and the SDK never stops the radio in
+> steady state (stopping it would unregister the kernel scan filter and break terminated-app
+> wake-up). Periodic/precision settings therefore change the **sync cadence** and the
+> **location accuracy**, not the radio duty cycle. The newer `scanPrecision` API
+> (`.high`/`.medium`/`.low`) supersedes `enablePeriodicScanning`; see the README for details.
 
 #### Bluetooth Metadata Scanning
 
@@ -657,16 +641,9 @@ The SDK automatically sends beacon data to your API endpoint in this structure:
     "ramAvailableMb": 1280,
     "screenWidth": 1170,
     "screenHeight": 2532,
-    "advertisingId": "00000000-0000-0000-0000-000000000000",
-    "adTrackingEnabled": true,
     "appInForeground": true,
     "appUptimeMs": 12345,
-    "coldStart": false,
-    "location": {
-      "latitude": -23.5505,
-      "longitude": -46.6333,
-      "accuracy": 10.0
-    }
+    "coldStart": false
   },
   "userProperties": {
     "internalId": "user-12345",

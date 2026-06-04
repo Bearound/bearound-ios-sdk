@@ -15,7 +15,7 @@ Pod::Spec.new do |spec|
 
   spec.source_files  = "BearoundSDK/**/*.{swift}"
 
-  spec.frameworks = "Foundation", "CoreLocation", "CoreBluetooth", "AdSupport"
+  spec.frameworks = "Foundation", "CoreLocation", "CoreBluetooth"
 
   spec.swift_versions = "5.0"
 
