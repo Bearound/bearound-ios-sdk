@@ -7,8 +7,18 @@
 
 import Foundation
 
-/// Scan precision mode
-/// Controls the duty cycle for both BLE and CoreLocation scanning
+/// Scan precision mode.
+///
+/// - Important: On **iOS** the BLE radio scans **continuously in all precisions**. iOS performs
+///   its own power duty-cycling for background BLE scanning, so the SDK does not (and cannot
+///   safely) stop the radio to save battery — doing so would unregister the kernel scan filter
+///   and break terminated-app wake-up. Therefore `ScanPrecision` on iOS does **not** change the
+///   radio duty cycle. It only affects:
+///   - **sync cadence** (`SDKConfiguration.syncInterval`): `.high` = 15s, `.medium`/`.low` = 60s
+///   - **location accuracy** (`SDKConfiguration.precisionLocationAccuracy`): `.high`/`.medium` = 10m, `.low` = 100m
+///
+///   The enum is kept because the duty-cycle distinction is real on **Android**, where the radio
+///   scan window/interval does change per precision.
 public enum ScanPrecision: String, CaseIterable {
     case high
     case medium

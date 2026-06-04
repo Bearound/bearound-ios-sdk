@@ -14,6 +14,9 @@ class NotificationManager {
         case apiSyncSuccess = "api-sync-success"
         case apiSyncFailed = "api-sync-failed"
         case appRelaunched = "app-relaunched-background"
+        case zoneEnter = "zone-enter"
+        case zoneExit = "zone-exit"
+        case pushSync = "push-sync"
     }
 
     private var lastNotificationDates: [NotificationIdentifier: Date] = [:]
@@ -23,9 +26,12 @@ class NotificationManager {
         .beaconDetected: 300,
         .beaconDetectedBackground: 60,
         .apiSyncStarted: 30,
-        .apiSyncSuccess: 60,
+        .apiSyncSuccess: 10,
         .apiSyncFailed: 30,
-        .appRelaunched: 60
+        .appRelaunched: 60,
+        // Transitions are edge events; a short cooldown only debounces zone flicker.
+        .zoneEnter: 5,
+        .zoneExit: 5
     ]
 
     var enableScanningNotifications = true
@@ -154,6 +160,30 @@ class NotificationManager {
         )
     }
 
+    /// Fired by the silent-push handler so the push-triggered SCAN result is always VISIBLE,
+    /// with detail: did the scan run, how many beacons it found, and whether an upload started.
+    /// The real HTTP ingest result arrives separately via `notifyAPISyncCompleted`.
+    /// No cooldown (test pushes are rare).
+    func notifyPushTriggeredSync(beaconsFound: Int, ingestStarted: Bool, pendingBatches: Int) {
+        guard enableAPISyncNotifications else { return }
+
+        let title: String
+        let body: String
+        if ingestStarted {
+            title = "Push → Scan ✅ · enviando"
+            if beaconsFound > 0 {
+                body = "Scan: OK · Beacons: \(beaconsFound) · Ingest: enviando ao servidor…"
+            } else {
+                body = "Scan: OK · Beacons: 0 · Ingest: reenviando \(pendingBatches) lote(s) pendente(s)…"
+            }
+        } else {
+            title = "Push → Scan ✅ · nada a enviar"
+            body = "Scan: OK · Beacons: 0 · Ingest: nada novo pra enviar."
+        }
+
+        sendNotification(identifier: .pushSync, title: title, body: body, sound: .default)
+    }
+
     func notifyAppRelaunchedInBackground() {
         guard enableBackgroundNotifications else { return }
         guard canSendNotification(for: .appRelaunched) else { return }
@@ -162,6 +192,33 @@ class NotificationManager {
             identifier: .appRelaunched,
             title: "App Reativado",
             body: "BeAroundSDK detectou região de beacons em segundo plano",
+            sound: .default
+        )
+    }
+
+    /// Fires once when the device enters a beacon zone (rising edge). `eye` names the
+    /// detection source — "Bluetooth" works with Location off, "Location" needs Always auth.
+    func notifyZoneEnter(eye: String) {
+        guard enableBeaconNotifications else { return }
+        guard canSendNotification(for: .zoneEnter) else { return }
+
+        sendNotification(
+            identifier: .zoneEnter,
+            title: "Entrou na zona",
+            body: "Bearound detectou uma região de beacons (\(eye))",
+            sound: .default
+        )
+    }
+
+    /// Fires once when the device leaves a beacon zone (falling edge).
+    func notifyZoneExit(eye: String) {
+        guard enableBeaconNotifications else { return }
+        guard canSendNotification(for: .zoneExit) else { return }
+
+        sendNotification(
+            identifier: .zoneExit,
+            title: "Saiu da zona",
+            body: "Bearound: você saiu da região de beacons (\(eye))",
             sound: .default
         )
     }

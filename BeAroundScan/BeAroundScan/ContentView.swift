@@ -109,38 +109,6 @@ struct ContentView: View {
                                 .fontWeight(.medium)
                                 .foregroundColor(notificationPermissionColor)
                         }
-
-                        HStack {
-                            Image(systemName: "hand.raised.fill")
-                                .font(.caption)
-                                .foregroundColor(trackingPermissionColor)
-                                .frame(width: 20)
-                            Text("Tracking:")
-                                .font(.caption)
-                                .foregroundColor(.secondary)
-                            Spacer()
-                            Text(viewModel.trackingStatus)
-                                .font(.caption)
-                                .fontWeight(.medium)
-                                .foregroundColor(trackingPermissionColor)
-                        }
-
-                        HStack {
-                            Image(systemName: "tag.fill")
-                                .font(.caption)
-                                .foregroundColor(.secondary)
-                                .frame(width: 20)
-                            Text("IDFA:")
-                                .font(.caption)
-                                .foregroundColor(.secondary)
-                            Spacer()
-                            Text(viewModel.idfaValue)
-                                .font(.caption2)
-                                .fontWeight(.medium)
-                                .foregroundColor(.secondary)
-                                .lineLimit(1)
-                                .minimumScaleFactor(0.7)
-                        }
                     }
                     .padding(12)
                     .background(Color.gray.opacity(0.1))
@@ -366,13 +334,6 @@ struct ContentView: View {
         let status = viewModel.notificationStatus
         if status.contains("Autorizada") { return .green }
         if status.contains("Negada") { return .red }
-        return .orange
-    }
-
-    private var trackingPermissionColor: Color {
-        let status = viewModel.trackingStatus
-        if status.contains("Permitido") { return .green }
-        if status.contains("Negado") || status.contains("Restrito") { return .red }
         return .orange
     }
 }

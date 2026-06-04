@@ -28,8 +28,8 @@ struct SettingsView: View {
                 Section("Precisão do Scan") {
                     Picker("Precisão", selection: $viewModel.scanPrecision) {
                         Text("Alta (Ininterrupto)").tag(ScanPrecision.high)
-                        Text("Média (3x10s/min)").tag(ScanPrecision.medium)
-                        Text("Baixa (1x10s/min)").tag(ScanPrecision.low)
+                        Text("Média (sync 60s)").tag(ScanPrecision.medium)
+                        Text("Baixa (sync 60s · accuracy 100m)").tag(ScanPrecision.low)
                     }
                 }
 

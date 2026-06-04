@@ -5,8 +5,6 @@
 //  Created by Bearound on 29/12/25.
 //
 
-import AdSupport
-import AppTrackingTransparency
 import CoreLocation
 import CoreTelephony
 import Foundation
@@ -112,6 +110,7 @@ final class DeviceInfoCollector: @unchecked Sendable {
 
 		return UserDevice(
 			deviceId: DeviceIdentifier.getDeviceId(),
+			pushToken: PushTokenStore.unsyncedToken,
 			manufacturer: "Apple",
 			model: deviceModel(),
 			osVersion: device.systemVersion,
@@ -128,11 +127,9 @@ final class DeviceInfoCollector: @unchecked Sendable {
 			ramAvailableMb: ramAvailableMb(),
 			screenWidth: Int(screen.bounds.width * screen.scale),
 			screenHeight: Int(screen.bounds.height * screen.scale),
-			adTrackingEnabled: isAdTrackingEnabled(),
 			appInForeground: appInForeground,
 			appUptimeMs: appUptimeMs(),
 			coldStart: isColdStart,
-			advertisingId: advertisingId(),
 			lowPowerMode: isLowPowerModeEnabled(),
 			locationAccuracy: locationAccuracyString(locationPermission),
 			wifiSSID: wifiSSID(),
@@ -373,14 +370,6 @@ final class DeviceInfoCollector: @unchecked Sendable {
 		}
 
 		return 0
-	}
-
-	private func isAdTrackingEnabled() -> Bool {
-		DeviceIdentifier.isAdTrackingEnabled()
-	}
-
-	private func advertisingId() -> String? {
-		DeviceIdentifier.getAdvertisingId()
 	}
 
 	private func appUptimeMs() -> Int {

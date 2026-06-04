@@ -1,21 +1,34 @@
 import BearoundSDK
 import Foundation
 
-struct DetectionLogEntry: Identifiable {
-    let id = UUID()
+/// App lifecycle context in which a beacon detection was captured.
+/// `terminated` means iOS relaunched the process after it was force-quit / killed —
+/// the detection happened while the app was, from the user's point of view, "dead".
+enum DetectionMode: String, Codable, CaseIterable {
+    case foreground
+    case background
+    case backgroundLocked
+    case terminated
+}
+
+struct DetectionLogEntry: Identifiable, Codable {
+    let id: UUID
     let timestamp: Date
     let major: Int
     let minor: Int
     let rssi: Int
     let proximity: String
-    let isBackground: Bool
-    let isLocked: Bool
+    let mode: DetectionMode
     let discoverySource: String
     let beaconUUID: String
+
+    var isBackground: Bool { mode == .background || mode == .backgroundLocked }
+    var isLocked: Bool { mode == .backgroundLocked }
+    var isTerminated: Bool { mode == .terminated }
 }
 
 extension DetectionLogEntry {
-    static func from(beacon: Beacon, isBackground: Bool, isLocked: Bool) -> DetectionLogEntry {
+    static func from(beacon: Beacon, mode: DetectionMode) -> DetectionLogEntry {
         let proximityText: String = switch beacon.proximity {
         case .immediate: "Imediato"
         case .near: "Perto"
@@ -38,13 +51,13 @@ extension DetectionLogEntry {
         }
 
         return DetectionLogEntry(
+            id: UUID(),
             timestamp: Date(),
             major: beacon.major,
             minor: beacon.minor,
             rssi: beacon.rssi,
             proximity: proximityText,
-            isBackground: isBackground,
-            isLocked: isLocked,
+            mode: mode,
             discoverySource: sourceText,
             beaconUUID: beacon.uuid.uuidString
         )

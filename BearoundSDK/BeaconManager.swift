@@ -72,6 +72,11 @@ class BeaconManager: NSObject {
     /// Called when active scanning should STOP (region exited) — host should stop BLE central scan.
     var onActiveScanShouldStop: (() -> Void)?
 
+    /// Called whenever the CLLocationManager reports an authorization change. The SDK uses this
+    /// to re-evaluate whether the BLE eye is running Bluetooth-only (no region-monitoring waker)
+    /// and must therefore stay in continuous active scanning instead of the idle duty cycle.
+    var onAuthorizationChanged: (() -> Void)?
+
     // MARK: - Beacon State
 
     private var detectedBeacons: [String: Beacon] = [:]
@@ -181,30 +186,21 @@ class BeaconManager: NSObject {
             configureBackgroundUpdates(enabled: false)
         }
 
-        // Resume ranging ONLY if we're inside a beacon region.
-        // Outside a region: stay idle. iOS will wake us via didEnterRegion when a beacon appears.
-        if isScanning, isInBeaconRegion, let region = beaconRegion, !isRanging {
-            locationManager.startRangingBeacons(satisfying: region.beaconIdentityConstraint)
-            isRanging = true
-            startWatchdog()
-        }
+        // Doctrine: Location is for detection only. Once we know we're in a
+        // region, the BLE eye (BluetoothManager) does the tracking. We do NOT
+        // start CL ranging here — it would burn battery for no added value.
+        // Region monitoring is still active (kernel-level), so iOS will fire
+        // didExitRegion / didEnterRegion as needed.
     }
 
     @objc private func appDidEnterBackground() {
         isInForeground = false
 
-        if isScanning {
-            // Resume ranging ONLY if we're inside a beacon region.
-            if !isRanging, isInBeaconRegion, let region = beaconRegion {
-                configureBackgroundUpdates(enabled: true)
-                locationManager.startRangingBeacons(satisfying: region.beaconIdentityConstraint)
-                isRanging = true
-                startWatchdog()
-                startRangingRefreshTimer()
-            } else {
-                // Outside a region — make sure we aren't holding the background location grant
-                configureBackgroundUpdates(enabled: false)
-            }
+        // Doctrine: do not start CL ranging on background transition. BLE
+        // continues to run if we're inside a region. Drop the background-
+        // location grant if no ranging is active.
+        if !isRanging {
+            configureBackgroundUpdates(enabled: false)
         }
     }
 
@@ -608,9 +604,9 @@ class BeaconManager: NSObject {
         isBackgroundTemporaryRanging = false
         stopBackgroundRangingTimer()
 
-        NSLog("[BeAroundSDK] Background ranging complete - triggering sync")
+        NSLog("[BeAroundSDK] Background ranging complete - triggering sync + dropping CL")
 
-        if !isInForeground, let region = beaconRegion, isRanging {
+        if let region = beaconRegion, isRanging {
             locationManager.stopRangingBeacons(satisfying: region.beaconIdentityConstraint)
             isRanging = false
             stopWatchdog()
@@ -619,6 +615,11 @@ class BeaconManager: NSObject {
             // CRITICAL: Trigger sync before iOS suspends us
             onBackgroundRangingComplete?()
         }
+
+        // Doctrine: detection done — release the background-location grant so
+        // iOS removes the "always location" indicator from the status bar.
+        // Region monitoring continues kernel-level and does NOT need this flag.
+        configureBackgroundUpdates(enabled: false)
     }
 
     private func refreshRanging() {
@@ -627,13 +628,16 @@ class BeaconManager: NSObject {
     }
 
     private func checkRangingHealth() {
-        guard isScanning, isInBeaconRegion else { return }
+        // Doctrine: CL ranging only runs during terminated-relaunch warm-up.
+        // If ranging isn't active (steady-state, BLE-only), there's nothing
+        // to "heal" — beacons are tracked by BluetoothManager.
+        guard isScanning, isInBeaconRegion, isRanging else { return }
 
         if let lastUpdate = lastBeaconUpdate {
             if Date().timeIntervalSince(lastUpdate) > 30 {
                 restartRanging()
             }
-        } else if isRanging {
+        } else {
             restartRanging()
         }
     }
@@ -696,6 +700,10 @@ extension BeaconManager: CLLocationManagerDelegate {
             status = CLLocationManager.authorizationStatus()
         }
 
+        // Surface every authorization change so the SDK can re-gate the BLE eye's duty cycle
+        // (BLE-only vs Location-backed). Fired on all transitions, not just denial.
+        onAuthorizationChanged?()
+
         if status == .denied || status == .restricted {
             let error = NSError(
                 domain: "BeAroundSDK",
@@ -742,6 +750,9 @@ extension BeaconManager: CLLocationManagerDelegate {
         if !wasAlreadyInRegion {
             onRegionEnter?()
             // Host (SDK) should start BLE central scan now that we're inside the region.
+            // From here on, beacon ranging is done by the BLE eye — CoreLocation
+            // is only used as the detection trigger (region monitoring stays
+            // kernel-level, which is essentially free of battery).
             onActiveScanShouldStart?()
         }
 
@@ -750,56 +761,42 @@ extension BeaconManager: CLLocationManagerDelegate {
             return
         }
 
-        if !actuallyInForeground {
+        // CRITICAL: cold-start from terminated state. CL ranging is the only way
+        // to seed beacon data fast enough before the OS suspends us again — the
+        // BLE central can take several seconds to wake from state-restoration.
+        // We bounded the window to `terminatedAppRangingDuration` (25s) so we
+        // collapse back to BLE-only as soon as possible.
+        if !actuallyInForeground && !isScanning {
             configureBackgroundUpdates(enabled: true)
+            NSLog("[BeAroundSDK] APP RELAUNCHED FROM TERMINATED STATE - starting ranging for %.0fs (one-shot)",
+                  terminatedAppRangingDuration)
 
-            // CRITICAL: App was relaunched from terminated state
-            if !isScanning {
-                NSLog("[BeAroundSDK] APP RELAUNCHED FROM TERMINATED STATE - starting ranging for %.0fs",
-                      terminatedAppRangingDuration)
+            let constraint = CLBeaconIdentityConstraint(uuid: beaconUUID)
+            let bootRegion = CLBeaconRegion(
+                beaconIdentityConstraint: constraint,
+                identifier: "BeAroundRegion"
+            )
+            bootRegion.notifyOnEntry = true
+            bootRegion.notifyOnExit = true
+            bootRegion.notifyEntryStateOnDisplay = true
+            beaconRegion = bootRegion
 
-                let constraint = CLBeaconIdentityConstraint(uuid: beaconUUID)
-                let region = CLBeaconRegion(
-                    beaconIdentityConstraint: constraint,
-                    identifier: "BeAroundRegion"
-                )
-                region.notifyOnEntry = true
-                region.notifyOnExit = true
-                region.notifyEntryStateOnDisplay = true
-                beaconRegion = region
+            isScanning = true
+            onScanningStateChanged?(true)
 
-                isScanning = true
-                onScanningStateChanged?(true)
-
-                // Notify that app was relaunched from terminated (this will configure SDK if needed)
-                onAppRelaunchedFromTerminated?()
-
-                // Start ranging immediately - SDK will handle sync timing
-                locationManager.startRangingBeacons(satisfying: clBeaconRegion.beaconIdentityConstraint)
-                isRanging = true
-                startWatchdog()
-
-                // Use extended duration for terminated app relaunch
-                startBackgroundRangingTimer(duration: terminatedAppRangingDuration)
-                return
-            }
+            onAppRelaunchedFromTerminated?()
 
             locationManager.startRangingBeacons(satisfying: clBeaconRegion.beaconIdentityConstraint)
             isRanging = true
             startWatchdog()
-            startRangingRefreshTimer()
-        } else {
-            // Foreground: if ranging is paused (duty cycle), start immediately
-            // so beacons are detected right away on region entry
-            if isScanning, let region = beaconRegion, !isRanging {
-                locationManager.startRangingBeacons(satisfying: region.beaconIdentityConstraint)
-                isRanging = true
-                startWatchdog()
-                NSLog("[BeAroundSDK] Region entered in foreground during pause - immediate ranging started")
-            } else {
-                NSLog("[BeAroundSDK] Region entered in foreground - SDK will control ranging")
-            }
+            startBackgroundRangingTimer(duration: terminatedAppRangingDuration)
+            return
         }
+
+        // Steady-state (FG or BG with scanning already running): do NOT start
+        // CL ranging. Beacons are tracked by the BLE eye (BluetoothManager).
+        // Region monitoring keeps running kernel-level to detect the exit.
+        NSLog("[BeAroundSDK] Region entered — staying on BLE-only (no CL ranging)")
     }
 
     func locationManager(_: CLLocationManager, didExitRegion region: CLRegion) {

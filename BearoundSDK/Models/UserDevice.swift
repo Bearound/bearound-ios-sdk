@@ -9,6 +9,8 @@ import Foundation
 
 struct UserDevice {
     let deviceId: String
+    /// APNs push token — the address used to deliver push. Nil unless it still needs syncing.
+    let pushToken: String?
     let manufacturer: String
     let model: String
     let osVersion: String
@@ -25,11 +27,9 @@ struct UserDevice {
     let ramAvailableMb: Int
     let screenWidth: Int
     let screenHeight: Int
-    let adTrackingEnabled: Bool
     let appInForeground: Bool
     let appUptimeMs: Int
     let coldStart: Bool
-    let advertisingId: String?
     let lowPowerMode: Bool?
     let locationAccuracy: String?
     let wifiSSID: String?

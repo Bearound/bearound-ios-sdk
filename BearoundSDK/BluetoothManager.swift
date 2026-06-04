@@ -15,15 +15,20 @@ import os.log
 private let bleLog = OSLog(subsystem: "com.bearound.sdk", category: "BLE")
 
 /// Public scan mode for the Bluetooth eye, exposed so host apps can render the
-/// current power profile of the BLE scanner. The two-eyes model treats the BT
-/// eye as event-driven: idle by default, woken to active by either a CLBeaconRegion
-/// enter (Location eye) or a beacon hit during an idle scan window.
+/// current power profile of the BLE scanner.
+///
+/// - Note: On iOS the underlying CB scan is **always registered and continuous** (iOS does its
+///   own background power duty-cycling), so this is a UI/bookkeeping label over an always-on
+///   scan — not a radio on/off switch. The two-eyes model treats the BT eye as event-driven:
+///   it reports `.idle` by default and is promoted to `.active` by either a CLBeaconRegion enter
+///   (Location eye) or a beacon hit.
 public enum BluetoothScanMode: String {
-    /// Scanner is asleep most of the time. Wakes briefly every `idleCycle` to peek
-    /// (scan for `idleScanWindow`), then stops again. Near-zero battery.
+    /// UI label: the eye is reporting "no zone activity". The CB scan filter stays registered
+    /// with iOS the whole time; iOS keeps low-power scanning alive and wakes the process on a
+    /// match. Near-zero battery — managed by iOS, not by stopping the radio.
     case idle
-    /// Scanner runs continuously. Host receives detection callbacks at native cadence.
-    /// Switched to on region entry, or on a hit during an idle peek.
+    /// Host receives detection callbacks at native cadence plus heartbeat ticks. Switched to on
+    /// region entry, or on a beacon hit.
     case active
 }
 
@@ -84,6 +89,23 @@ class BluetoothManager: NSObject {
     /// Tracks whether the app is in background for scan mode selection
     private var isInBackground: Bool = false
 
+    /// When `true`, the BLE eye must NEVER demote its mode label from `.active` to `.idle` — it
+    /// stays reported as continuously active for as long as it is running. (The radio itself is
+    /// always registered and continuous regardless; this only governs the `.active`/`.idle` label
+    /// and the active-mode heartbeat tick.)
+    ///
+    /// WHY: demoting to `.idle` is only safe when the **Location eye** (CoreLocation region
+    /// monitoring) is available, because a region-enter promotes the eye back to `.active`
+    /// instantly. When the SDK runs **Bluetooth-only** (Location authorization is neither
+    /// `.authorizedAlways` nor `.authorizedWhenInUse`) there is NO waker — nothing promotes the
+    /// eye back out of `.idle`, so the host would stop receiving active-mode callbacks until the
+    /// next beacon hit. Staying `.active` keeps the heartbeat tick and zone callbacks flowing.
+    ///
+    /// Set by `BeAroundSDK` from the current Location authorization on `startScanning()` and on
+    /// every authorization change. Defaults to `false` so the mode is allowed to fall back to
+    /// `.idle` whenever Location IS authorized (region monitoring provides the instant wake-up there).
+    var keepContinuousScanWhenBleOnly: Bool = false
+
     // MARK: - Beacon Tracking
 
     /// Grace period before removing a beacon (seconds)
@@ -113,8 +135,10 @@ class BluetoothManager: NSObject {
     private(set) var isInBluetoothZone: Bool = false
 
     /// How long the BLE eye waits without any beacon detection before declaring "zone exited".
-    /// Mirrors `beaconGracePeriod` so a beacon momentarily out of range doesn't flip the eye.
-    private let zoneExitGracePeriod: TimeInterval = 10.0
+    /// Long enough to absorb RSSI dropouts and BLE-radio gaps while the user stays in the
+    /// zone. Increased from 10s → 60s after observing flicker (enter/exit ping-pong with
+    /// the device stationary). 60s aligns with CoreLocation region monitoring cadence.
+    private let zoneExitGracePeriod: TimeInterval = 60.0
 
     /// Timer that checks tracked beacons and flips the zone state when grace expires.
     private var zonePresenceTimer: DispatchSourceTimer?
@@ -128,26 +152,23 @@ class BluetoothManager: NSObject {
     /// Fires once when the BLE eye has not seen any beacon for `zoneExitGracePeriod` (falling edge).
     var onBluetoothZoneExit: (() -> Void)?
 
-    // MARK: - Duty Cycle (v2.5)
+    // MARK: - Duty Cycle (v2.6)
     //
-    // The BLE eye runs in one of two modes:
-    //   .idle   — scanner OFF most of the time. Wakes for `idleScanWindow` every `idleCycle`
-    //             to peek; if a beacon is detected we switch to .active, else we sleep again.
-    //   .active — scanner ON continuously. Stays active until either (a) Location eye reports
-    //             region exit, or (b) BLE sees no beacon for `activeToIdleGrace`.
-
-    /// Idle mode peek duration — scanner runs for this long inside each idle cycle.
-    private let idleScanWindow: TimeInterval = 10.0
-
-    /// Idle mode cycle length — time between the START of one idle peek and the START of the next.
-    private let idleCycle: TimeInterval = 300.0   // 5 min
+    // The radio is ALWAYS registered with iOS and scans continuously — there is no app-level
+    // idle peek anymore (iOS does its own background power duty-cycling). `currentScanMode` is
+    // now a UI/bookkeeping label over that always-on scan, not a radio on/off switch:
+    //   .idle   — UI label only. The CB scan filter stays registered; iOS keeps low-power
+    //             scanning alive (and wakes the process on a match for terminated-app delivery).
+    //   .active — host gets heartbeat ticks (`activeTickCadence`) and zone callbacks. Switched
+    //             back to .idle (label only) when BLE sees no beacon for `activeToIdleGrace`,
+    //             unless `keepContinuousScanWhenBleOnly` is set.
 
     /// Active mode "UI tick" cadence — host gets a heartbeat callback this often while active.
     /// Scanner stays continuously on; this is just for host-visible progress.
     private let activeTickCadence: TimeInterval = 10.0
 
     /// In active mode, after this many seconds without a single detection we fall back to idle.
-    /// Longer than `zoneExitGracePeriod` (10s) because that one tracks zone presence, this one
+    /// Longer than `zoneExitGracePeriod` (60s) because that one tracks zone presence, this one
     /// tracks "user has clearly walked away, time to save battery".
     private let activeToIdleGrace: TimeInterval = 120.0   // 2 min
 
@@ -357,6 +378,14 @@ class BluetoothManager: NSObject {
             os_log("[BLE] sleepToIdle blocked — in background, staying ACTIVE", log: bleLog, type: .info)
             return
         }
+        // BLE-only mode: never drop the label to .idle. Without the Location eye there is no
+        // region-enter to promote us back to .active, so the host would stop getting active-mode
+        // callbacks until the next beacon hit. Stay reported as active and keep the active tick
+        // running. (The radio stays registered/continuous either way — this is label-only.)
+        guard !keepContinuousScanWhenBleOnly else {
+            os_log("[BLE] sleepToIdle blocked — BLE-only (no region-monitoring waker), staying ACTIVE", log: bleLog, type: .info)
+            return
+        }
 
         os_log("[BLE] SLEEP TO IDLE — UI label change only, scanner stays registered with iOS", log: bleLog, type: .info)
         currentScanMode = .idle
@@ -365,33 +394,6 @@ class BluetoothManager: NSObject {
         nextIdleScanAt = nil
         stopDutyCycleTimer()
         notifyScanModeChanged()
-    }
-
-    /// Schedules the next idle peek. Single-shot timer; rescheduled at the end of each peek.
-    private func scheduleNextIdlePeek() {
-        stopDutyCycleTimer()
-
-        let next = Date().addingTimeInterval(idleCycle)
-        nextIdleScanAt = next
-
-        let timer = DispatchSource.makeTimerSource(queue: bleQueue)
-        timer.schedule(deadline: .now() + idleCycle)
-        timer.setEventHandler { [weak self] in
-            self?.runIdlePeek()
-        }
-        dutyCycleTimer = timer
-        timer.resume()
-    }
-
-    /// v2.6: no-op. The scanner stays continuously registered with iOS so there's no
-    /// "peek window" anymore — every advertisement is delivered as it arrives. Kept as
-    /// a no-op to preserve the scheduleNextIdlePeek() call site without breaking the
-    /// timer plumbing. The duty cycle is now driven entirely by iOS in background.
-    private func runIdlePeek() {
-        guard isScanning, currentScanMode == .idle, centralManager.state == .poweredOn else {
-            return
-        }
-        os_log("[BLE] IDLE PEEK (no-op in v2.6 — scanner is always registered)", log: bleLog, type: .info)
     }
 
     /// Active mode tick — fires every `activeTickCadence` while in .active. Used to detect
@@ -415,6 +417,9 @@ class BluetoothManager: NSObject {
     private func evaluateActiveGrace() {
         guard currentScanMode == .active else { return }
         guard !isInBackground else { return }  // background: don't demote, sleepToIdle() blocks too
+        // BLE-only: never demote. The repeating active tick keeps itself scheduled, so we
+        // simply skip the grace check and stay .active. (See keepContinuousScanWhenBleOnly.)
+        guard !keepContinuousScanWhenBleOnly else { return }
 
         let now = Date()
         let lastSeen = trackedBeacons.values.map(\.lastSeen).max()
