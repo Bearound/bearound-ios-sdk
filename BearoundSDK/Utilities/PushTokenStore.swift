@@ -7,39 +7,49 @@
 
 import Foundation
 
-/// Stores the device's push token (APNs) and whether it has already been synced to the backend.
-///
-/// The token is the address used to deliver push to this device. It is sent **once** with the
-/// next sync and re-sent **only if it changes** (APNs tokens rotate on reinstall, restore, etc.).
-/// The stable identity remains `DeviceIdentifier.getDeviceId()` — the token is a mutable attribute.
+/// Stores the APNs push token and decides when to (re)send it: on change or every `ttl` (heartbeat).
 enum PushTokenStore {
     private static let tokenKey = "io.bearound.sdk.pushToken"
-    private static let syncedKey = "io.bearound.sdk.pushTokenSynced"
+    private static let lastSentKey = "io.bearound.sdk.pushTokenLastSent"
+    private static let lastSentAtKey = "io.bearound.sdk.pushTokenLastSentAt"
+    private static let ttl: TimeInterval = 7 * 24 * 60 * 60 // 7 days
+
     private static let defaults = UserDefaults.standard
     private static let lock = NSLock()
 
-    /// Registers a push token. If it differs from the stored one, marks it unsynced so the next
-    /// sync includes it. No-op when the token is unchanged (idempotent — safe to call every launch).
     static func setToken(_ token: String) {
         lock.lock(); defer { lock.unlock() }
-        guard token != defaults.string(forKey: tokenKey) else { return }
         defaults.set(token, forKey: tokenKey)
-        defaults.set(false, forKey: syncedKey)
     }
 
-    /// The token to include in the payload — non-nil only while it hasn't been synced yet.
-    /// Returns nil once the token has been delivered, so it stops riding along on every request.
-    static var unsyncedToken: String? {
+    static var tokenForPayload: String? {
         lock.lock(); defer { lock.unlock() }
         guard let token = defaults.string(forKey: tokenKey), !token.isEmpty else { return nil }
-        return defaults.bool(forKey: syncedKey) ? nil : token
+        let lastSent = defaults.string(forKey: lastSentKey)
+        if token != lastSent { return token }
+        if let at = defaults.object(forKey: lastSentAtKey) as? Date,
+           Date().timeIntervalSince(at) <= ttl {
+            return nil
+        }
+        return token // heartbeat: TTL elapsed since last send → re-send
     }
 
-    /// Marks the current token as synced so it stops being included in future payloads.
-    /// Called after a successful sync.
-    static func markSynced() {
+    static func markSent() {
         lock.lock(); defer { lock.unlock() }
-        guard defaults.string(forKey: tokenKey) != nil else { return }
-        defaults.set(true, forKey: syncedKey)
+        guard let token = defaults.string(forKey: tokenKey) else { return }
+        defaults.set(token, forKey: lastSentKey)
+        defaults.set(Date(), forKey: lastSentAtKey)
+    }
+
+    static var maskedToken: String? {
+        lock.lock(); defer { lock.unlock() }
+        guard let t = defaults.string(forKey: tokenKey), !t.isEmpty else { return nil }
+        guard t.count >= 12 else { return "\(t.prefix(2))…" }
+        return "\(t.prefix(8))…\(t.suffix(4))"
+    }
+
+    static var lastSentAt: Date? {
+        lock.lock(); defer { lock.unlock() }
+        return defaults.object(forKey: lastSentAtKey) as? Date
     }
 }
