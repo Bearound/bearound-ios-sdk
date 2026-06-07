@@ -78,48 +78,10 @@ class AppDelegate: NSObject, UIApplicationDelegate {
         }
     }
 
-    // Deterministic, pullable proof that the silent-push handler actually ran (and its result),
-    // independent of flaky log capture. Each line: "<unixTime> | RECEIVED|DONE didIngest=...".
-    private static func appendPushLog(_ s: String) {
-        guard let dir = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first else { return }
-        let url = dir.appendingPathComponent("push_log.txt")
-        let line = "\(Date().timeIntervalSince1970) | \(s)\n"
-        guard let data = line.data(using: .utf8) else { return }
-        if let handle = try? FileHandle(forWritingTo: url) {
-            defer { try? handle.close() }
-            handle.seekToEndOfFile()
-            handle.write(data)
-        } else {
-            try? data.write(to: url)
-        }
-    }
-
-    // Silent push (content-available:1) wakes the app in background. Refresh the BLE scan,
-    // collect Service Data, and sync — then call the completion handler so iOS knows we're done.
-    func application(
-        _ application: UIApplication,
-        didReceiveRemoteNotification userInfo: [AnyHashable: Any],
-        fetchCompletionHandler completionHandler: @escaping (UIBackgroundFetchResult) -> Void
-    ) {
-        NSLog("[BeAroundScan] SILENT PUSH received — refreshing BLE scan + sync")
-        Self.appendPushLog("RECEIVED")
-        BeAroundSDK.shared.performBackgroundBLERefreshAndSync(bleScanDuration: 10.0, trigger: "silent_push") { ingestStarted in
-            let info = BeAroundSDK.shared.lastBackgroundScanInfo
-            let beaconsFound = info?.beaconsFound ?? 0
-            let pendingBatches = info?.pendingBatches ?? 0
-            NSLog("[BeAroundScan] Silent push scan done (beacons=%d, ingestStarted=%d, pending=%d)",
-                  beaconsFound, ingestStarted ? 1 : 0, pendingBatches)
-            Self.appendPushLog("DONE beacons=\(beaconsFound) ingestStarted=\(ingestStarted) pending=\(pendingBatches)")
-            // App-level: surface the push-triggered SCAN result immediately (scan ran + count).
-            // The real HTTP ingest result arrives later via didCompleteSync -> notifyAPISyncCompleted.
-            NotificationManager.shared.notifyPushTriggeredSync(
-                beaconsFound: beaconsFound,
-                ingestStarted: ingestStarted,
-                pendingBatches: pendingBatches
-            )
-            completionHandler(ingestStarted ? .newData : .noData)
-        }
-    }
+    // NOTE: no didReceiveRemoteNotification here — the SDK handles Bearound silent pushes
+    // automatically (PushTokenAutoCapture swizzles it, gated on the "bearound" payload marker).
+    // The scan result is surfaced to the app via the didCompletePushScan delegate callback
+    // (see BeaconViewModel). This proves the zero-client-code receive path.
 
     /// The OS relaunches the app (or wakes it) to deliver results of the SDK's background
     /// beacon-uploads. Forward the event to the SDK, which finalizes the pending upload(s)

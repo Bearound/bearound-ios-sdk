@@ -90,6 +90,10 @@ public protocol BeAroundSDKDelegate: AnyObject {
     ///   - mode: the new mode the BT eye just entered
     ///   - nextIdleScanAt: absolute time of the next idle peek; non-nil only when mode is .idle
     func didChangeBluetoothScanMode(_ mode: BluetoothScanMode, nextIdleScanAt: Date?)
+
+    /// Called after the SDK automatically handled a Bearound silent push (woke, scanned, maybe
+    /// ingested) — so the host app can surface it (e.g. a local notification) if it wants.
+    func didCompletePushScan(beaconsFound: Int, ingestStarted: Bool, pendingBatches: Int)
 }
 
 // Default implementations (all optional except didUpdateBeacons)
@@ -105,4 +109,5 @@ extension BeAroundSDKDelegate {
     public func didEnterBluetoothZone() {}
     public func didExitBluetoothZone() {}
     public func didChangeBluetoothScanMode(_: BluetoothScanMode, nextIdleScanAt _: Date?) {}
+    public func didCompletePushScan(beaconsFound _: Int, ingestStarted _: Bool, pendingBatches _: Int) {}
 }

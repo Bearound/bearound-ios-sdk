@@ -112,7 +112,8 @@ As soon as you call `BeAroundSDK.shared.configure(...)`, the SDK:
 
 1. Triggers APNs registration (`registerForRemoteNotifications()`) — this only fetches the token and does **not** prompt the user.
 2. Captures the token from your `AppDelegate` via method swizzling (the same technique Firebase/OneSignal use), even if your app never implements `didRegisterForRemoteNotificationsWithDeviceToken`.
-3. Stores it and sends it **once** with the next sync (as `device.pushToken`), re-sending only if the token rotates.
+3. Sends it with the next sync (as `device.pushToken`) plus `device.apnsEnvironment` (`sandbox`/`production`, so the backend routes to the right APNs host). Re-sends when the token changes **or** after 7 days (self-healing heartbeat).
+4. Handles Bearound **silent pushes** (`content-available` carrying a `"bearound"` marker) by waking, refreshing the BLE scan and syncing — also via swizzle, no code required.
 
 You do **not** need to write any token-forwarding code.
 
@@ -648,14 +649,19 @@ The SDK logs important events with tag `[BeAroundSDK]`:
 - `[BeAroundSDK] Circuit breaker triggered - API may be down`
 - `[BeAroundSDK] Cached metadata for beacon X.Y`
 
+#### Diagnostics snapshot
+
+`BeAroundSDK.shared.diagnostics()` returns a `BeAroundDiagnostics` (device id, masked push token + last-sent, `apnsEnvironment`, scanning state, pending batches, last scan/sync/push, recent errors). Use `.summary()` for a log-friendly string. Reads in-memory state only — no network.
+
 ### Security & Privacy
 
 - Requires explicit user permission for location and Bluetooth
 - Respects iOS privacy guidelines
+- Ships Apple's **Privacy Manifest** (`PrivacyInfo.xcprivacy`) inside the framework — bundled automatically, no action needed by your app
 - All beacon data transmitted to your configured API endpoint with secure business token authentication
 - Authorization header sent as `Authorization: {businessToken}` (no Bearer prefix)
 - No local data storage by default
-- IDFA collected only with user consent (ATT framework)
+- Does **not** collect IDFA / advertising identifier — identity is a per-app stable device id (Keychain UUID)
 - Comprehensive device telemetry for analytics
 
 ### Testing

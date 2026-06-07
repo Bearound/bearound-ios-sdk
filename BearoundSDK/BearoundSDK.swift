@@ -75,6 +75,30 @@ public class BeAroundSDK {
         offlineBatchStorage.loadAllBatches()
     }
 
+    /// A read-only snapshot of the SDK's identity, state, and recent runtime activity.
+    /// Safe to call anytime — reads in-memory counters and stored identifiers, no network.
+    /// Use `.summary()` on the result for a log-friendly multi-line string.
+    public func diagnostics() -> BeAroundDiagnostics {
+        let store = DiagnosticsStore.shared
+        return BeAroundDiagnostics(
+            deviceId: DeviceIdentifier.getDeviceId(),
+            deviceIdType: DeviceIdentifier.getDeviceIdType(),
+            pushTokenMasked: PushTokenStore.maskedToken,
+            pushTokenLastSentAt: PushTokenStore.lastSentAt,
+            apnsEnvironment: APNSEnvironment.current(),
+            isScanning: isScanning,
+            pendingBatches: pendingBatchCount,
+            lastScanAt: store.lastScanAt,
+            lastScanBeaconCount: store.lastScanBeaconCount,
+            lastSyncAt: store.lastSyncAt,
+            lastSyncSuccess: store.lastSyncSuccess,
+            lastSyncBeaconCount: store.lastSyncBeaconCount,
+            lastPushReceivedAt: store.lastPushReceivedAt,
+            recentErrors: store.recentErrors,
+            sdkVersion: BeAroundSDK.version
+        )
+    }
+
     // MARK: - Private Properties
 
     private var configuration: SDKConfiguration?
@@ -470,7 +494,7 @@ public class BeAroundSDK {
 
                     // BLE-only beacon
                     var beacon = Beacon(
-                        uuid: UUID(uuidString: "E25B8D3C-947A-452F-A13F-589CB706D2E5")!,
+                        uuid: BeaconConstants.uuid,
                         major: tracked.major,
                         minor: tracked.minor,
                         rssi: tracked.rssi,
@@ -486,6 +510,12 @@ public class BeAroundSDK {
                     beacon.alreadySynced = false
                     self.collectedBeacons[key] = beacon
                     beaconsForDelegate.append(beacon)
+                }
+
+                // Drive sync from detection: timer is suspended in deep background, so the
+                // BT-eye wake is the only chance to upload. Debounced.
+                if !trackedBeacons.isEmpty {
+                    self.syncBeaconsDebounced(trigger: "ble_detection")
                 }
 
                 DispatchQueue.main.async {
@@ -901,7 +931,7 @@ public class BeAroundSDK {
         let bleTracked = bluetoothManager.trackedBeacons
         guard !bleTracked.isEmpty else { return }
 
-        let targetUUID = UUID(uuidString: "E25B8D3C-947A-452F-A13F-589CB706D2E5")!
+        let targetUUID = BeaconConstants.uuid
 
         for (key, tracked) in bleTracked {
             // Only enrich beacons that already exist in collectedBeacons
@@ -1088,8 +1118,9 @@ public class BeAroundSDK {
                     // notification). The host app reacts to didCompleteSync if it wants one.
                     DetectionLogStore.append(type: "Sync OK", detail: "\(beaconCount) beacon(s) enviados ao ingester")
 
-                    // Push token rode along in this payload and was accepted — stop re-sending it.
-                    PushTokenStore.markSynced()
+                    // Push token rode along in this payload and was accepted — record the heartbeat baseline.
+                    PushTokenStore.markSent()
+                    DiagnosticsStore.shared.recordSync(success: true, beaconCount: beaconCount)
 
                     // Notify delegate of successful sync
                     DispatchQueue.main.async {
@@ -1150,6 +1181,9 @@ public class BeAroundSDK {
                     // Record to the internal detection log (diagnostic only — no user-facing
                     // notification). The host app reacts to didCompleteSync if it wants one.
                     DetectionLogStore.append(type: "Sync falhou", detail: "\(beaconCount) beacon(s) · \(error.localizedDescription)")
+
+                    DiagnosticsStore.shared.recordSync(success: false, beaconCount: beaconCount)
+                    DiagnosticsStore.shared.recordError(error.localizedDescription)
 
                     // Notify delegate of failed sync
                     DispatchQueue.main.async {
@@ -1264,8 +1298,9 @@ public class BeAroundSDK {
                     // Record to the internal detection log (diagnostic only — no user-facing notification).
                     DetectionLogStore.append(type: "Sync OK", detail: "\(beaconCount) beacon(s) enviados ao ingester")
 
-                    // Push token rode along in this payload and was accepted — stop re-sending it.
-                    PushTokenStore.markSynced()
+                    // Push token rode along in this payload and was accepted — record the heartbeat baseline.
+                    PushTokenStore.markSent()
+                    DiagnosticsStore.shared.recordSync(success: true, beaconCount: beaconCount)
 
                     DispatchQueue.main.async {
                         self.delegate?.didCompleteSync(beaconCount: beaconCount, success: true, error: nil)
@@ -1292,6 +1327,9 @@ public class BeAroundSDK {
 
                     // Record to the internal detection log (diagnostic only — no user-facing notification).
                     DetectionLogStore.append(type: "Sync falhou", detail: "\(beaconCount) beacon(s) · \(error.localizedDescription)")
+
+                    DiagnosticsStore.shared.recordSync(success: false, beaconCount: beaconCount)
+                    DiagnosticsStore.shared.recordError(error.localizedDescription)
 
                     DispatchQueue.main.async {
                         self.delegate?.didCompleteSync(beaconCount: beaconCount, success: false, error: error)
@@ -1391,6 +1429,7 @@ public class BeAroundSDK {
                 ingestStarted: ingestStarted,
                 pendingBatches: pendingBatches
             )
+            DiagnosticsStore.shared.recordScan(beaconCount: beaconsFound)
 
             if ingestStarted {
                 NSLog("[BeAroundSDK] Background sync: beacons=%d, failed=%d",
@@ -1565,7 +1604,7 @@ extension BeAroundSDK: BluetoothManagerDelegate {
             }
 
             var beacon = Beacon(
-                uuid: UUID(uuidString: "E25B8D3C-947A-452F-A13F-589CB706D2E5")!,
+                uuid: BeaconConstants.uuid,
                 major: major,
                 minor: minor,
                 rssi: rssi,

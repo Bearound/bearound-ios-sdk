@@ -9,68 +9,103 @@ import Foundation
 import UIKit
 import ObjectiveC.runtime
 
-/// C-function shape of `application(_:didRegisterForRemoteNotificationsWithDeviceToken:)`
-/// (receiver, _cmd, application, deviceToken). Used to call the host app's original impl.
 private typealias DidRegisterIMP = @convention(c) (Any, Selector, UIApplication, NSData) -> Void
+private typealias DidReceiveIMP = @convention(c)
+    (Any, Selector, UIApplication, NSDictionary, @escaping (UIBackgroundFetchResult) -> Void) -> Void
 
-/// Automatically captures the APNs device token from the host app's `UIApplicationDelegate`
-/// via method swizzling — the same technique Firebase / OneSignal / Braze use — so the client
-/// doesn't have to forward `didRegisterForRemoteNotificationsWithDeviceToken` manually.
-///
-/// The SDK also triggers `registerForRemoteNotifications()` itself (no user prompt — that only
-/// fetches the token; permission is a separate concern for *visible* notifications).
-///
-/// **The one thing the SDK can't do for you:** enable the *Push Notifications* capability
-/// (the `aps-environment` entitlement) — that's signed app config the client must turn on.
-///
-/// Opt out by setting `BearoundAppDelegateProxyEnabled` = `NO` in Info.plist; then call
-/// `BeAroundSDK.shared.setPushToken(_:)` yourself from your AppDelegate.
+/// Swizzles the host's `UIApplicationDelegate` to auto-capture the APNs token and handle Bearound
+/// silent pushes. Opt out via `BearoundAppDelegateProxyEnabled = NO` in Info.plist.
 enum PushTokenAutoCapture {
     private static var installed = false
-    private static var originalIMP: DidRegisterIMP?
+    private static var originalRegisterIMP: DidRegisterIMP?
+    private static var originalReceiveIMP: DidReceiveIMP?
 
-    /// Installs the swizzle (once) and requests APNs registration. Safe to call from `configure()`.
+    private static let registerSelector =
+        #selector(UIApplicationDelegate.application(_:didRegisterForRemoteNotificationsWithDeviceToken:))
+    private static let receiveSelector =
+        #selector(UIApplicationDelegate.application(_:didReceiveRemoteNotification:fetchCompletionHandler:))
+
     static func enableIfPossible() {
         guard !installed else { return }
 
         if let enabled = Bundle.main.object(forInfoDictionaryKey: "BearoundAppDelegateProxyEnabled") as? Bool,
            enabled == false {
-            NSLog("[BeAroundSDK] AppDelegate proxy disabled (BearoundAppDelegateProxyEnabled=NO) — call setPushToken(_:) manually")
+            NSLog("[BeAroundSDK] AppDelegate proxy disabled (BearoundAppDelegateProxyEnabled=NO) — wire push manually")
             return
         }
 
         installed = true
         DispatchQueue.main.async {
-            installSwizzle()
+            installSwizzles()
             UIApplication.shared.registerForRemoteNotifications()
-            NSLog("[BeAroundSDK] Auto push-token capture enabled; requested APNs registration")
+            NSLog("[BeAroundSDK] Auto push capture enabled; requested APNs registration")
         }
     }
 
-    private static func installSwizzle() {
+    private static func installSwizzles() {
         guard let delegate = UIApplication.shared.delegate else {
-            NSLog("[BeAroundSDK] No UIApplicationDelegate found — cannot auto-capture push token (use setPushToken)")
+            NSLog("[BeAroundSDK] No UIApplicationDelegate — cannot auto-wire push (use setPushToken / forward manually)")
             return
         }
         let cls: AnyClass = type(of: delegate)
-        let selector = #selector(UIApplicationDelegate.application(_:didRegisterForRemoteNotificationsWithDeviceToken:))
+        installRegisterSwizzle(on: cls)
+        installReceiveSwizzle(on: cls)
+    }
 
-        // Our replacement: capture the token, then chain to the app's original impl (if any).
+    // MARK: - Token capture
+
+    private static func installRegisterSwizzle(on cls: AnyClass) {
         let block: @convention(block) (Any, UIApplication, NSData) -> Void = { receiver, application, deviceToken in
             let token = (deviceToken as Data).map { String(format: "%02x", $0) }.joined()
             NSLog("[BeAroundSDK] APNs token captured automatically (%d bytes)", (deviceToken as Data).count)
             PushTokenStore.setToken(token)
-            originalIMP?(receiver, selector, application, deviceToken)
+            originalRegisterIMP?(receiver, registerSelector, application, deviceToken)
         }
         let newIMP = imp_implementationWithBlock(block)
-
-        if let method = class_getInstanceMethod(cls, selector) {
-            // App already implements it — keep its impl and wrap it.
-            let old = method_setImplementation(method, newIMP)
-            originalIMP = unsafeBitCast(old, to: DidRegisterIMP.self)
+        if let method = class_getInstanceMethod(cls, registerSelector) {
+            originalRegisterIMP = unsafeBitCast(method_setImplementation(method, newIMP), to: DidRegisterIMP.self)
         } else {
-            // App doesn't implement it — add ours so iOS calls it.
-            class_addMethod(cls, selector, newIMP, "v@:@@")
+            class_addMethod(cls, registerSelector, newIMP, "v@:@@")
+        }
+    }
+
+    // MARK: - Silent push handling
+
+    private static func installReceiveSwizzle(on cls: AnyClass) {
+        let block: @convention(block)
+            (Any, UIApplication, NSDictionary, @escaping (UIBackgroundFetchResult) -> Void) -> Void = {
+                receiver, application, userInfo, completionHandler in
+
+                // Only handle our pushes; pass others through to the app's handler.
+                guard userInfo["bearound"] != nil else {
+                    if let original = originalReceiveIMP {
+                        original(receiver, receiveSelector, application, userInfo, completionHandler)
+                    } else {
+                        completionHandler(.noData)
+                    }
+                    return
+                }
+
+                NSLog("[BeAroundSDK] Bearound silent push received — refreshing scan + sync")
+                DiagnosticsStore.shared.recordPushReceived()
+                BeAroundSDK.shared.performBackgroundBLERefreshAndSync(bleScanDuration: 10.0, trigger: "silent_push") { ingestStarted in
+                    let info = BeAroundSDK.shared.lastBackgroundScanInfo
+                    let found = info?.beaconsFound ?? 0
+                    let pending = info?.pendingBatches ?? 0
+                    NSLog("[BeAroundSDK] Bearound push handled (beacons=%d, ingestStarted=%d)", found, ingestStarted ? 1 : 0)
+                    DispatchQueue.main.async {
+                        BeAroundSDK.shared.delegate?.didCompletePushScan(
+                            beaconsFound: found, ingestStarted: ingestStarted, pendingBatches: pending
+                        )
+                    }
+                    completionHandler(ingestStarted ? .newData : .noData)
+                }
+            }
+        let newIMP = imp_implementationWithBlock(block)
+        if let method = class_getInstanceMethod(cls, receiveSelector) {
+            originalReceiveIMP = unsafeBitCast(method_setImplementation(method, newIMP), to: DidReceiveIMP.self)
+        } else {
+            class_addMethod(cls, receiveSelector, newIMP, "v@:@@@?")
         }
     }
 }

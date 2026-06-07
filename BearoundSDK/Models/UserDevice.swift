@@ -11,6 +11,8 @@ struct UserDevice {
     let deviceId: String
     /// APNs push token — the address used to deliver push. Nil unless it still needs syncing.
     let pushToken: String?
+    /// "sandbox" | "production" — which APNs endpoint the token targets (from the app's entitlement).
+    let apnsEnvironment: String
     let manufacturer: String
     let model: String
     let osVersion: String
