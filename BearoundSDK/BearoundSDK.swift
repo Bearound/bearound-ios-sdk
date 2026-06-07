@@ -494,7 +494,7 @@ public class BeAroundSDK {
 
                     // BLE-only beacon
                     var beacon = Beacon(
-                        uuid: UUID(uuidString: "E25B8D3C-947A-452F-A13F-589CB706D2E5")!,
+                        uuid: BeaconConstants.uuid,
                         major: tracked.major,
                         minor: tracked.minor,
                         rssi: tracked.rssi,
@@ -931,7 +931,7 @@ public class BeAroundSDK {
         let bleTracked = bluetoothManager.trackedBeacons
         guard !bleTracked.isEmpty else { return }
 
-        let targetUUID = UUID(uuidString: "E25B8D3C-947A-452F-A13F-589CB706D2E5")!
+        let targetUUID = BeaconConstants.uuid
 
         for (key, tracked) in bleTracked {
             // Only enrich beacons that already exist in collectedBeacons
@@ -1604,7 +1604,7 @@ extension BeAroundSDK: BluetoothManagerDelegate {
             }
 
             var beacon = Beacon(
-                uuid: UUID(uuidString: "E25B8D3C-947A-452F-A13F-589CB706D2E5")!,
+                uuid: BeaconConstants.uuid,
                 major: major,
                 minor: minor,
                 rssi: rssi,

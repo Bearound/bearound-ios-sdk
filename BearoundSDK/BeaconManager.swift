@@ -19,7 +19,7 @@ class BeaconManager: NSObject {
 
     // MARK: - Constants
 
-    private let beaconUUID = UUID(uuidString: "E25B8D3C-947A-452F-A13F-589CB706D2E5")!
+    private let beaconUUID = BeaconConstants.uuid
 
     /// Grace period before removing beacon (foreground)
     private let beaconTimeoutForeground: TimeInterval = 15.0

@@ -76,7 +76,7 @@ class BluetoothManager: NSObject {
         )
     }()
 
-    private let targetUUID = UUID(uuidString: "E25B8D3C-947A-452F-A13F-589CB706D2E5")!
+    private let targetUUID = BeaconConstants.uuid
     private let beadServiceUUID = CBUUID(string: "BEAD")
     private(set) var isScanning = false
 
