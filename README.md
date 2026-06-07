@@ -661,7 +661,7 @@ The SDK logs important events with tag `[BeAroundSDK]`:
 - All beacon data transmitted to your configured API endpoint with secure business token authentication
 - Authorization header sent as `Authorization: {businessToken}` (no Bearer prefix)
 - No local data storage by default
-- IDFA collected only with user consent (ATT framework)
+- Does **not** collect IDFA / advertising identifier — identity is a per-app stable device id (Keychain UUID)
 - Comprehensive device telemetry for analytics
 
 ### Testing
