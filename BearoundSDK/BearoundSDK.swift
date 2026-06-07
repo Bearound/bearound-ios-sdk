@@ -39,7 +39,7 @@ public class BeAroundSDK {
     public static let shared = BeAroundSDK()
 
     public static var version: String {
-        return "3.0.0"
+        return "3.1.0"
     }
 
     // MARK: - Public Properties

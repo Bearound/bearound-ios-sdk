@@ -5,6 +5,35 @@ All notable changes to BearoundSDK for iOS will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.1.0] - 2026-06-07
+
+### Added
+
+- **Automatic push-token capture.** The SDK now swizzles `UIApplicationDelegate` push-token callbacks to capture APNs tokens without host integration.
+- **APNs environment auto-detection.** Ingest payload now reports whether the build is `development` or `production` based on the embedded mobileprovision / entitlements.
+- **Silent push auto-handling.** When silent pushes arrive, the SDK reacts without host glue and performs a deep-background sync.
+- **SDK diagnostics snapshot.** `BeAroundSDK.shared.diagnostics()` returns a structured `BeAroundDiagnostics` snapshot (push token state, APNs env, last sync, eye status) for host-app observability.
+- **Push-token TTL heartbeat.** The SDK periodically re-sends the push token to keep the server-side mapping fresh.
+- **Apple Privacy Manifest (`PrivacyInfo.xcprivacy`).** Declares the SDK's data collection categories and required-reason APIs per Apple's 2024 requirement.
+- **App state monitor.** New `AppStateMonitor` reports foreground/background transitions for more accurate session signals.
+- **Offline batch storage.** Detections captured while offline are queued and flushed on the next successful connection.
+
+### Changed
+
+- **Background sync is now driven by BLE detection.** Deep-background uploads happen on beacon detection instead of relying solely on timers, improving freshness when the app is suspended.
+- **Stable `deviceId` via Keychain.** `deviceId` is now stored in the Keychain (surviving reinstalls on the same device).
+- **Single source of truth for the beacon UUID.** Internal callsites share `BeaconConstants.uuid` instead of duplicating the literal.
+
+### Fixed
+
+- Stale privacy note in the README (the SDK does not collect IDFA; it uses a Keychain-stored UUID).
+
+### Docs
+
+- DocC + README now document `diagnostics()`, `apnsEnvironment`, the TTL heartbeat, silent-push handling, and the Privacy Manifest.
+
+---
+
 ## [3.0.0] - 2026-05-24
 
 ### Breaking changes
