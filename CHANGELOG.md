@@ -5,6 +5,22 @@ All notable changes to BearoundSDK for iOS will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.1.0] - 2026-06-07
+
+### Added
+
+- **Automatic APNs push-token capture** via `UIApplicationDelegate` swizzling, plus public `setPushToken(_:)` for manual/forwarded tokens. Sent as `device.pushToken`.
+- **`device.apnsEnvironment`** (`sandbox`/`production`) in the ingest payload so the backend routes to the correct APNs host.
+- **Silent-push auto-scan** — handles Bearound `content-available` pushes (swizzle) by refreshing the BLE scan and syncing.
+- **`BeAroundSDK.diagnostics()`** → `BeAroundDiagnostics` snapshot (device id, masked push token, scanning state, pending batches, last scan/sync/push, recent errors) with `.summary()`.
+- **Apple Privacy Manifest** (`PrivacyInfo.xcprivacy`) bundled in the framework.
+
+### Changed
+
+- Push-token re-send is now a **TTL heartbeat** — re-sends when the token changes or after 7 days.
+- Beacon detections drive the sync directly, improving deep-background upload reliability (the periodic timer does not run while suspended).
+- Beacon UUID consolidated into a single `BeaconConstants.uuid`.
+
 ## [3.0.0] - 2026-05-24
 
 ### Breaking changes
