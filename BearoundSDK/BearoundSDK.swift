@@ -512,6 +512,12 @@ public class BeAroundSDK {
                     beaconsForDelegate.append(beacon)
                 }
 
+                // Drive sync from detection: timer is suspended in deep background, so the
+                // BT-eye wake is the only chance to upload. Debounced.
+                if !trackedBeacons.isEmpty {
+                    self.syncBeaconsDebounced(trigger: "ble_detection")
+                }
+
                 DispatchQueue.main.async {
                     self.delegate?.didUpdateBeacons(beaconsForDelegate)
                 }
