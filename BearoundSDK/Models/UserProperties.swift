@@ -47,5 +47,16 @@ public struct UserProperties {
     var hasProperties: Bool {
         internalId != nil || email != nil || name != nil || !customProperties.isEmpty
     }
+
+    /// Returns a copy with `other`'s non-nil fields overriding self; custom keys are merged.
+    /// Lets identity set at `configure()` survive a later partial `setUserProperties` update.
+    func merging(_ other: UserProperties) -> UserProperties {
+        UserProperties(
+            internalId: other.internalId ?? internalId,
+            email: other.email ?? email,
+            name: other.name ?? name,
+            customProperties: customProperties.merging(other.customProperties) { _, new in new }
+        )
+    }
 }
 

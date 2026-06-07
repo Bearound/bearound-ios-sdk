@@ -176,6 +176,31 @@ struct APIClientTests {
         #expect(properties.customProperties["tier"] == "premium")
         #expect(properties.customProperties["region"] == "US")
     }
+
+    @Test("merging keeps existing internalId when the update omits it")
+    func mergingPreservesInternalId() {
+        let base = UserProperties(internalId: "user-123")
+        let update = UserProperties(email: "user@example.com")
+
+        let merged = base.merging(update)
+
+        #expect(merged.internalId == "user-123")
+        #expect(merged.email == "user@example.com")
+    }
+
+    @Test("merging overrides provided fields and merges custom keys")
+    func mergingOverridesAndMergesCustom() {
+        let base = UserProperties(internalId: "old", name: "Old", customProperties: ["a": "1", "b": "2"])
+        let update = UserProperties(internalId: "new", customProperties: ["b": "9", "c": "3"])
+
+        let merged = base.merging(update)
+
+        #expect(merged.internalId == "new")
+        #expect(merged.name == "Old")
+        #expect(merged.customProperties["a"] == "1")
+        #expect(merged.customProperties["b"] == "9")
+        #expect(merged.customProperties["c"] == "3")
+    }
     
     @Test("APIClient base URL validation")
     func apiClientBaseURLValidation() {

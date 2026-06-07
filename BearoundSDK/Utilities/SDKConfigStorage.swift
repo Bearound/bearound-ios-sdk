@@ -18,6 +18,7 @@ public class SDKConfigStorage {
     private static let keyMaxQueuedPayloads = "max_queued_payloads"
     private static let keyIsConfigured = "is_configured"
     private static let keyIsScanning = "is_scanning"
+    private static let keyInternalId = "internal_id"
 
     private static var defaults: UserDefaults? {
         UserDefaults(suiteName: suiteName)
@@ -86,6 +87,7 @@ public class SDKConfigStorage {
         defaults.removeObject(forKey: keyMaxQueuedPayloads)
         defaults.removeObject(forKey: keyIsConfigured)
         defaults.removeObject(forKey: keyIsScanning)
+        defaults.removeObject(forKey: keyInternalId)
         defaults.synchronize()
         NSLog("[BeAroundSDK] Configuration cleared")
     }
@@ -103,5 +105,22 @@ public class SDKConfigStorage {
     /// Returns true if scanning was active when app was closed
     static func loadIsScanning() -> Bool {
         return defaults?.bool(forKey: keyIsScanning) ?? false
+    }
+
+    // MARK: - User Identity Persistence
+
+    /// Persists (or clears, when nil) the client-provided user id so it survives background relaunch.
+    static func saveInternalId(_ internalId: String?) {
+        guard let defaults = defaults else { return }
+        if let internalId {
+            defaults.set(internalId, forKey: keyInternalId)
+        } else {
+            defaults.removeObject(forKey: keyInternalId)
+        }
+        defaults.synchronize()
+    }
+
+    static func loadInternalId() -> String? {
+        defaults?.string(forKey: keyInternalId)
     }
 }

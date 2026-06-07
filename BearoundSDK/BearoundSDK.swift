@@ -39,7 +39,7 @@ public class BeAroundSDK {
     public static let shared = BeAroundSDK()
 
     public static var version: String {
-        return "3.1.0"
+        return "3.2.0"
     }
 
     // MARK: - Public Properties
@@ -170,6 +170,8 @@ public class BeAroundSDK {
             NSLog("[BeAroundSDK] No saved configuration for background relaunch")
             return
         }
+
+        restoreUserIdentityIfNeeded()
 
         // Only auto-start if scanning was active before termination
         guard SDKConfigStorage.loadIsScanning() else {
@@ -590,11 +592,20 @@ public class BeAroundSDK {
     }
 
     public func setUserProperties(_ properties: UserProperties) {
-        userProperties = properties
+        userProperties = (userProperties ?? UserProperties()).merging(properties)
+        SDKConfigStorage.saveInternalId(userProperties?.internalId)
     }
 
     public func clearUserProperties() {
         userProperties = nil
+        SDKConfigStorage.saveInternalId(nil)
+    }
+
+    /// Restores the persisted user id into memory after a background relaunch.
+    private func restoreUserIdentityIfNeeded() {
+        guard userProperties?.internalId == nil,
+              let internalId = SDKConfigStorage.loadInternalId() else { return }
+        userProperties = (userProperties ?? UserProperties()).merging(UserProperties(internalId: internalId))
     }
 
     /// Registers the device's APNs push token so the backend can target this device for push
@@ -1501,6 +1512,7 @@ public class BeAroundSDK {
                 // Fix 1 — keep the background-upload session alive on this relaunch path too.
                 apiClient?.ensureBackgroundSessionAlive()
                 offlineBatchStorage.maxBatchCount = savedConfig.maxQueuedPayloads.value
+                restoreUserIdentityIfNeeded()
                 NSLog("[BeAroundSDK] Auto-configured during background fetch")
             } else {
                 NSLog("[BeAroundSDK] Background fetch: no config")
