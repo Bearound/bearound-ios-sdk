@@ -254,13 +254,7 @@ class APIClient {
 
         var payload: [String: Any] = [
             "beacons": beaconsPayload,
-            "sdk": [
-                "version": sdkInfo.version,
-                "platform": sdkInfo.platform,
-                "appId": sdkInfo.appId,
-                "build": sdkInfo.build,
-                "technology": sdkInfo.technology,
-            ],
+            "sdk": Self.makeSdkPayload(sdkInfo),
             "device": buildDevicePayload(userDevice),
             "syncTrigger": syncTrigger,
         ]
@@ -281,6 +275,18 @@ class APIClient {
         // passed as `Data`. Don't set request.httpBody here.
         NSLog("[BeAroundSDK] Sending %d beacons to %@ (background upload)", beacons.count, url.absoluteString)
         sessionManager.upload(request: request, bodyData: bodyData, completion: completion)
+    }
+
+    /// The `sdk` block of the /ingest payload. Extracted so a unit test can assert
+    /// exactly what goes on the wire (version + technology). No behavior change.
+    static func makeSdkPayload(_ sdkInfo: SDKInfo) -> [String: Any] {
+        return [
+            "version": sdkInfo.version,
+            "platform": sdkInfo.platform,
+            "appId": sdkInfo.appId,
+            "build": sdkInfo.build,
+            "technology": sdkInfo.technology,
+        ]
     }
 
     private func buildDevicePayload(_ device: UserDevice) -> [String: Any] {
