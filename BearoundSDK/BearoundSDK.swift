@@ -42,10 +42,6 @@ public class BeAroundSDK {
         (Bundle(for: BeAroundSDK.self).infoDictionary?["CFBundleShortVersionString"] as? String) ?? "unknown"
     }
 
-    /// The technology that produced this SDK build. Native iOS builds report "ios-native";
-    /// the React Native / Flutter bridges override it via configure(technology:).
-    public static let technology = "ios-native"
-
     // MARK: - Public Properties
 
     public weak var delegate: BeAroundSDKDelegate?
