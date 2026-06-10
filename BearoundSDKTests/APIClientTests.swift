@@ -60,8 +60,10 @@ struct APIClientTests {
 
         #expect(sdkInfo.appId == "test-app")
         #expect(sdkInfo.build == 100)
-        #expect(sdkInfo.version == "2.2.1")
+        // version now tracks the real SDK version (no stale "2.2.1" default on the wire)
+        #expect(sdkInfo.version == BeAroundSDK.version)
         #expect(sdkInfo.platform == "ios")
+        #expect(sdkInfo.technology == "ios-native")
     }
     
     @Test("Beacon model creation")

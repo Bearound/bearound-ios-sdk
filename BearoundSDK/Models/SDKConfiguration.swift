@@ -25,16 +25,23 @@ public struct SDKConfiguration {
     public let scanPrecision: ScanPrecision
     public let maxQueuedPayloads: MaxQueuedPayloads
 
+    /// Origin technology reported in the `/ingest` payload as `sdk.technology`.
+    /// Defaults to `ios-native`; the React Native / Flutter bridges pass their own value
+    /// (`react-native` / `flutter`) so the backend can attribute traffic per integration.
+    public let technology: String
+
     let apiBaseURL: String
 
     public init(
         businessToken: String,
         scanPrecision: ScanPrecision = .high,
-        maxQueuedPayloads: MaxQueuedPayloads = .medium
+        maxQueuedPayloads: MaxQueuedPayloads = .medium,
+        technology: String = "ios-native"
     ) {
         self.businessToken = businessToken
         self.scanPrecision = scanPrecision
         self.maxQueuedPayloads = maxQueuedPayloads
+        self.technology = technology
         self.apiBaseURL = "https://ingest.bearound.io"
         self.appId = Bundle.main.bundleIdentifier ?? "unknown"
     }

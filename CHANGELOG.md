@@ -5,6 +5,17 @@ All notable changes to BearoundSDK for iOS will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.3.0] - 2026-06-10
+
+### Added
+
+- **`sdk.technology` in the `/ingest` payload.** New trailing `technology` parameter on `configure(businessToken:scanPrecision:maxQueuedPayloads:technology:)` (default `ios-native`). The value is persisted and restored on background relaunch, then shipped in the `sdk` block so the backend can attribute traffic per integration. The React Native / Flutter bridges pass `react-native` / `flutter`.
+- **`EVENT-PARITY.md`.** Cross-SDK event & field parity matrix (iOS / Android / RN / Flutter) documenting common events and per-platform divergences.
+
+### Fixed
+
+- **Wire SDK version no longer stale.** The `/ingest` payload previously shipped a hardcoded `2.2.1` (the unused default in `SDKInfo`) regardless of the real SDK version. It now reports `BeAroundSDK.version` (3.3.0).
+
 ## [3.2.0] - 2026-06-07
 
 ### Changed

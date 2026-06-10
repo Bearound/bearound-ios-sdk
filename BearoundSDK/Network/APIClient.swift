@@ -259,6 +259,7 @@ class APIClient {
                 "platform": sdkInfo.platform,
                 "appId": sdkInfo.appId,
                 "build": sdkInfo.build,
+                "technology": sdkInfo.technology,
             ],
             "device": buildDevicePayload(userDevice),
             "syncTrigger": syncTrigger,

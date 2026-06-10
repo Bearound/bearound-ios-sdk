@@ -39,7 +39,7 @@ public class BeAroundSDK {
     public static let shared = BeAroundSDK()
 
     public static var version: String {
-        return "3.2.0"
+        return "3.3.0"
     }
 
     // MARK: - Public Properties
@@ -254,7 +254,13 @@ public class BeAroundSDK {
     private func setupSDKInfo(from config: SDKConfiguration) {
         let buildNumber = Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "1"
         let build = Int(buildNumber) ?? 1
-        sdkInfo = SDKInfo(appId: config.appId, build: build)
+        // Wire the *real* SDK version (not SDKInfo's stale default) and the configured technology.
+        sdkInfo = SDKInfo(
+            version: BeAroundSDK.version,
+            appId: config.appId,
+            build: build,
+            technology: config.technology
+        )
     }
 
     // MARK: - Callbacks Setup
@@ -565,12 +571,14 @@ public class BeAroundSDK {
     public func configure(
         businessToken: String,
         scanPrecision: ScanPrecision = .high,
-        maxQueuedPayloads: MaxQueuedPayloads = .medium
+        maxQueuedPayloads: MaxQueuedPayloads = .medium,
+        technology: String = "ios-native"
     ) {
         let config = SDKConfiguration(
             businessToken: businessToken,
             scanPrecision: scanPrecision,
-            maxQueuedPayloads: maxQueuedPayloads
+            maxQueuedPayloads: maxQueuedPayloads,
+            technology: technology
         )
 
         configuration = config

@@ -16,6 +16,7 @@ public class SDKConfigStorage {
     private static let keyBusinessToken = "business_token"
     private static let keyScanPrecision = "scan_precision"
     private static let keyMaxQueuedPayloads = "max_queued_payloads"
+    private static let keyTechnology = "technology"
     private static let keyIsConfigured = "is_configured"
     private static let keyIsScanning = "is_scanning"
     private static let keyInternalId = "internal_id"
@@ -34,6 +35,7 @@ public class SDKConfigStorage {
         defaults.set(config.businessToken, forKey: keyBusinessToken)
         defaults.set(config.scanPrecision.rawValue, forKey: keyScanPrecision)
         defaults.set(config.maxQueuedPayloads.rawValue, forKey: keyMaxQueuedPayloads)
+        defaults.set(config.technology, forKey: keyTechnology)
         defaults.set(true, forKey: keyIsConfigured)
 
         defaults.synchronize()
@@ -61,6 +63,8 @@ public class SDKConfigStorage {
 
         let precisionRaw = defaults.string(forKey: keyScanPrecision) ?? "high"
         let maxQueuedRaw = defaults.integer(forKey: keyMaxQueuedPayloads)
+        // Backward-compatible: configs persisted before technology existed restore the default.
+        let technology = defaults.string(forKey: keyTechnology) ?? "ios-native"
 
         let scanPrecision = ScanPrecision(rawValue: precisionRaw) ?? .high
         let maxQueuedPayloads = MaxQueuedPayloads(rawValue: maxQueuedRaw) ?? .medium
@@ -70,7 +74,8 @@ public class SDKConfigStorage {
         return SDKConfiguration(
             businessToken: businessToken,
             scanPrecision: scanPrecision,
-            maxQueuedPayloads: maxQueuedPayloads
+            maxQueuedPayloads: maxQueuedPayloads,
+            technology: technology
         )
     }
 
@@ -85,6 +90,7 @@ public class SDKConfigStorage {
         defaults.removeObject(forKey: keyBusinessToken)
         defaults.removeObject(forKey: keyScanPrecision)
         defaults.removeObject(forKey: keyMaxQueuedPayloads)
+        defaults.removeObject(forKey: keyTechnology)
         defaults.removeObject(forKey: keyIsConfigured)
         defaults.removeObject(forKey: keyIsScanning)
         defaults.removeObject(forKey: keyInternalId)
