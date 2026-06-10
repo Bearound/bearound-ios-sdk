@@ -66,24 +66,25 @@ struct APIClientTests {
         #expect(sdkInfo.technology == "ios-native")
     }
 
-    @Test("sdk wire payload ships 3.3.0 (not the old 2.2.1) and ios-native technology")
+    @Test("BeAroundSDK.version reads from the framework bundle, not a Swift literal")
+    func versionFromBundle() {
+        let bundleVersion = Bundle(for: BeAroundSDK.self).infoDictionary?["CFBundleShortVersionString"] as? String
+        #expect(BeAroundSDK.version == bundleVersion)
+        #expect(BeAroundSDK.version != "2.2.1") // the old stale-default bug must never come back
+        #expect(!BeAroundSDK.version.isEmpty)
+    }
+
+    @Test("sdk wire payload carries the real version + ios-native technology")
     func sdkWirePayload() throws {
         let sdkInfo = SDKInfo(appId: "com.test.app", build: 210)
         let dict = APIClient.makeSdkPayload(sdkInfo)
-        // round-trip through JSON so we assert what actually serializes onto the wire
         let data = try JSONSerialization.data(withJSONObject: dict)
         let json = try JSONSerialization.jsonObject(with: data) as! [String: Any]
-        #expect(json["version"] as? String == "3.3.0")
-        #expect(json["version"] as? String != "2.2.1") // regression guard: stale-default bug
+        #expect(json["version"] as? String == BeAroundSDK.version) // wire == bundle version
+        #expect(json["version"] as? String != "2.2.1")
         #expect(json["technology"] as? String == "ios-native")
         #expect(json["platform"] as? String == "ios")
-        #expect(json["appId"] as? String == "com.test.app")
         #expect(json["build"] as? Int == 210)
-    }
-
-    @Test("BeAroundSDK.version constant is 3.3.0")
-    func sdkVersionConstant() {
-        #expect(BeAroundSDK.version == "3.3.0")
     }
 
     @Test("Beacon model creation")

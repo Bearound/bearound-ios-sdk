@@ -14,7 +14,7 @@ struct SDKInfo {
     let build: Int
     let technology: String
 
-    init(version: String = BeAroundSDK.version, appId: String, build: Int, technology: String = "ios-native") {
+    init(version: String = BeAroundSDK.version, appId: String, build: Int, technology: String = BeAroundSDK.technology) {
         self.version = version
         platform = "ios"
         self.appId = appId

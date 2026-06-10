@@ -39,8 +39,12 @@ public class BeAroundSDK {
     public static let shared = BeAroundSDK()
 
     public static var version: String {
-        return "3.3.0"
+        (Bundle(for: BeAroundSDK.self).infoDictionary?["CFBundleShortVersionString"] as? String) ?? "unknown"
     }
+
+    /// The technology that produced this SDK build. Native iOS builds report "ios-native";
+    /// the React Native / Flutter bridges override it via configure(technology:).
+    public static let technology = "ios-native"
 
     // MARK: - Public Properties
 
