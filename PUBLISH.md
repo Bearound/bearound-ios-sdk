@@ -16,9 +16,13 @@ The version must be identical in all three locations:
 
 | File | Where | Example |
 |------|-------|---------|
-| `BearoundSDK/BearoundSDK.swift` | Line 21: `return "X.Y.Z"` | `return "3.0.0"` |
+| `BearoundSDK.xcodeproj/project.pbxproj` | `MARKETING_VERSION = X.Y.Z;` (all occurrences) | `MARKETING_VERSION = 3.0.0;` |
 | `BearoundSDK.podspec` | `spec.version = "X.Y.Z"` | `spec.version = "3.0.0"` |
 | `CHANGELOG.md` | `## [X.Y.Z] - YYYY-MM-DD` | `## [3.0.0] - 2026-05-24` |
+
+> The Swift `BeAroundSDK.version` reads `CFBundleShortVersionString` from the framework bundle
+> (derived from `MARKETING_VERSION`) — never edit a version literal in Swift. The release workflow
+> fails if tag != podspec != `MARKETING_VERSION`.
 
 ### 2. Update CHANGELOG.md
 
@@ -44,7 +48,7 @@ Add a new section at the top of the file (just below the header) using this form
 ### 3. Commit and push
 
 ```bash
-git add BearoundSDK/BearoundSDK.swift BearoundSDK.podspec CHANGELOG.md
+git add BearoundSDK.xcodeproj/project.pbxproj BearoundSDK.podspec CHANGELOG.md
 git commit -m "bump: version X.Y.Z"
 git push origin main
 ```
@@ -97,7 +101,7 @@ pod trunk push BearoundSDK.podspec --allow-warnings --skip-import-validation --s
 ## Quick Checklist
 
 ```
-[ ] Version updated in BearoundSDK.swift
+[ ] Version updated in project.pbxproj (MARKETING_VERSION, all occurrences)
 [ ] Version updated in BearoundSDK.podspec
 [ ] CHANGELOG.md updated with a section for the new version
 [ ] Commit and push to main

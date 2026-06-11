@@ -190,8 +190,9 @@ final class DeviceInfoCollector: @unchecked Sendable {
 		}
 
 		if #available(iOS 14.0, *) {
-			let manager = CLLocationManager()
-			switch manager.accuracyAuthorization {
+			// Reuse the SDK-wide shared instance — see BeAroundSDK.authQueryManager kdoc.
+			// Spinning up a transient CLLocationManager here triggered TCC IPC churn.
+			switch BeAroundSDK.sharedAccuracyAuthorization() {
 			case .fullAccuracy: return "full"
 			case .reducedAccuracy: return "reduced"
 			@unknown default: return "unknown"

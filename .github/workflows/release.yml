@@ -57,6 +57,14 @@ jobs:
           fi
           echo "✅ Version matches: $VERSION"
 
+      - name: Verify Xcode MARKETING_VERSION matches release
+        run: |
+          VERSION=${{ steps.get_version.outputs.version }}
+          MV=$(grep -m1 -E 'MARKETING_VERSION = ' BearoundSDK.xcodeproj/project.pbxproj | sed -E 's/.*= ([0-9.]+);/\1/')
+          echo "tag=$VERSION pbxproj MARKETING_VERSION=$MV"
+          if [ "$VERSION" != "$MV" ]; then echo "❌ MARKETING_VERSION ($MV) != release ($VERSION)"; exit 1; fi
+          echo "✅ MARKETING_VERSION matches"
+
       - name: Verify changelog entry
         run: |
           VERSION=${{ steps.get_version.outputs.version }}
