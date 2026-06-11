@@ -34,6 +34,24 @@ struct SDKConfigStorageTests {
         #expect(loadedConfig?.maxQueuedPayloads.value == 200)
     }
 
+    @Test("Persist and restore technology")
+    func persistTechnology() {
+        let config = SDKConfiguration(
+            businessToken: "test-token-tech",
+            technology: "react-native"
+        )
+        SDKConfigStorage.save(config)
+
+        // Survives relaunch (restore path used by background auto-configure)
+        #expect(SDKConfigStorage.load()?.technology == "react-native")
+    }
+
+    @Test("Technology defaults to ios-native")
+    func technologyDefault() {
+        let config = SDKConfiguration(businessToken: "test-token-default")
+        #expect(config.technology == "ios-native")
+    }
+
     @Test("Load returns nil when no config saved")
     func loadWithoutSaving() {
         // Clear any existing config

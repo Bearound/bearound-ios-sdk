@@ -117,6 +117,37 @@ class BluetoothManager: NSObject {
     /// Tracked beacons with last-seen timestamps
     private(set) var trackedBeacons: [String: TrackedBLEBeacon] = [:]
 
+    /// Last time ANY beacon ad was received, independent of `trackedBeacons` cleanup.
+    /// Used by zone-presence and active-grace evaluators so they survive the cleanup
+    /// timer (which evicts entries from `trackedBeacons` after `beaconGracePeriod`,
+    /// much earlier than the longer zone/active grace windows). Without this,
+    /// `evaluateZonePresence` would fire `onBluetoothZoneExit` as soon as cleanup
+    /// emptied the dict — i.e. after `beaconGracePeriod` (10s), not after
+    /// `zoneExitGracePeriod`. Reset to nil on stopScanning() and after a real exit.
+    private var lastBeaconSeenAt: Date?
+
+    // MARK: - Zone State Persistence (v3.3.1)
+    //
+    // Persists `(isInBluetoothZone, lastBeaconSeenAt)` across app launches so that an
+    // iOS-driven termination + state restoration cycle does NOT produce a phantom ENTER:
+    // when iOS kills the app for memory/policy reasons and later wakes it via a beacon
+    // advert (CoreBluetooth State Restoration), `isInBluetoothZone` would default to false
+    // → the very first delivered ad fires `onBluetoothZoneEnter`, even though the device
+    // never physically left the zone. With the persisted state restored at init, the SDK
+    // remembers "we were in the zone" and the first ad just refreshes `lastBeaconSeenAt`
+    // without emitting a notification.
+    //
+    // Trade-off: if the user physically leaves the zone while the app is terminated
+    // (no state restoration triggered), the SDK won't emit EXIT until the next launch
+    // refreshes state. Acceptable — the alternative is the current "false ENTER on every
+    // restoration" bug, which is much louder UX-wise.
+    private let zoneStatePersistenceSuiteName = "com.bearound.sdk.config"
+    private let zoneStatePersistenceKey = "ble_zone_state_v1"
+    /// Max age of persisted zone state to be considered authoritative. Older state is
+    /// discarded as stale and a real ENTER is allowed to fire on the next detection.
+    /// 1 hour is well above any plausible iOS background-termination + wake cycle.
+    private let zoneStateMaxAge: TimeInterval = 3600.0
+
     /// Timer to periodically clean up expired beacons
     private var cleanupTimer: DispatchSourceTimer?
 
@@ -136,9 +167,15 @@ class BluetoothManager: NSObject {
 
     /// How long the BLE eye waits without any beacon detection before declaring "zone exited".
     /// Long enough to absorb RSSI dropouts and BLE-radio gaps while the user stays in the
-    /// zone. Increased from 10s → 60s after observing flicker (enter/exit ping-pong with
-    /// the device stationary). 60s aligns with CoreLocation region monitoring cadence.
-    private let zoneExitGracePeriod: TimeInterval = 60.0
+    /// zone. History: 10s → 60s (after observing flicker) → 300s (after observing that
+    /// silent-push wake + iOS 26 background BLE throttling can silence delivery for >60s,
+    /// producing phantom exit→enter cycles with the device stationary inside the zone).
+    /// 300s (5 min) is well above the worst-case background delivery gap we measured in
+    /// device logs (~2-3 min after silent push wake). Trade-off: a user who physically
+    /// leaves the zone takes up to 5 min to generate `bluetoothZoneExit` from the BLE eye
+    /// — acceptable because the Location eye (region monitoring) emits exit on its own
+    /// channel sooner when GPS confirms departure.
+    private let zoneExitGracePeriod: TimeInterval = 300.0
 
     /// Timer that checks tracked beacons and flips the zone state when grace expires.
     private var zonePresenceTimer: DispatchSourceTimer?
@@ -206,6 +243,12 @@ class BluetoothManager: NSObject {
         #if canImport(UIKit)
             isInBackground = UIApplication.shared.applicationState == .background
         #endif
+
+        // Restore persisted zone state — see kdoc on `zoneStatePersistenceKey`.
+        // Must run BEFORE the first beacon advert is processed by `trackBeacon`,
+        // otherwise the default `isInBluetoothZone = false` would let the rising
+        // edge fire a phantom ENTER on the post-restoration first delivery.
+        restorePersistedZoneState()
     }
 
     deinit {
@@ -326,12 +369,14 @@ class BluetoothManager: NSObject {
         nextIdleScanAt = nil
         lastSeenBeacons.removeAll()
         trackedBeacons.removeAll()
+        lastBeaconSeenAt = nil
 
         // When the BLE eye is shut off we surface a falling edge so consumers can
         // drop their "in zone" state — even though the cause is scan-stopped, not
         // "no beacons in range". Without this the UI would stay stuck on "in zone".
         if isInBluetoothZone {
             isInBluetoothZone = false
+            persistZoneState()
             onBluetoothZoneExit?()
         }
 
@@ -421,10 +466,10 @@ class BluetoothManager: NSObject {
         // simply skip the grace check and stay .active. (See keepContinuousScanWhenBleOnly.)
         guard !keepContinuousScanWhenBleOnly else { return }
 
-        let now = Date()
-        let lastSeen = trackedBeacons.values.map(\.lastSeen).max()
-
-        if let last = lastSeen, now.timeIntervalSince(last) < activeToIdleGrace {
+        // Use the cleanup-immune `lastBeaconSeenAt`. Reading from `trackedBeacons` here
+        // would see an empty dict after `beaconGracePeriod` (10s) and incorrectly demote
+        // long before `activeToIdleGrace` (120s) — same trap as evaluateZonePresence().
+        if let last = lastBeaconSeenAt, Date().timeIntervalSince(last) < activeToIdleGrace {
             return  // recent detection, stay active
         }
 
@@ -540,12 +585,18 @@ class BluetoothManager: NSObject {
         }
 
         trackedBeacons[key] = tracked
+        // Mark "we just saw a beacon" on the cleanup-immune timeline so the zone /
+        // active-grace evaluators see truth even after `cleanupExpiredBeacons` evicts
+        // entries from `trackedBeacons` (which it does after `beaconGracePeriod` = 10s,
+        // far earlier than the zone/active grace windows).
+        lastBeaconSeenAt = Date()
         onBeaconsUpdated?(Array(trackedBeacons.values))
 
         // Rising edge: any beacon seen flips the BLE eye to "in zone" if it was previously out.
         // Subsequent detections while in-zone are no-ops — the falling edge is timer-driven.
         if !isInBluetoothZone {
             isInBluetoothZone = true
+            persistZoneState()
             onBluetoothZoneEnter?()
         }
 
@@ -619,21 +670,20 @@ class BluetoothManager: NSObject {
 
     /// Called by the zone-presence timer. Flips `isInBluetoothZone` from true to false when
     /// no beacon has been seen for `zoneExitGracePeriod`. The rising edge is handled inline.
+    ///
+    /// IMPORTANT: uses `lastBeaconSeenAt` instead of `trackedBeacons.values.map(\.lastSeen).max()`
+    /// because the cleanup timer evicts entries from `trackedBeacons` after `beaconGracePeriod`
+    /// (10s). Reading the max lastSeen from a dict that cleanup has already drained would make
+    /// the grace effectively `beaconGracePeriod`, not `zoneExitGracePeriod` — producing phantom
+    /// exits within ~10-15s. `lastBeaconSeenAt` is the cleanup-immune source of truth.
     private func evaluateZonePresence() {
         guard isInBluetoothZone else { return }
+        guard let last = lastBeaconSeenAt else { return }
 
-        let now = Date()
-        let lastBeaconSeen = trackedBeacons.values.map(\.lastSeen).max()
-
-        guard let last = lastBeaconSeen else {
-            // No tracked beacons at all — cleanup already evicted them. Treat as zone exit.
+        if Date().timeIntervalSince(last) > zoneExitGracePeriod {
             isInBluetoothZone = false
-            onBluetoothZoneExit?()
-            return
-        }
-
-        if now.timeIntervalSince(last) > zoneExitGracePeriod {
-            isInBluetoothZone = false
+            lastBeaconSeenAt = nil
+            persistZoneState()
             onBluetoothZoneExit?()
         }
     }
@@ -832,5 +882,70 @@ extension UUID {
             )
         }
         self.init(uuid: uuid)
+    }
+}
+
+// MARK: - Zone State Persistence (v3.3.1)
+
+extension BluetoothManager {
+
+    /// Snapshot persisted on every zone-state transition. Plain dictionary keeps the
+    /// implementation dependency-free (no Codable bootstrap, no Decimal weirdness).
+    private var persistenceDefaults: UserDefaults? {
+        UserDefaults(suiteName: zoneStatePersistenceSuiteName)
+    }
+
+    /// Saves `(isInBluetoothZone, lastBeaconSeenAt)` to UserDefaults. Called from the
+    /// 2 spots where `isInBluetoothZone` flips (rising edge in `trackBeacon`, falling
+    /// edge in `evaluateZonePresence`) and from `stopScanning` (clean wipe). IO is cheap
+    /// — UserDefaults batches writes — and the call rate is bounded by zone flap rate,
+    /// not BLE delivery rate.
+    func persistZoneState() {
+        guard let defaults = persistenceDefaults else { return }
+        var payload: [String: Any] = [
+            "inZone": isInBluetoothZone,
+            "writtenAt": Date().timeIntervalSince1970,
+        ]
+        if let last = lastBeaconSeenAt {
+            payload["lastSeenAt"] = last.timeIntervalSince1970
+        }
+        defaults.set(payload, forKey: zoneStatePersistenceKey)
+    }
+
+    /// Reads back the snapshot at init. If `inZone == true` and the snapshot is fresh
+    /// (< `zoneStateMaxAge`), seed `isInBluetoothZone = true` and `lastBeaconSeenAt`
+    /// so the first post-restoration `trackBeacon` does NOT fire `onBluetoothZoneEnter`.
+    /// Stale or absent snapshots are ignored — a real ENTER will fire on next detection.
+    func restorePersistedZoneState() {
+        guard let defaults = persistenceDefaults,
+              let payload = defaults.dictionary(forKey: zoneStatePersistenceKey),
+              let inZone = payload["inZone"] as? Bool,
+              let writtenAt = payload["writtenAt"] as? TimeInterval
+        else {
+            NSLog("[BluetoothManager] No persisted zone state found — starting fresh")
+            return
+        }
+
+        let age = Date().timeIntervalSince1970 - writtenAt
+        guard age < zoneStateMaxAge else {
+            NSLog("[BluetoothManager] Persisted zone state stale (age=%.0fs > max=%.0fs) — ignoring",
+                  age, zoneStateMaxAge)
+            return
+        }
+        guard inZone else {
+            NSLog("[BluetoothManager] Persisted zone state was OUT-of-zone — nothing to restore")
+            return
+        }
+
+        isInBluetoothZone = true
+        if let lastSeenAt = payload["lastSeenAt"] as? TimeInterval {
+            lastBeaconSeenAt = Date(timeIntervalSince1970: lastSeenAt)
+        } else {
+            // No lastSeenAt persisted but flag says we were in-zone — seed with writtenAt
+            // so evaluateZonePresence has SOMETHING to gate on (still inside grace).
+            lastBeaconSeenAt = Date(timeIntervalSince1970: writtenAt)
+        }
+        NSLog("[BluetoothManager] Restored persisted zone state: inZone=true age=%.0fs — suppressing phantom ENTER",
+              age)
     }
 }

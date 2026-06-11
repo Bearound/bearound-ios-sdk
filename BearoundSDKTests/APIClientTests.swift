@@ -60,10 +60,33 @@ struct APIClientTests {
 
         #expect(sdkInfo.appId == "test-app")
         #expect(sdkInfo.build == 100)
-        #expect(sdkInfo.version == "2.2.1")
+        // version now tracks the real SDK version (no stale "2.2.1" default on the wire)
+        #expect(sdkInfo.version == BeAroundSDK.version)
         #expect(sdkInfo.platform == "ios")
+        #expect(sdkInfo.technology == "ios-native")
     }
-    
+
+    @Test("BeAroundSDK.version reads from the framework bundle, not a Swift literal")
+    func versionFromBundle() {
+        let bundleVersion = Bundle(for: BeAroundSDK.self).infoDictionary?["CFBundleShortVersionString"] as? String
+        #expect(BeAroundSDK.version == bundleVersion)
+        #expect(BeAroundSDK.version != "2.2.1") // the old stale-default bug must never come back
+        #expect(!BeAroundSDK.version.isEmpty)
+    }
+
+    @Test("sdk wire payload carries the real version + ios-native technology")
+    func sdkWirePayload() throws {
+        let sdkInfo = SDKInfo(appId: "com.test.app", build: 210)
+        let dict = APIClient.makeSdkPayload(sdkInfo)
+        let data = try JSONSerialization.data(withJSONObject: dict)
+        let json = try JSONSerialization.jsonObject(with: data) as! [String: Any]
+        #expect(json["version"] as? String == BeAroundSDK.version) // wire == bundle version
+        #expect(json["version"] as? String != "2.2.1")
+        #expect(json["technology"] as? String == "ios-native")
+        #expect(json["platform"] as? String == "ios")
+        #expect(json["build"] as? Int == 210)
+    }
+
     @Test("Beacon model creation")
     func beaconModelCreation() {
         let uuid = UUID(uuidString: "E25B8D3C-947A-452F-A13F-589CB706D2E5")!
@@ -175,6 +198,31 @@ struct APIClientTests {
         #expect(properties.name == "John Doe")
         #expect(properties.customProperties["tier"] == "premium")
         #expect(properties.customProperties["region"] == "US")
+    }
+
+    @Test("merging keeps existing internalId when the update omits it")
+    func mergingPreservesInternalId() {
+        let base = UserProperties(internalId: "user-123")
+        let update = UserProperties(email: "user@example.com")
+
+        let merged = base.merging(update)
+
+        #expect(merged.internalId == "user-123")
+        #expect(merged.email == "user@example.com")
+    }
+
+    @Test("merging overrides provided fields and merges custom keys")
+    func mergingOverridesAndMergesCustom() {
+        let base = UserProperties(internalId: "old", name: "Old", customProperties: ["a": "1", "b": "2"])
+        let update = UserProperties(internalId: "new", customProperties: ["b": "9", "c": "3"])
+
+        let merged = base.merging(update)
+
+        #expect(merged.internalId == "new")
+        #expect(merged.name == "Old")
+        #expect(merged.customProperties["a"] == "1")
+        #expect(merged.customProperties["b"] == "9")
+        #expect(merged.customProperties["c"] == "3")
     }
     
     @Test("APIClient base URL validation")

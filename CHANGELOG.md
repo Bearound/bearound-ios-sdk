@@ -5,6 +5,44 @@ All notable changes to BearoundSDK for iOS will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.3.1] - 2026-06-11
+
+### Fixed
+
+- **BLE zone flap (phantom `bluetoothZoneExit`→`bluetoothZoneEnter`).** Cycles fired ~1ms apart, every 5-10 min, with the device stationary inside a beacon zone (13 occurrences confirmed in iPhone 16 Pro Max device logs over 2h). Root cause: `evaluateZonePresence` read `lastSeen` from `trackedBeacons`, but `cleanupExpiredBeacons` evicted entries after `beaconGracePeriod` (10s) — making the effective zone-exit grace 10s instead of the documented 60s. When the dict emptied, `evaluateZonePresence` hit `guard let last = lastBeaconSeen else { exit }` and fired exit immediately; the next BLE advert fired enter milliseconds later.
+- Added cleanup-immune `lastBeaconSeenAt` as the source of truth for both `evaluateZonePresence` and `evaluateActiveGrace` (same trap, different consequence: spurious active→idle demotion). `trackedBeacons` cleanup no longer affects zone or active-mode lifecycles.
+- **CoreLocation daemon churn → BLE delivery stalls.** Five call sites instantiated `CLLocationManager()` as a throwaway just to read `.accuracyAuthorization` / `.authorizationStatus`. Each transient instance triggered a TCC IPC (`tcc_send_request_authorization`), spun up a daemon-side client (`_CLClientCreateConnection`), and was dealloc'd ~2ms later. In device logs this manifested as init→dealloc cycles every ~1.5s with periodic `CLConnection::handleInterruption` events, correlating with ~11s gaps in background BLE ad delivery and the "entered zone but UI shows 0 beacons" symptom (zone entry driven by a single weak/far ad while close-by beacons hadn't been delivered yet). Replaced all five throwaways with a single, lifetime-scoped `static let authQueryManager = CLLocationManager()` (read-only — `startMonitoring` / `startUpdatingLocation` are NOT called on it). Added internal helper `sharedAccuracyAuthorization()` for `DeviceInfoCollector` telemetry.
+- **Phantom ENTER after iOS termination + state restoration.** When iOS killed the app under memory/policy pressure while the device was inside a beacon zone, the subsequent CoreBluetooth State Restoration cold start would default `isInBluetoothZone = false`. The very first BLE advert delivered after the wake-up triggered the rising-edge branch in `trackBeacon` and fired `onBluetoothZoneEnter` + a "Entrou na zona" notification — even though the device never physically left. Confirmed in device logs: PID 395 (last activity 14:56) terminated by iOS, PID 400 cold-started 14:59:09.812 with `[BluetoothManager] State restoration triggered`, ENTER ZONE fired 15ms later at 14:59:09.827. Fix: persist `(isInBluetoothZone, lastBeaconSeenAt)` to UserDefaults on every state transition (rising/falling edges + `stopScanning`); restore at `BluetoothManager.init()` BEFORE any advert can be processed. Snapshots older than 1 hour are treated as stale and ignored — a genuinely new ENTER still fires.
+
+### Changed
+
+- `zoneExitGracePeriod` increased from **60s → 300s (5 min)** to absorb iOS background BLE delivery stalls observed after silent-push wake on iOS 26 (memory: `project_ios-wake-vector-forensics`). Trade-off: a real physical zone exit takes up to 5 min to fire on the BLE eye; the Location eye (region monitoring) still emits exit on its own channel sooner via GPS confirmation.
+
+## [3.3.0] - 2026-06-10
+
+### Added
+
+- **`sdk.technology` in the `/ingest` payload.** New trailing `technology` parameter on `configure(businessToken:scanPrecision:maxQueuedPayloads:technology:)` (default `ios-native`). The value is persisted and restored on background relaunch, then shipped in the `sdk` block so the backend can attribute traffic per integration. The React Native / Flutter bridges pass `react-native` / `flutter`.
+- **`EVENT-PARITY.md`.** Cross-SDK event & field parity matrix (iOS / Android / RN / Flutter) documenting common events and per-platform divergences.
+
+### Changed
+
+- **Wire version derives from the framework bundle — no version literal in Swift.** `BeAroundSDK.version` now reads `CFBundleShortVersionString` from the framework bundle (driven by the Xcode `MARKETING_VERSION`, kept in lockstep with the podspec and git tag by the release workflow) instead of returning a hardcoded string. The reported technology is now a single named constant (`BeAroundSDK.technology = "ios-native"`) referenced by `SDKInfo`, removing the duplicated `"ios-native"` literal.
+
+### Fixed
+
+- **Wire SDK version no longer stale.** The `/ingest` payload previously shipped a hardcoded `2.2.1` (the unused default in `SDKInfo`) regardless of the real SDK version. It now reports `BeAroundSDK.version` (3.3.0).
+
+## [3.2.0] - 2026-06-07
+
+### Changed
+
+- **`setUserProperties` now merges** instead of replacing — a later partial update (adding `email`/`name`) no longer wipes a previously-set `internalId`. Call it right after `configure()` to attach the user's identity at startup.
+
+### Added
+
+- User identity (`internalId` and other user properties) is now **persisted** and restored when iOS relaunches the app in the background, so background events stay attributed to the user.
+
 ## [3.1.0] - 2026-06-07
 
 ### Added

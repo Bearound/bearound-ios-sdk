@@ -392,24 +392,24 @@ func didUpdateBeacons(_ beacons: [Beacon]) {
 
 #### User Properties
 
-Attach custom user data to beacon events:
+`internalId` is **your own id for the user** (e.g. from your CRM / user spreadsheet) — a user property. Set it (and any other user data) via `setUserProperties` right after `configure()`, so every beacon event is tied back to that user on the backend:
 
 ```swift
-let properties = UserProperties(
-    internalId: "user-12345",
-    email: "user@example.com",
-    name: "John Doe",
-    customProperties: [
-        "tier": "premium",
-        "region": "US-West"
-    ]
+BeAroundSDK.shared.configure(businessToken: "your-business-token-here")
+BeAroundSDK.shared.setUserProperties(UserProperties(internalId: "user-12345"))
+
+// Discovered more later? Call it again — fields you omit are kept:
+BeAroundSDK.shared.setUserProperties(
+    UserProperties(email: "user@example.com", name: "John Doe",
+                   customProperties: ["tier": "premium", "region": "US-West"])
 )
 
-BeAroundSDK.shared.setUserProperties(properties)
-
-// Clear when user logs out
+// Clear everything on logout (also clears the persisted id)
 BeAroundSDK.shared.clearUserProperties()
 ```
+
+- `setUserProperties` **merges** — omitted fields are kept, so adding `email`/`name` later does **not** wipe a previously-set `internalId`.
+- `internalId` is **persisted** and restored when iOS relaunches the app in the background, so background events stay attributed to the user.
 
 #### Checking SDK State
 
