@@ -42,6 +42,20 @@ public class BeAroundSDK {
         (Bundle(for: BeAroundSDK.self).infoDictionary?["CFBundleShortVersionString"] as? String) ?? "unknown"
     }
 
+    /// Single, reused CLLocationManager for **read-only** queries of authorization /
+    /// accuracy status. Created once and held for the app lifetime so we avoid the
+    /// init/dealloc churn that happens when we say `CLLocationManager().authorizationStatus`
+    /// from a hot path: each transient instance does a TCC IPC (`tcc_send_request_authorization`),
+    /// allocates a daemon-side client (`_CLClientCreateConnection`), then dealloc'd 2ms later.
+    /// Device logs on iPhone 16 Pro Max showed this churn cycling every ~1.5s and starving
+    /// background BLE delivery (correlated with `CLConnection::handleInterruption` events and
+    /// ~11s gaps in beacon ad delivery → false "entered zone with 0 beacons" UX).
+    ///
+    /// IMPORTANT: this manager is for status queries only — do NOT call
+    /// `startMonitoring`/`startUpdatingLocation` on it. The actual region-monitoring
+    /// CLLocationManager lives inside `BeaconManager`.
+    private static let authQueryManager = CLLocationManager()
+
     // MARK: - Public Properties
 
     public weak var delegate: BeAroundSDKDelegate?
@@ -60,7 +74,7 @@ public class BeAroundSDK {
         let bleInfo = bluetoothManager.diagnosticInfo
         var accuracyInfo = "n/a"
         if #available(iOS 14.0, *) {
-            let acc = CLLocationManager().accuracyAuthorization
+            let acc = Self.authQueryManager.accuracyAuthorization
             accuracyInfo = acc == .fullAccuracy ? "full" : "reduced"
         }
         let locStatus = Self.authorizationStatus().rawValue
@@ -206,7 +220,7 @@ public class BeAroundSDK {
         // iOS 14+: Precise Location off disables all beacon APIs
         var locationCanRangeBeacons = locationAuthorized
         if #available(iOS 14.0, *) {
-            if CLLocationManager().accuracyAuthorization == .reducedAccuracy {
+            if Self.authQueryManager.accuracyAuthorization == .reducedAccuracy {
                 locationCanRangeBeacons = false
                 NSLog("[BeAroundSDK] Precise Location is OFF — skipping CoreLocation beacons")
             }
@@ -658,7 +672,7 @@ public class BeAroundSDK {
         // iOS 14+: Precise Location off (reducedAccuracy) disables all beacon APIs (ranging + region monitoring)
         var locationCanRangeBeacons = locationAuthorized
         if #available(iOS 14.0, *) {
-            let accuracy = CLLocationManager().accuracyAuthorization
+            let accuracy = Self.authQueryManager.accuracyAuthorization
             os_log("[SDK] accuracyAuth=%{public}ld (0=full, 1=reduced)", log: sdkLog, type: .info, accuracy.rawValue)
             if accuracy == .reducedAccuracy {
                 locationCanRangeBeacons = false
@@ -746,10 +760,17 @@ public class BeAroundSDK {
 
     public static func authorizationStatus() -> CLAuthorizationStatus {
         if #available(iOS 14.0, *) {
-            return CLLocationManager().authorizationStatus
+            return authQueryManager.authorizationStatus
         } else {
             return CLLocationManager.authorizationStatus()
         }
+    }
+
+    /// Internal helper for telemetry collectors — returns the current accuracy
+    /// authorization without instantiating a transient CLLocationManager.
+    @available(iOS 14.0, *)
+    internal static func sharedAccuracyAuthorization() -> CLAccuracyAuthorization {
+        return authQueryManager.accuracyAuthorization
     }
 
     /// Pushes the current Location-authorization state into the BLE eye so it knows whether it
