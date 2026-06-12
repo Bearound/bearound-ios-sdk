@@ -96,6 +96,27 @@ pod trunk push BearoundSDK.podspec --allow-warnings --skip-import-validation --s
 
 > Requires `COCOAPODS_TRUNK_TOKEN` configured or an active session via `pod trunk register`.
 
+> ⚠️ **The manual fallback only fixes CocoaPods — it does NOT create the GitHub Release.**
+> The `Create GitHub Release` job runs only `if: needs.publish_to_cocoapods.result == 'success'`.
+> If the workflow's CocoaPods step failed and you published by hand, the GitHub Release is **skipped**.
+> After the manual push, re-run the workflow so the release job creates the GitHub Release
+> (the CocoaPods job will detect the version is already published and skip it):
+>
+> ```bash
+> # Re-trigger via workflow_dispatch (needs gh CLI or a PAT)
+> gh workflow run "iOS SDK Release" --ref main -f version=X.Y.Z
+> ```
+>
+> Verify both ends landed:
+>
+> ```bash
+> # CocoaPods has the version?
+> curl -s https://trunk.cocoapods.org/api/v1/pods/BearoundSDK | grep -o '"name":"X.Y.Z"'
+> # GitHub Release object exists (200), not just the tag?
+> curl -s -o /dev/null -w '%{http_code}\n' \
+>   https://api.github.com/repos/Bearound/bearound-ios-sdk/releases/tags/vX.Y.Z
+> ```
+
 ---
 
 ## Quick Checklist
@@ -109,6 +130,7 @@ pod trunk push BearoundSDK.podspec --allow-warnings --skip-import-validation --s
 [ ] Tag pushed: git push origin vX.Y.Z
 [ ] Workflow green on GitHub Actions
 [ ] Version visible on CocoaPods (pod search BearoundSDK)
+[ ] GitHub Release created (not just the tag — check /releases/tag/vX.Y.Z)
 ```
 
 ---
