@@ -418,17 +418,17 @@ class BeaconViewModel: NSObject, ObservableObject, BeAroundSDKDelegate {
 
         BeAroundSDK.shared.delegate = self
 
-        if !userPropertyInternalId.isEmpty || !userPropertyEmail.isEmpty ||
-           !userPropertyName.isEmpty || !userPropertyCustom.isEmpty {
-            let properties = UserProperties(
-                internalId: userPropertyInternalId,
-                email: userPropertyEmail,
-                name: userPropertyName,
-                customProperties: [
-                    "custom": userPropertyCustom,
-                ]
+        // Só envia se o campo "ID do usuário" (Settings) estiver preenchido.
+        // Persistido no UserDefaults → ao reabrir o app, assume o id salvo.
+        if !userPropertyInternalId.isEmpty {
+            BeAroundSDK.shared.setUserProperties(
+                UserProperties(
+                    internalId: userPropertyInternalId,
+                    email: userPropertyEmail,
+                    name: userPropertyName,
+                    customProperties: ["custom": userPropertyCustom]
+                )
             )
-            BeAroundSDK.shared.setUserProperties(properties)
         }
 
         statusMessage = "Configurado"
