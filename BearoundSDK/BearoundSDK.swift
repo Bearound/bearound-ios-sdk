@@ -733,6 +733,11 @@ public class BeAroundSDK {
 
         os_log("[SDK] STARTED BLE=%{public}d CL=%{public}d", log: sdkLog, type: .info,
                bluetoothAuthorized ? 1 : 0, locationCanRangeBeacons ? 1 : 0)
+
+        // 5. Device register — fire-and-forget, does not block scanning.
+        //    Sends POST /ingest with beacons:[] + syncTrigger:"register" so every device
+        //    appears in the Control Hub even if it never detects a beacon nearby.
+        registerDeviceIfNeeded()
     }
 
     public func stopScanning() {
@@ -804,6 +809,70 @@ public class BeAroundSDK {
     /// or query ``authorizationStatus()`` to react to the user's decision.
     public func requestLocationAuthorization(_ level: BeAroundLocationAuthorization = .always) {
         beaconManager.requestLocationAuthorization(level)
+    }
+
+    // MARK: - Device Register
+
+    /// Sends a POST /ingest with `beacons: []` and `syncTrigger: "register"` when needed.
+    ///
+    /// Conditions (any one triggers a send):
+    /// - Never registered before.
+    /// - Fingerprint changed (businessToken / appId / sdkVersion / osVersion / appBuild).
+    /// - More than 24 h since last successful register.
+    ///
+    /// Runs asynchronously on a background queue — does NOT block `startScanning()`.
+    /// On HTTP 200 the store persists `lastSentAt` + `lastFingerprint`.
+    private func registerDeviceIfNeeded() {
+        guard let apiClient = apiClient, let sdkInfo = sdkInfo, let config = configuration else {
+            NSLog("[BeAroundSDK] registerDeviceIfNeeded: SDK not fully configured, skipping")
+            return
+        }
+
+        let deviceId = DeviceIdentifier.getDeviceId()
+        let appBuild = Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "1"
+        let osVersion = UIDevice.current.systemVersion
+
+        let fingerprint = RegisterStore.fingerprint(
+            deviceId: deviceId,
+            appId: sdkInfo.appId,
+            businessToken: config.businessToken,
+            sdkVersion: sdkInfo.version,
+            osVersion: osVersion,
+            appBuild: appBuild
+        )
+
+        guard RegisterStore.shouldRegister(currentFingerprint: fingerprint) else {
+            NSLog("[BeAroundSDK] Device already registered and fingerprint unchanged — skipping register")
+            return
+        }
+
+        NSLog("[BeAroundSDK] Sending device register (beacons:[], syncTrigger:register)")
+
+        let locationPermission = Self.authorizationStatus()
+        let bluetoothState = bluetoothManager.isPoweredOn ? "powered_on" : "powered_off"
+        let appInForeground = !isInBackground
+
+        let userDevice = deviceInfoCollector.collectDeviceInfo(
+            locationPermission: locationPermission,
+            bluetoothState: bluetoothState,
+            appInForeground: appInForeground
+        )
+
+        apiClient.sendBeacons(
+            [],
+            sdkInfo: sdkInfo,
+            userDevice: userDevice,
+            userProperties: userProperties,
+            syncTrigger: "register"
+        ) { result in
+            switch result {
+            case .success:
+                NSLog("[BeAroundSDK] Device register succeeded — persisting lastSentAt + fingerprint")
+                RegisterStore.markRegistered(fingerprint: fingerprint)
+            case .failure(let error):
+                NSLog("[BeAroundSDK] Device register failed: %@ — will retry on next startScanning()", error.localizedDescription)
+            }
+        }
     }
 
     // MARK: - Detection Log (internal diagnostic, not user-facing notifications)
