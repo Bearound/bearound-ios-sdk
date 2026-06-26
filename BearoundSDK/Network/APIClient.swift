@@ -187,10 +187,9 @@ class APIClient {
         syncTrigger: String = "unknown",
         completion: @escaping (Result<Void, Error>) -> Void
     ) {
-        guard !beacons.isEmpty else {
-            completion(.success(()))
-            return
-        }
+        // Empty-beacons payloads are valid: syncTrigger="register" sends beacons:[] intentionally.
+        // The BearoundSDK.syncBeacons() path already guards against empty-list no-ops before
+        // calling here, so removing this early-exit does not introduce spurious network requests.
 
         guard let url = URL(string: "\(configuration.apiBaseURL)/ingest") else {
             completion(.failure(APIError.invalidURL))
@@ -273,7 +272,7 @@ class APIClient {
 
         // Background sessions don't allow `httpBody` on upload tasks — the body must be
         // passed as `Data`. Don't set request.httpBody here.
-        NSLog("[BeAroundSDK] Sending %d beacons to %@ (background upload)", beacons.count, url.absoluteString)
+        NSLog("[BeAroundSDK] Sending %d beacon(s) to %@ trigger=%@ (background upload)", beacons.count, url.absoluteString, syncTrigger)
         sessionManager.upload(request: request, bodyData: bodyData, completion: completion)
     }
 
