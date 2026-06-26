@@ -5,6 +5,12 @@ All notable changes to BearoundSDK for iOS will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.4.0] - 2026-06-26
+
+### Added
+
+- **Device register on `startScanning()`.** The SDK now reports the device to the backend on init even before any beacon is detected, so it shows up in the Control Hub on first launch. Sends `POST /ingest` with `beacons: []` + `syncTrigger: "register"`, throttled by a 24h TTL + fingerprint (deviceId, appId, businessToken, sdkVersion, osVersion, appBuild) via a new `RegisterStore`. Reuses the existing device-payload builder; the normal beacon sync still skips empty payloads, so there are no spurious requests.
+
 ## [3.3.1] - 2026-06-11
 
 ### Fixed
