@@ -5,6 +5,12 @@ All notable changes to BearoundSDK for iOS will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.4.1] - 2026-06-27
+
+### Fixed
+
+- **Push token à prova de ordem (register-on-set).** `setPushToken`, quando o scan já está ativo e o token ainda não foi enviado (`PushTokenStore.tokenForPayload != nil`), força um register imediato (`registerDeviceIfNeeded(force:)` — o método passou a aceitar `force` para ignorar o TTL do `RegisterStore`) em vez de esperar o próximo sync; o register passou a chamar `PushTokenStore.markSent()` no sucesso. Assim o token chega ao backend independentemente de o app chamar `setPushToken` antes ou depois de `startScanning()` — antes, se o register-on-init já tivesse ocorrido, o device ficava sem push até o próximo register (TTL) ou até detectar um beacon.
+
 ## [3.4.0] - 2026-06-26
 
 ### Added
