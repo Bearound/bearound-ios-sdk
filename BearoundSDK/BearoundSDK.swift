@@ -634,8 +634,9 @@ public class BeAroundSDK {
     /// (silent background sync today, user-facing notifications in the future).
     ///
     /// Call this from your `AppDelegate.didRegisterForRemoteNotificationsWithDeviceToken`,
-    /// passing the hex string of the token. The SDK stores it and sends it **once** with the
-    /// next sync, mapped to the stable `deviceId`; it is re-sent only if the token changes.
+    /// passing the hex string of the token. The SDK stores it and sends it with the next sync,
+    /// mapped to the stable `deviceId`. It is re-sent whenever the token changes **or** after a
+    /// 7-day heartbeat window (self-healing), so a dropped sync never permanently loses the token.
     public func setPushToken(_ token: String) {
         PushTokenStore.setToken(token)
         NSLog("[BeAroundSDK] Push token registered (will sync on next request)")

@@ -8,6 +8,7 @@ xcuserdata/
 # Build artifacts
 build/
 build-*/
+build_device/
 DerivedData/
 
 # XCFramework outputs
