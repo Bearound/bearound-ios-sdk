@@ -5,6 +5,12 @@ All notable changes to BearoundSDK for iOS will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.4.2] - 2026-06-27
+
+### Changed
+
+- **Alinhamento de versão com a suíte (3.4.2).** Sem mudança de comportamento no iOS — o ajuste desta versão (remoção de `USE_EXACT_ALARM`/`SCHEDULE_EXACT_ALARM`, watchdog com alarme inexato) é **Android-only**. O iOS agenda trabalho em background via `BGTaskScheduler`/region monitoring, não usa `AlarmManager`.
+
 ## [3.4.1] - 2026-06-27
 
 ### Fixed
