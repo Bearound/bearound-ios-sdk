@@ -639,7 +639,16 @@ public class BeAroundSDK {
     /// 7-day heartbeat window (self-healing), so a dropped sync never permanently loses the token.
     public func setPushToken(_ token: String) {
         PushTokenStore.setToken(token)
-        NSLog("[BeAroundSDK] Push token registered (will sync on next request)")
+        NSLog("[BeAroundSDK] Push token registered")
+        // Se já estamos escaneando e o token ainda não foi enviado (novo/mudou),
+        // empurra agora via register (beacons:[]) — senão só iria no próximo
+        // register (TTL) ou ao detectar um beacon. Cobre apps que chamam
+        // setPushToken DEPOIS do startScanning: o register-on-init já teria saído
+        // sem o token, e o token NÃO faz parte do fingerprint (um register normal
+        // não re-dispararia).
+        if SDKConfigStorage.loadIsScanning(), PushTokenStore.tokenForPayload != nil {
+            registerDeviceIfNeeded(force: true)
+        }
     }
 
     public func startScanning() {
@@ -823,7 +832,7 @@ public class BeAroundSDK {
     ///
     /// Runs asynchronously on a background queue — does NOT block `startScanning()`.
     /// On HTTP 200 the store persists `lastSentAt` + `lastFingerprint`.
-    private func registerDeviceIfNeeded() {
+    private func registerDeviceIfNeeded(force: Bool = false) {
         guard let apiClient = apiClient, let sdkInfo = sdkInfo, let config = configuration else {
             NSLog("[BeAroundSDK] registerDeviceIfNeeded: SDK not fully configured, skipping")
             return
@@ -842,7 +851,7 @@ public class BeAroundSDK {
             appBuild: appBuild
         )
 
-        guard RegisterStore.shouldRegister(currentFingerprint: fingerprint) else {
+        guard force || RegisterStore.shouldRegister(currentFingerprint: fingerprint) else {
             NSLog("[BeAroundSDK] Device already registered and fingerprint unchanged — skipping register")
             return
         }
@@ -870,6 +879,7 @@ public class BeAroundSDK {
             case .success:
                 NSLog("[BeAroundSDK] Device register succeeded — persisting lastSentAt + fingerprint")
                 RegisterStore.markRegistered(fingerprint: fingerprint)
+                PushTokenStore.markSent()
             case .failure(let error):
                 NSLog("[BeAroundSDK] Device register failed: %@ — will retry on next startScanning()", error.localizedDescription)
             }
