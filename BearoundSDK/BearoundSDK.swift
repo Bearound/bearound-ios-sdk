@@ -94,6 +94,21 @@ public class BeAroundSDK {
     /// Use `.summary()` on the result for a log-friendly multi-line string.
     public func diagnostics() -> BeAroundDiagnostics {
         let store = DiagnosticsStore.shared
+
+        // UIApplication.backgroundRefreshStatus is main-thread-only. Collect it (and the
+        // BGTask registration flag, which is cheap) synchronously on main when we're off it.
+        let backgroundRefresh: String
+        if Thread.isMainThread {
+            backgroundRefresh = Self.backgroundRefreshStatusString()
+        } else {
+            backgroundRefresh = DispatchQueue.main.sync { Self.backgroundRefreshStatusString() }
+        }
+
+        var bgTasksRegistered = false
+        if #available(iOS 13.0, *) {
+            bgTasksRegistered = BackgroundTaskManager.shared.tasksRegistered
+        }
+
         return BeAroundDiagnostics(
             deviceId: DeviceIdentifier.getDeviceId(),
             deviceIdType: DeviceIdentifier.getDeviceIdType(),
@@ -109,8 +124,50 @@ public class BeAroundSDK {
             lastSyncBeaconCount: store.lastSyncBeaconCount,
             lastPushReceivedAt: store.lastPushReceivedAt,
             recentErrors: store.recentErrors,
-            sdkVersion: BeAroundSDK.version
+            sdkVersion: BeAroundSDK.version,
+            authorizationStatus: Self.authorizationStatusString(Self.authorizationStatus()),
+            bluetoothState: Self.bluetoothStateString(),
+            backgroundRefreshStatus: backgroundRefresh,
+            backgroundTasksRegistered: bgTasksRegistered
         )
+    }
+
+    /// Human-readable CoreLocation authorization status for diagnostics.
+    private static func authorizationStatusString(_ status: CLAuthorizationStatus) -> String {
+        switch status {
+        case .notDetermined: return "notDetermined"
+        case .restricted: return "restricted"
+        case .denied: return "denied"
+        case .authorizedAlways: return "authorizedAlways"
+        case .authorizedWhenInUse: return "authorizedWhenInUse"
+        @unknown default: return "unknown(\(status.rawValue))"
+        }
+    }
+
+    /// Bluetooth state for diagnostics, derived without instantiating a new `CBCentralManager`
+    /// (which would trigger the permission prompt). Combines the shared central's power state
+    /// with the static, prompt-free `CBCentralManager.authorization`.
+    private static func bluetoothStateString() -> String {
+        if #available(iOS 13.1, *) {
+            switch CBCentralManager.authorization {
+            case .denied: return "unauthorized(denied)"
+            case .restricted: return "unauthorized(restricted)"
+            case .notDetermined: return "notDetermined"
+            case .allowedAlways: break
+            @unknown default: break
+            }
+        }
+        return BeAroundSDK.shared.bluetoothManager.isPoweredOn ? "poweredOn" : "poweredOff"
+    }
+
+    /// `UIApplication.backgroundRefreshStatus` as a String. Must be called on the main thread.
+    private static func backgroundRefreshStatusString() -> String {
+        switch UIApplication.shared.backgroundRefreshStatus {
+        case .available: return "available"
+        case .denied: return "denied"
+        case .restricted: return "restricted"
+        @unknown default: return "unknown"
+        }
     }
 
     // MARK: - Private Properties
@@ -258,7 +315,7 @@ public class BeAroundSDK {
                 BackgroundTaskManager.shared.scheduleProcessingTask()
             }
 
-            delegate?.didChangeScanning(isScanning: true)
+            DispatchQueue.main.async { self.delegate?.didChangeScanning(isScanning: true) }
             NSLog("[BeAroundSDK] AUTO-CONFIGURED from storage (BLE=%d, CL=%d)", bluetoothAuthorized ? 1 : 0, locationCanRangeBeacons ? 1 : 0)
         } else {
             NSLog("[BeAroundSDK] AUTO-CONFIGURE: both BLE and Location denied/reduced, cannot scan")
@@ -327,12 +384,19 @@ public class BeAroundSDK {
         }
 
         beaconManager.onError = { [weak self] error in
-            self?.delegate?.didFailWithError(error)
+            // CoreLocation delegate callbacks arrive on the main thread, but ranging-watchdog
+            // timers can fire this off other queues — always hop to main so the host's UI code
+            // in didFailWithError never touches UIKit off-thread.
+            DispatchQueue.main.async {
+                self?.delegate?.didFailWithError(error)
+            }
         }
 
         beaconManager.onScanningStateChanged = { [weak self] _ in
-            guard let self else { return }
-            self.delegate?.didChangeScanning(isScanning: self.isScanning)
+            DispatchQueue.main.async {
+                guard let self else { return }
+                self.delegate?.didChangeScanning(isScanning: self.isScanning)
+            }
         }
 
         // Triggered when background ranging completes
@@ -655,13 +719,13 @@ public class BeAroundSDK {
         guard configuration != nil else {
             let error = NSError(
                 domain: "BeAroundSDK",
-                code: 3,
+                code: BearoundErrorCode.notConfigured.rawValue,
                 userInfo: [
                     NSLocalizedDescriptionKey:
                         "SDK not configured. Call configure(businessToken:) first."
                 ]
             )
-            delegate?.didFailWithError(error)
+            DispatchQueue.main.async { self.delegate?.didFailWithError(error) }
             return
         }
 
@@ -701,13 +765,13 @@ public class BeAroundSDK {
         guard locationCanRangeBeacons || bluetoothAuthorized else {
             let error = NSError(
                 domain: "BeAroundSDK",
-                code: 7,
+                code: BearoundErrorCode.noScanAuthorization.rawValue,
                 userInfo: [
                     NSLocalizedDescriptionKey:
                         "Cannot scan for beacons. Bluetooth is denied and Location has Precise Location disabled."
                 ]
             )
-            delegate?.didFailWithError(error)
+            DispatchQueue.main.async { self.delegate?.didFailWithError(error) }
             return
         }
 
@@ -733,7 +797,7 @@ public class BeAroundSDK {
 
         // 4. Always: sync timer, persist, BGTasks
         startSyncTimer()
-        delegate?.didChangeScanning(isScanning: true)
+        DispatchQueue.main.async { self.delegate?.didChangeScanning(isScanning: true) }
         SDKConfigStorage.saveIsScanning(true)
 
         if #available(iOS 13.0, *) {
@@ -760,7 +824,7 @@ public class BeAroundSDK {
         stopSyncTimer()
         syncTrigger = "stop_scanning"
         syncBeaconsImmediately()
-        delegate?.didChangeScanning(isScanning: false)
+        DispatchQueue.main.async { self.delegate?.didChangeScanning(isScanning: false) }
 
         SDKConfigStorage.saveIsScanning(false)
 
@@ -874,7 +938,7 @@ public class BeAroundSDK {
             userDevice: userDevice,
             userProperties: userProperties,
             syncTrigger: "register"
-        ) { result in
+        ) { [weak self] result in
             switch result {
             case .success:
                 NSLog("[BeAroundSDK] Device register succeeded — persisting lastSentAt + fingerprint")
@@ -882,6 +946,13 @@ public class BeAroundSDK {
                 PushTokenStore.markSent()
             case .failure(let error):
                 NSLog("[BeAroundSDK] Device register failed: %@ — will retry on next startScanning()", error.localizedDescription)
+                DiagnosticsStore.shared.recordError("register: \(error.localizedDescription)")
+                // Surface the failure to the host app. Previously this died in NSLog, so an
+                // integrator with a bad token / offline device saw scanning "succeed" while the
+                // device never appeared in the Control Hub, with no programmatic signal.
+                DispatchQueue.main.async {
+                    self?.delegate?.didFailWithError(error)
+                }
             }
         }
     }
@@ -1324,7 +1395,7 @@ public class BeAroundSDK {
                         if self.consecutiveFailures >= 10 {
                             let circuitBreakerError = NSError(
                                 domain: "BeAroundSDK",
-                                code: 6,
+                                code: BearoundErrorCode.syncCircuitOpen.rawValue,
                                 userInfo: [
                                     NSLocalizedDescriptionKey:
                                         "API unreachable after \(self.consecutiveFailures) failures. Beacons queued for retry."

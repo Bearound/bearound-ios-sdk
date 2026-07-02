@@ -114,7 +114,7 @@ extension BackgroundSessionManager: URLSessionTaskDelegate {
 
         lock.lock()
         let completion = completions.removeValue(forKey: taskId)
-        responseData.removeValue(forKey: taskId)
+        let responseBody = responseData.removeValue(forKey: taskId)
         let fileURL = taskFiles.removeValue(forKey: taskId)
         lock.unlock()
 
@@ -135,8 +135,14 @@ extension BackgroundSessionManager: URLSessionTaskDelegate {
         }
 
         guard (200..<300).contains(httpResponse.statusCode) else {
-            NSLog("[BeAroundSDK] Upload task %d: HTTP %d", taskId, httpResponse.statusCode)
-            completion(.failure(APIError.httpError(statusCode: httpResponse.statusCode)))
+            // Capture a bounded slice of the response body so the delegate error carries
+            // the server's explanation (e.g. an auth/validation message) instead of just a
+            // bare status code. Bodies are typically tiny JSON error envelopes.
+            let body = responseBody.flatMap { String(data: $0, encoding: .utf8) }
+                .map { String($0.prefix(512)) }
+                .flatMap { $0.isEmpty ? nil : $0 }
+            NSLog("[BeAroundSDK] Upload task %d: HTTP %d body=%@", taskId, httpResponse.statusCode, body ?? "—")
+            completion(.failure(APIError.httpError(statusCode: httpResponse.statusCode, body: body)))
             return
         }
 
@@ -379,7 +385,7 @@ class APIClient {
 enum APIError: LocalizedError {
     case invalidURL
     case invalidResponse
-    case httpError(statusCode: Int)
+    case httpError(statusCode: Int, body: String? = nil)
 
     var errorDescription: String? {
         switch self {
@@ -387,8 +393,12 @@ enum APIError: LocalizedError {
             "Invalid API URL"
         case .invalidResponse:
             "Invalid server response"
-        case .httpError(let code):
-            "HTTP error: \(code)"
+        case .httpError(let code, let body):
+            if let body, !body.isEmpty {
+                "HTTP error: \(code) — \(body)"
+            } else {
+                "HTTP error: \(code)"
+            }
         }
     }
 }

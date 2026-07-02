@@ -8,7 +8,12 @@
 import CoreLocation
 import Foundation
 
-/// Delegate protocol for receiving SDK events
+/// Delegate protocol for receiving SDK events.
+///
+/// - Important: **All callbacks are delivered on the main thread.** The SDK dispatches every
+///   delegate invocation onto `DispatchQueue.main`, so it is safe to touch UIKit / update UI
+///   directly inside any of these methods without hopping threads yourself.
+///
 /// v2.2: Removed didUpdateSyncStatus to reduce battery consumption
 /// (the countdown timer was firing every second which was wasteful)
 /// v2.3: Added sync lifecycle and background detection callbacks
