@@ -1474,6 +1474,15 @@ public class BeAroundSDK {
         if #available(iOS 13.0, *) {
             BackgroundTaskManager.shared.registerTasks()
         }
+
+        // Install the APNs push swizzle EARLY — here, at launch (the host calls this from
+        // didFinishLaunching). Otherwise the swizzle only installs inside configure(), which on
+        // Flutter/RN arrives late (via the Dart/JS bridge); the APNs token and any cold-launch
+        // silent push are delivered BEFORE that, so they'd be missed and the manual AppDelegate
+        // wiring becomes mandatory. Installing it here makes the SDK behave 1:1 with the native
+        // app, where configure() runs early. enableIfPossible() is idempotent (guarded by
+        // `installed`), so configure() calling it again is a harmless no-op.
+        PushTokenAutoCapture.enableIfPossible()
     }
 
     /// Background-upload identifier owned by the SDK's background `URLSession`.
