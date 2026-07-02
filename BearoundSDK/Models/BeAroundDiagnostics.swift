@@ -25,6 +25,27 @@ public struct BeAroundDiagnostics {
     public let recentErrors: [String]
     public let sdkVersion: String
 
+    // MARK: - Runtime state (added for field triage)
+
+    /// CoreLocation authorization status as a String
+    /// (`notDetermined` / `restricted` / `denied` / `authorizedAlways` / `authorizedWhenInUse`).
+    /// Defaults to `"unknown"` when not collected.
+    public let authorizationStatus: String
+
+    /// Bluetooth central-manager state as a String
+    /// (`unknown` / `resetting` / `unsupported` / `unauthorized` / `poweredOff` / `poweredOn`).
+    public let bluetoothState: String
+
+    /// `UIApplication.backgroundRefreshStatus` as a String
+    /// (`available` / `denied` / `restricted`). When `denied`/`restricted`, background wake-ups
+    /// via BGTask are throttled or blocked by the OS.
+    public let backgroundRefreshStatus: String
+
+    /// Whether the SDK's BGTask identifiers were successfully registered with `BGTaskScheduler`.
+    /// `false` means background sync/processing will never fire (missing `registerBackgroundTasks()`
+    /// call or `BGTaskSchedulerPermittedIdentifiers` Info.plist entries).
+    public let backgroundTasksRegistered: Bool
+
     public func summary() -> String {
         let iso = ISO8601DateFormatter()
         func fmt(_ d: Date?) -> String { d.map { iso.string(from: $0) } ?? "—" }
@@ -41,6 +62,8 @@ public struct BeAroundDiagnostics {
             "  scanning: \(isScanning)  pending: \(pendingBatches)",
             "  lastScan: \(fmt(lastScanAt)) (\(fmt(lastScanBeaconCount)) beacons)",
             "  lastSync: \(fmt(lastSyncAt)) \(sync) (\(fmt(lastSyncBeaconCount)) beacons)",
+            "  location: \(authorizationStatus)  bluetooth: \(bluetoothState)",
+            "  bgRefresh: \(backgroundRefreshStatus)  bgTasks: \(backgroundTasksRegistered ? "registered" : "not registered")",
         ]
         if recentErrors.isEmpty {
             lines.append("  errors:   none")
