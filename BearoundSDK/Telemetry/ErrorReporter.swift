@@ -194,7 +194,7 @@ final class ErrorReporter {
     /// total, side-effect-safe operations here (no force-unwraps, no async, short bounded POST).
     private func handleUncaught(_ exception: NSException) {
         let symbols = exception.callStackSymbols
-        guard stackMentionsOurLibrary(symbols) else { return }
+        guard crashOriginatedInOurLibrary(symbols) else { return }
 
         guard isEnabledSnapshot() else { return }
 
@@ -253,15 +253,48 @@ final class ErrorReporter {
         return enabled && handlerInstalled
     }
 
-    /// True if any frame belongs to our library image, while excluding the telemetry module
-    /// itself is implicit — any of our frames qualifies the report, and reports raised *by*
-    /// telemetry code would still be our library (acceptable; we never call `report` from here
-    /// on our own transport failures).
-    private func stackMentionsOurLibrary(_ symbols: [String]) -> Bool {
-        for frame in symbols where frame.contains(ErrorReporter.ourImageName) {
-            return true
+    /// Apple runtime / system-framework image names that are never "the culprit" of a
+    /// crash — the exception machinery and OS frameworks a real bug surfaces THROUGH.
+    private static let systemImagePrefixes = [
+        "libswift", "libsystem", "libc++", "libobjc", "libdispatch", "libdyld",
+        "dyld", "libnetwork", "libboringssl", "libxpc", "libMobileGestalt",
+    ]
+    private static let systemImageNames: Set<String> = [
+        "Foundation", "CoreFoundation", "CFNetwork", "UIKit", "UIKitCore", "SwiftUI",
+        "CoreServices", "CoreBluetooth", "CoreLocation", "CoreGraphics", "QuartzCore",
+        "GraphicsServices", "Security", "CoreData", "Combine", "os", "AttributeGraph",
+        "Network",
+    ]
+
+    /// Reports ONLY when the crash ORIGINATED in our library — never a host-app crash.
+    ///
+    /// Ownership = the FIRST application frame (skipping Apple runtime/framework images,
+    /// e.g. the CoreFoundation/libobjc exception machinery on top) reading down the stack.
+    /// A host crash that merely passes THROUGH one of our callbacks has the host app's own
+    /// image as that first application frame — the old "any frame mentions BearoundSDK"
+    /// test captured those (a privacy leak of the host's errors); this origin test does not.
+    /// If the first application frame cannot be resolved as ours, we do NOT report.
+    private func crashOriginatedInOurLibrary(_ symbols: [String]) -> Bool {
+        for frame in symbols {
+            guard let image = imageName(of: frame) else { continue }
+            if ErrorReporter.isSystemImage(image) { continue }
+            // First application frame decides ownership.
+            return image == ErrorReporter.ourImageName
         }
         return false
+    }
+
+    /// Extracts the Mach-O image name from a `callStackSymbols` line, whose format is
+    /// `<index>  <imageName>  0x<address>  <symbol> + <offset>` — the image is token #1.
+    private func imageName(of frame: String) -> String? {
+        let parts = frame.split(separator: " ", omittingEmptySubsequences: true)
+        guard parts.count >= 2 else { return nil }
+        return String(parts[1])
+    }
+
+    private static func isSystemImage(_ image: String) -> Bool {
+        if systemImageNames.contains(image) { return true }
+        return systemImagePrefixes.contains { image.hasPrefix($0) }
     }
 
     /// Combined rate-limit + dedupe gate. Returns true if this event may be sent now and
