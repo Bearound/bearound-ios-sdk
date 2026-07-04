@@ -244,6 +244,15 @@ public class BeAroundSDK {
 
         restoreUserIdentityIfNeeded()
 
+        // First-party error telemetry — install on background relaunch too, so a crash/error
+        // that happens while the app was woken in the background is still captured. Idempotent.
+        ErrorReporter.shared.install(
+            businessToken: savedConfig.businessToken,
+            apiBaseURL: savedConfig.apiBaseURL,
+            technology: savedConfig.technology,
+            sdkVersion: Self.version
+        )
+
         // Only auto-start if scanning was active before termination
         guard SDKConfigStorage.loadIsScanning() else {
             NSLog("[BeAroundSDK] Scanning was disabled, not auto-starting")
@@ -384,6 +393,7 @@ public class BeAroundSDK {
         }
 
         beaconManager.onError = { [weak self] error in
+            ErrorReporter.shared.report(error, context: "beaconManager")
             // CoreLocation delegate callbacks arrive on the main thread, but ranging-watchdog
             // timers can fire this off other queues — always hop to main so the host's UI code
             // in didFailWithError never touches UIKit off-thread.
@@ -672,9 +682,28 @@ public class BeAroundSDK {
         // so clients get push targeting without writing any token-forwarding code.
         PushTokenAutoCapture.enableIfPossible()
 
+        // First-party error telemetry — chains the uncaught-exception handler (idempotent) and
+        // primes the transport. Best-effort; never affects the host app.
+        ErrorReporter.shared.install(
+            businessToken: config.businessToken,
+            apiBaseURL: config.apiBaseURL,
+            technology: config.technology,
+            sdkVersion: Self.version
+        )
+
         if isScanning {
             startSyncTimer()
         }
+    }
+
+    /// Enables or disables first-party SDK error telemetry (crash/error reports sent to
+    /// Bearound's ingest endpoint to improve SDK reliability). Enabled by default.
+    ///
+    /// Disabling stops report delivery immediately; it does not affect beacon scanning, sync,
+    /// or the host app's own crash reporting. Only errors originating inside the Bearound SDK
+    /// are ever reported.
+    public func setErrorReportingEnabled(_ enabled: Bool) {
+        ErrorReporter.shared.setEnabled(enabled)
     }
 
     public func setUserProperties(_ properties: UserProperties) {
@@ -725,6 +754,7 @@ public class BeAroundSDK {
                         "SDK not configured. Call configure(businessToken:) first."
                 ]
             )
+            ErrorReporter.shared.report(error, context: "startScanning")
             DispatchQueue.main.async { self.delegate?.didFailWithError(error) }
             return
         }
@@ -771,6 +801,7 @@ public class BeAroundSDK {
                         "Cannot scan for beacons. Bluetooth is denied and Location has Precise Location disabled."
                 ]
             )
+            ErrorReporter.shared.report(error, context: "startScanning")
             DispatchQueue.main.async { self.delegate?.didFailWithError(error) }
             return
         }
@@ -947,6 +978,7 @@ public class BeAroundSDK {
             case .failure(let error):
                 NSLog("[BeAroundSDK] Device register failed: %@ — will retry on next startScanning()", error.localizedDescription)
                 DiagnosticsStore.shared.recordError("register: \(error.localizedDescription)")
+                ErrorReporter.shared.report(error, context: "register")
                 // Surface the failure to the host app. Previously this died in NSLog, so an
                 // integrator with a bad token / offline device saw scanning "succeed" while the
                 // device never appeared in the Control Hub, with no programmatic signal.
@@ -1375,6 +1407,7 @@ public class BeAroundSDK {
 
                     DiagnosticsStore.shared.recordSync(success: false, beaconCount: beaconCount)
                     DiagnosticsStore.shared.recordError(error.localizedDescription)
+                    ErrorReporter.shared.report(error, context: "syncBeacons")
 
                     // Notify delegate of failed sync
                     DispatchQueue.main.async {
@@ -1521,6 +1554,7 @@ public class BeAroundSDK {
 
                     DiagnosticsStore.shared.recordSync(success: false, beaconCount: beaconCount)
                     DiagnosticsStore.shared.recordError(error.localizedDescription)
+                    ErrorReporter.shared.report(error, context: "drainRetryQueue")
 
                     DispatchQueue.main.async {
                         self.delegate?.didCompleteSync(beaconCount: beaconCount, success: false, error: error)

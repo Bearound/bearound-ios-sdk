@@ -683,6 +683,60 @@ The SDK includes robust error handling:
 - **Exponential Backoff**: Retries with delays: 5s, 10s, 20s, 40s (max 60s)
 - **Automatic Recovery**: Resumes normal operation when API recovers
 
+### Error telemetry
+
+The SDK ships **first-party error telemetry** to help us keep it reliable in the field. When an
+error originates **inside the Bearound SDK**, a compact report is sent to Bearound's ingest
+endpoint (`POST https://ingest.bearound.io/sdk-errors`). This mirrors the Android SDK's
+`ErrorReporter`, so both platforms behave identically.
+
+**What is reported**
+
+- Uncaught `NSException`s **only when a stack frame belongs to the Bearound SDK** — host-app
+  crashes are never reported by us.
+- SDK-internal failures already surfaced through the delegate/diagnostics: BLE/beacon manager
+  errors, device-register failures, beacon-sync and retry-drain failures, and `startScanning`
+  configuration/permission errors.
+
+**What is NOT reported**
+
+- Your app's own errors or crashes.
+- Normal operational network errors from the beacon-upload client (these are transient and
+  already handled by the retry logic above).
+
+**Guarantees (never destabilizes your app)**
+
+- It **never throws** and never breaks the host app.
+- The uncaught-exception handler is **always chained**: any handler you already installed
+  (Crashlytics, Sentry, Bugsnag, a custom one) is captured before ours and always invoked
+  afterwards — we never replace or swallow it.
+- Delivery is **fire-and-forget** over an isolated `URLSession` with a 5-second timeout, never
+  the beacon-upload session. Reports are **rate-limited** (max 20/hour) and **de-duplicated**
+  (identical errors collapse within a 5-minute window), and stack traces are capped at 8000
+  characters.
+
+**Payload shape** (`error`, `device` with per-platform `permissions`/`systemState`, `sdk`,
+`occurredAt`). The `device` block reuses the same collector as the beacon payload, and the
+`Authorization` header carries your business token when available (the endpoint also accepts
+anonymous reports).
+
+**Opt out** at any time — enabled by default:
+
+```swift
+BeAroundSDK.shared.setErrorReportingEnabled(false)
+```
+
+Disabling stops report delivery immediately; it does not affect scanning, sync, or your app's
+own crash reporting.
+
+> **Note — no POSIX signal handlers.** This version deliberately does **not** install signal
+> handlers (`SIGABRT`, `SIGSEGV`, `SIGBUS`, …). Signal handlers are process-global and
+> single-slot per signal; installing ours would clash with the host's crash reporter
+> (Crashlytics/Sentry/Bugsnag), and a handler running inside an already-corrupted process can
+> deadlock or re-crash. `NSException` coverage plus the reported internal errors are safe and
+> sufficient. If signal capture is added later, it will be strictly chained and
+> async-signal-safe.
+
 ### Monitoring & Debugging
 
 The SDK logs important events with tag `[BeAroundSDK]`:
