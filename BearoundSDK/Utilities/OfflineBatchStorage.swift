@@ -21,8 +21,12 @@ class OfflineBatchStorage {
     /// Maximum age for stored batches (7 days)
     private let maxBatchAge: TimeInterval = 7 * 24 * 60 * 60
 
-    /// Directory name for batch storage
-    private static let directoryName = "com.bearound.sdk.batches"
+    /// Default directory name for batch storage
+    private static let defaultDirectoryName = "com.bearound.sdk.batches"
+
+    /// Directory name for this instance's batch storage. Injectable so unit tests
+    /// can isolate each case in its own directory (the default is production).
+    private let directoryName: String
 
     // MARK: - Codable Types for JSON Serialization
 
@@ -129,12 +133,13 @@ class OfflineBatchStorage {
             NSLog("[BeAroundSDK] Failed to get Application Support directory")
             return nil
         }
-        return appSupport.appendingPathComponent(Self.directoryName)
+        return appSupport.appendingPathComponent(directoryName)
     }
 
     // MARK: - Initialization
 
-    init() {
+    init(directoryName: String = OfflineBatchStorage.defaultDirectoryName) {
+        self.directoryName = directoryName
         createStorageDirectoryIfNeeded()
         cleanupExpiredBatches()
     }

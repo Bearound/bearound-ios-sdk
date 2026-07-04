@@ -52,19 +52,10 @@ jobs:
           echo "✅ SDK builds successfully for iOS Simulator"
 
   unit_tests:
-    name: Unit Tests (non-blocking)
+    name: Unit Tests
     runs-on: macos-latest
     needs: build_sdk
     timeout-minutes: 30
-    # TEMPORARILY NON-BLOCKING. The suite still RUNS here (failures are visible in
-    # the logs) but does not gate the merge, because it has PRE-EXISTING failures
-    # unrelated to the SDK code: KeychainHelperTests fail because `SecItemAdd`
-    # returns false without a signed host/entitlement in the CI simulator, and
-    # OfflineBatchStorageTests are order-dependent (they share persisted state).
-    # These were never executed before (the old CI used a wrong simulator
-    # destination + `xcpretty || true`). Fixing the suite is a tracked follow-up;
-    # until then the honest BUILD gates the merge, not these tests.
-    continue-on-error: true
 
     steps:
       - name: Checkout
@@ -85,11 +76,14 @@ jobs:
             echo "❌ No available iPhone simulator on the runner"; exit 1
           fi
           echo "Using simulator $DEVICE_ID"
+          # Serial execution: the small suite gains nothing from parallel simulator
+          # clones, and a crash in one clone would cascade into "all tests failed".
           xcodebuild test \
             -project "$PROJECT" \
             -scheme BearoundSDKTests \
             -destination "id=$DEVICE_ID" \
             -derivedDataPath "$DERIVED_DATA" \
+            -parallel-testing-enabled NO \
             CODE_SIGNING_ALLOWED=NO \
             | xcpretty
 
@@ -146,24 +140,19 @@ jobs:
     if: always()
 
     steps:
-      # Unit Tests are intentionally NOT in this gate (see the unit_tests job):
-      # they run for visibility but are temporarily non-blocking due to
-      # pre-existing suite failures. The build/lint/xcframework jobs gate the merge.
       - name: Check all jobs status
         if: |
           needs.build_sdk.result != 'success' ||
+          needs.unit_tests.result != 'success' ||
           needs.pod_lint.result != 'success' ||
           needs.build_xcframework.result != 'success'
         run: |
           echo "❌ One or more CI jobs failed:"
           echo "Build SDK: ${{ needs.build_sdk.result }}"
+          echo "Unit Tests: ${{ needs.unit_tests.result }}"
           echo "Pod Lint: ${{ needs.pod_lint.result }}"
           echo "Build XCFramework: ${{ needs.build_xcframework.result }}"
           exit 1
-
-      - name: Unit test status (informational)
-        run: |
-          echo "Unit Tests (non-blocking): ${{ needs.unit_tests.result }}"
 
       - name: All checks passed
         run: |

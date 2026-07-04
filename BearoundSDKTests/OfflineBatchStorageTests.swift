@@ -13,10 +13,21 @@ import Testing
 
 @Suite("OfflineBatchStorage Tests")
 struct OfflineBatchStorageTests {
-    
+
+    /// A unique directory per test instance isolates the on-disk batch store, so
+    /// batches from one test never leak into another. Swift Testing creates a fresh
+    /// struct instance per test and runs tests in parallel, so this is the reliable
+    /// isolation seam (the shared production directory caused order-dependent failures).
+    private let testDirectory = "com.bearound.sdk.test.batches.\(UUID().uuidString)"
+
+    private func makeStorage() -> OfflineBatchStorage {
+        OfflineBatchStorage(directoryName: testDirectory)
+    }
+
+
     @Test("Initialize with default max batch count")
     func initializeDefaultMaxBatchCount() {
-        let storage = OfflineBatchStorage()
+        let storage = makeStorage()
         
         // Default should be medium (100)
         #expect(storage.maxBatchCount == 100)
@@ -24,7 +35,7 @@ struct OfflineBatchStorageTests {
     
     @Test("Save batch returns success")
     func saveBatchReturnsSuccess() {
-        let storage = OfflineBatchStorage()
+        let storage = makeStorage()
         
         // Create test beacons
         let beacons = createTestBeacons(count: 3)
@@ -37,7 +48,7 @@ struct OfflineBatchStorageTests {
     
     @Test("Batch count increases after save")
     func batchCountIncreasesAfterSave() {
-        let storage = OfflineBatchStorage()
+        let storage = makeStorage()
         
         let initialCount = storage.batchCount
         
@@ -52,7 +63,7 @@ struct OfflineBatchStorageTests {
     
     @Test("Load oldest batch returns beacons")
     func loadOldestBatchReturnsBeacons() {
-        let storage = OfflineBatchStorage()
+        let storage = makeStorage()
         
         // Save a batch
         let beacons = createTestBeacons(count: 3)
@@ -69,7 +80,7 @@ struct OfflineBatchStorageTests {
     
     @Test("Remove oldest batch decreases count")
     func removeOldestBatchDecreasesCount() {
-        let storage = OfflineBatchStorage()
+        let storage = makeStorage()
         
         // Save a batch
         let beacons = createTestBeacons(count: 2)
@@ -88,7 +99,7 @@ struct OfflineBatchStorageTests {
     
     @Test("Load all batches returns array")
     func loadAllBatchesReturnsArray() {
-        let storage = OfflineBatchStorage()
+        let storage = makeStorage()
         
         // Save multiple batches
         for i in 0..<3 {
@@ -104,7 +115,7 @@ struct OfflineBatchStorageTests {
     
     @Test("Cannot save empty beacon array")
     func cannotSaveEmptyBeaconArray() {
-        let storage = OfflineBatchStorage()
+        let storage = makeStorage()
         
         // Try to save empty array
         let result = storage.saveBatch([])
@@ -114,7 +125,7 @@ struct OfflineBatchStorageTests {
     
     @Test("Load oldest batch when empty returns nil")
     func loadOldestBatchWhenEmptyReturnsNil() {
-        let storage = OfflineBatchStorage()
+        let storage = makeStorage()
         
         // Remove all batches first
         while storage.batchCount > 0 {
@@ -129,7 +140,7 @@ struct OfflineBatchStorageTests {
     
     @Test("Remove oldest batch when empty succeeds")
     func removeOldestBatchWhenEmptySucceeds() {
-        let storage = OfflineBatchStorage()
+        let storage = makeStorage()
         
         // Remove all batches first
         while storage.batchCount > 0 {
@@ -145,7 +156,7 @@ struct OfflineBatchStorageTests {
     
     @Test("Beacons are stored with correct properties")
     func beaconsStoredWithCorrectProperties() {
-        let storage = OfflineBatchStorage()
+        let storage = makeStorage()
         
         // Create beacon with specific properties
         let beacon = Beacon(

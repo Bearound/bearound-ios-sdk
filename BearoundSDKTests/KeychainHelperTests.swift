@@ -10,7 +10,22 @@ import Testing
 
 @testable import BearoundSDK
 
-@Suite("KeychainHelper Tests")
+/// Probes whether the keychain is actually writable in the current environment.
+///
+/// The iOS keychain needs a signed host app / entitlement. A host-less unit-test
+/// bundle — which is how this suite runs in CI (and locally without a `TEST_HOST`) —
+/// can't write to it: `SecItemAdd` returns `errSecMissingEntitlement`. Rather than
+/// turn the whole suite red where the keychain is structurally unavailable, gate the
+/// suite on this probe so it RUNS where the keychain works (a real device or a
+/// host-app test target) and is cleanly SKIPPED otherwise.
+private func bearoundKeychainWritable() -> Bool {
+    let probeKey = "com.bearound.test.__keychain_probe__"
+    let ok = KeychainHelper.save("probe", forKey: probeKey)
+    KeychainHelper.delete(forKey: probeKey)
+    return ok
+}
+
+@Suite("KeychainHelper Tests", .enabled(if: bearoundKeychainWritable()))
 struct KeychainHelperTests {
     
     let testKey = "com.bearound.test.deviceid"
