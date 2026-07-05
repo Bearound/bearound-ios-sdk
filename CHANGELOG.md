@@ -17,6 +17,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Uncatchable crash when the host lacks `bluetooth-central` in `UIBackgroundModes`.** `CBCentralManager` was always created with `CBCentralManagerOptionRestoreIdentifierKey`; without the background mode CoreBluetooth raises `NSInvalidArgumentException` (uncatchable from Swift) on the first `startScanning()`. The restore identifier is now gated on the host's Info.plist — no background mode → no state restoration, foreground scanning unaffected, no crash. Doctrine: the SDK may fail silently, never crash the host.
 - **APNs token lost on cold launch under Flutter / React Native.** The push-token swizzle was only installed inside `configure(...)`, which the bridges call late — a cold-launch token registered before that was dropped. The swizzle is now installed early in `registerBackgroundTasks()` (called from `didFinishLaunching`), so the token is captured regardless of when `configure` runs.
 - **Register / sync failures now surface to the host.** Device `register` and `syncBeacons` failures were only `NSLog`'d — an integrator with a bad token or an offline device saw scanning "succeed" while the device never appeared in the Control Hub, with no programmatic signal. They now reach `didFailWithError` (with the HTTP status + body).
 
