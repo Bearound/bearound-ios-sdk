@@ -24,6 +24,13 @@ public class BackgroundTaskManager {
 
     private var isRegistered = false
 
+    /// Whether `registerTasks()` has successfully registered at least one BGTask identifier
+    /// with `BGTaskScheduler`. Exposed read-only for diagnostics — if this is `false` after
+    /// launch, the host app is missing the `registerTasks()` call and/or the
+    /// `BGTaskSchedulerPermittedIdentifiers` Info.plist entries, so background sync/processing
+    /// will never fire.
+    public var tasksRegistered: Bool { isRegistered }
+
     private init() {}
 
     /// Registers the background tasks with the system

@@ -34,8 +34,8 @@ jobs:
             -destination "generic/platform=iOS" \
             -configuration Release \
             -derivedDataPath "$DERIVED_DATA" \
-            | xcpretty || true
-          
+            | xcpretty
+
           echo "✅ SDK builds successfully for iOS devices"
 
       - name: Build SDK for Simulator
@@ -47,9 +47,47 @@ jobs:
             -destination "generic/platform=iOS Simulator" \
             -configuration Release \
             -derivedDataPath "$DERIVED_DATA" \
-            | xcpretty || true
-          
+            | xcpretty
+
           echo "✅ SDK builds successfully for iOS Simulator"
+
+  unit_tests:
+    name: Unit Tests
+    runs-on: macos-latest
+    needs: build_sdk
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Use Xcode LTS
+        uses: maxim-lobanov/setup-xcode@v1
+
+      - name: Run unit tests
+        run: |
+          set -o pipefail
+          # Pick the first available iPhone simulator on the runner by UDID — the
+          # exact device/OS name varies with the runner's Xcode, so a hardcoded
+          # "iPhone 16" fails with "Unable to find a device matching the destination".
+          DEVICE_ID=$(xcrun simctl list devices available | grep -m1 "iPhone" \
+            | grep -oE '[0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{12}')
+          if [ -z "$DEVICE_ID" ]; then
+            echo "❌ No available iPhone simulator on the runner"; exit 1
+          fi
+          echo "Using simulator $DEVICE_ID"
+          # Serial execution: the small suite gains nothing from parallel simulator
+          # clones, and a crash in one clone would cascade into "all tests failed".
+          xcodebuild test \
+            -project "$PROJECT" \
+            -scheme BearoundSDKTests \
+            -destination "id=$DEVICE_ID" \
+            -derivedDataPath "$DERIVED_DATA" \
+            -parallel-testing-enabled NO \
+            CODE_SIGNING_ALLOWED=NO \
+            | xcpretty
+
+          echo "✅ Unit tests passed"
 
   pod_lint:
     name: CocoaPods Lint
@@ -98,18 +136,20 @@ jobs:
   ci_success:
     name: CI Success
     runs-on: ubuntu-latest
-    needs: [build_sdk, pod_lint, build_xcframework]
+    needs: [build_sdk, unit_tests, pod_lint, build_xcframework]
     if: always()
 
     steps:
       - name: Check all jobs status
         if: |
           needs.build_sdk.result != 'success' ||
+          needs.unit_tests.result != 'success' ||
           needs.pod_lint.result != 'success' ||
           needs.build_xcframework.result != 'success'
         run: |
           echo "❌ One or more CI jobs failed:"
           echo "Build SDK: ${{ needs.build_sdk.result }}"
+          echo "Unit Tests: ${{ needs.unit_tests.result }}"
           echo "Pod Lint: ${{ needs.pod_lint.result }}"
           echo "Build XCFramework: ${{ needs.build_xcframework.result }}"
           exit 1

@@ -66,14 +66,26 @@ class BluetoothManager: NSObject {
 
     private static let restoreIdentifier = "com.bearound.sdk.centralManager"
 
+    /// NEVER-CRASH-THE-HOST: passing `CBCentralManagerOptionRestoreIdentifierKey` when the
+    /// host app does NOT declare "bluetooth-central" in UIBackgroundModes raises an
+    /// uncatchable `NSInvalidArgumentException` inside CoreBluetooth on the very first
+    /// `startScanning()`. State restoration is a background-mode feature anyway, so gate
+    /// the option on the host's Info.plist (same pattern BeaconManager uses before
+    /// enabling allowsBackgroundLocationUpdates). Without the mode the SDK still scans in
+    /// the foreground — it just skips restoration instead of crashing the host.
+    private static var hostDeclaresBluetoothCentralBackgroundMode: Bool {
+        (Bundle.main.object(forInfoDictionaryKey: "UIBackgroundModes") as? [String])?
+            .contains("bluetooth-central") ?? false
+    }
+
     private lazy var centralManager: CBCentralManager = {
-        CBCentralManager(
-            delegate: self,
-            queue: bleQueue,
-            options: [
-                CBCentralManagerOptionRestoreIdentifierKey: BluetoothManager.restoreIdentifier
-            ]
-        )
+        var options: [String: Any] = [:]
+        if BluetoothManager.hostDeclaresBluetoothCentralBackgroundMode {
+            options[CBCentralManagerOptionRestoreIdentifierKey] = BluetoothManager.restoreIdentifier
+        } else {
+            NSLog("[BeAroundSDK] UIBackgroundModes lacks bluetooth-central — CoreBluetooth state restoration disabled (foreground scanning unaffected)")
+        }
+        return CBCentralManager(delegate: self, queue: bleQueue, options: options)
     }()
 
     private let targetUUID = BeaconConstants.uuid

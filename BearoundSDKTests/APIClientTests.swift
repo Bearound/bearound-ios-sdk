@@ -143,7 +143,10 @@ struct APIClientTests {
         #expect(beacon.metadata?.isConnectable == true)
     }
     
-    @Test("UserDevice model is collected")
+    // `collectDeviceInfo` reads notification/app state (UNUserNotificationCenter /
+    // UIApplication), which throws `bundleProxyForCurrentProcess is nil` in a
+    // host-less unit-test bundle (as in CI). Run it only where there's an app host.
+    @Test("UserDevice model is collected", .enabled(if: Bundle.main.bundlePath.hasSuffix(".app")))
     func userDeviceModelCollected() {
         // Test that DeviceInfoCollector can create UserDevice
         let collector = DeviceInfoCollector()
@@ -158,7 +161,9 @@ struct APIClientTests {
         #expect(!device.manufacturer.isEmpty)
         #expect(!device.model.isEmpty)
         #expect(!device.osVersion.isEmpty)
-        #expect(device.batteryLevel >= 0 && device.batteryLevel <= 1)
+        // Battery is a fraction in [0, 1], or the -1 sentinel when it can't be read
+        // (battery monitoring off / the Simulator, which reports -1).
+        #expect(device.batteryLevel == -1 || (device.batteryLevel >= 0 && device.batteryLevel <= 1))
         #expect(device.locationPermission == "authorized_always")
         #expect(device.appInForeground == true)
     }

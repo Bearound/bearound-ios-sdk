@@ -211,7 +211,7 @@ class BeaconManager: NSObject {
             guard hasBackgroundModes else {
                 let error = NSError(
                     domain: "BeAroundSDK",
-                    code: 4,
+                    code: BearoundErrorCode.backgroundModesMissing.rawValue,
                     userInfo: [
                         NSLocalizedDescriptionKey:
                             "Background location updates require 'location' in UIBackgroundModes (Info.plist)"
@@ -241,7 +241,7 @@ class BeaconManager: NSObject {
         guard status == .authorizedWhenInUse || status == .authorizedAlways else {
             let error = NSError(
                 domain: "BeAroundSDK",
-                code: 1,
+                code: BearoundErrorCode.locationPermissionRequired.rawValue,
                 userInfo: [
                     NSLocalizedDescriptionKey:
                         "Location authorization required. Request permissions before starting beacon scanning."
@@ -656,7 +656,7 @@ class BeaconManager: NSObject {
             if timeSinceLastRestart < 60, rangingRestartCount >= maxRestartsPerMinute {
                 let error = NSError(
                     domain: "BeAroundSDK",
-                    code: 5,
+                    code: BearoundErrorCode.rangingUnstable.rawValue,
                     userInfo: [
                         NSLocalizedDescriptionKey:
                             "Ranging unstable - restarted \(rangingRestartCount) times in last minute"
@@ -707,7 +707,7 @@ extension BeaconManager: CLLocationManagerDelegate {
         if status == .denied || status == .restricted {
             let error = NSError(
                 domain: "BeAroundSDK",
-                code: 2,
+                code: BearoundErrorCode.locationPermissionDenied.rawValue,
                 userInfo: [NSLocalizedDescriptionKey: "Location access denied or restricted"]
             )
             onError?(error)
