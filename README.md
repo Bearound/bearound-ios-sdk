@@ -63,6 +63,22 @@ Not available yet — the repository does not ship a `Package.swift`. SPM suppor
 
 **Note**: Keep the SDK version updated. Check for the latest releases on the repository.
 
+### Set up with an AI agent
+
+Instead of wiring the intricate iOS background setup by hand, hand it to an **AI coding agent** (Claude Code, Cursor, Copilot, …). This README is written to be **agent-readable** — the agent reads it and does the whole integration. There's one ready-made prompt to give it:
+
+[![Agent setup prompt](https://img.shields.io/badge/Agent_setup_prompt-open_%26_copy-2563eb?style=for-the-badge)](./AI-AGENT-SETUP.md)
+
+Open [`AI-AGENT-SETUP.md`](./AI-AGENT-SETUP.md) and click the **copy icon** on its code block — GitHub shows one on every code block, and it drops the prompt on your clipboard. Then paste it into your agent with your app's repo open. Web-capable agents can fetch its [raw URL](https://raw.githubusercontent.com/Bearound/bearound-ios-sdk/main/AI-AGENT-SETUP.md) directly.
+
+**The agent will pause for these human-only steps** — they need your Apple account and a physical device, so no SDK or agent can do them:
+
+- **Xcode → Push Notifications capability** on your app target, signed with **your** push-enabled App ID / provisioning profile. Set `aps-environment` to `development` for Debug and `production` for Release — see [Push Notifications & Push Token](#push-notifications--push-token).
+- **Xcode → Background Modes capability** → enable **Remote notifications** (plus **Location updates** and **Uses Bluetooth LE accessories**).
+- **On device:** grant **Always** location and turn on **Background App Refresh**.
+
+Prefer to wire it by hand? Everything the prompt references is spelled out in the sections below.
+
 ### Required Permissions
 
 Add the following key to your `Info.plist` (required — Bluetooth is the primary detection path):
