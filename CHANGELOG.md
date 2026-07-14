@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.5.0] - 2026-07-14
+
+### Fixed
+
+- **fix(sdk): scan volta a detectar** — `withServices: nil` + match do beacon pelo Service Data `0xBEAD` em `parseBeadServiceData`. Restaura a regressão introduzida na v2.3.2 (o filtro `withServices: [0xBEAD]` casa a lista de Service UUIDs anunciada, mas os beacons Bearound carregam o `0xBEAD` só no Service **Data** — o filtro descartava exatamente os beacons alvo e `didDiscover` nunca disparava). Validado em device.
+
+### Added
+
+- **feat(example): BeAroundScan exibe notificações em foreground** — `UNUserNotificationCenterDelegate.willPresent → [.banner, .list, .sound]`; sem o delegate o iOS suprime o banner (alert push e notificações locais) com o app ativo. Validado em device (alert push com o app aberto aparece).
+- Versão **3.5.0** alinhada em lockstep com o SDK Android 3.5.0 (que estreia o silent-push wake-up — feature Android-side; no iOS o silent push já existia).
+
 ## [3.4.5] - 2026-07-04
 
 ### Added
