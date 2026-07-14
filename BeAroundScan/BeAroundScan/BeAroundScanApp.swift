@@ -2,7 +2,7 @@ import SwiftUI
 import BearoundSDK
 import UserNotifications
 
-class AppDelegate: NSObject, UIApplicationDelegate {
+class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCenterDelegate {
     func application(
         _ application: UIApplication,
         didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil
@@ -13,6 +13,12 @@ class AppDelegate: NSObject, UIApplicationDelegate {
         // Silent push: register with APNs so the server can wake the app in background
         // to refresh the BLE scan + sync (handled in didReceiveRemoteNotification).
         application.registerForRemoteNotifications()
+
+        // Present notifications even in FOREGROUND. Without a delegate returning .banner, iOS
+        // silently drops the banner for BOTH remote alert pushes and the SDK's local
+        // notifications while the app is active — that's why a test "alert" showed nothing with
+        // the app open. Must be set before launch finishes.
+        UNUserNotificationCenter.current().delegate = self
 
         if launchOptions?[.location] != nil {
             NSLog("[BeAroundScan] App launched due to LOCATION event (beacon region entry)")
@@ -68,6 +74,27 @@ class AppDelegate: NSObject, UIApplicationDelegate {
     ) {
         NSLog("[BeAroundScan] APNs registration FAILED: %@", error.localizedDescription)
         Self.writeApnsStatus("error=\(error.localizedDescription)")
+    }
+
+    // MARK: - UNUserNotificationCenterDelegate
+
+    // Show notifications while the app is in the FOREGROUND. Without this, iOS suppresses the
+    // banner for both remote alert pushes and the SDK's local notifications when the app is
+    // active — the cause of "sent an alert push and nothing showed".
+    func userNotificationCenter(
+        _ center: UNUserNotificationCenter,
+        willPresent notification: UNNotification,
+        withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void
+    ) {
+        completionHandler([.banner, .list, .sound])
+    }
+
+    func userNotificationCenter(
+        _ center: UNUserNotificationCenter,
+        didReceive response: UNNotificationResponse,
+        withCompletionHandler completionHandler: @escaping () -> Void
+    ) {
+        completionHandler()
     }
 
     // Persist the APNs token (or failure) to a file so it can be pulled from the device
