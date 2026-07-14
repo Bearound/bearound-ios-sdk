@@ -355,15 +355,21 @@ class BluetoothManager: NSObject {
         beginScan()
     }
 
-    /// Starts the actual CoreBluetooth scan with BEAD Service UUID filter
-    /// iOS delivers all advertisement data (including manufacturer data) for matched peripherals
+    /// Starts the CoreBluetooth scan.
+    ///
+    /// We scan with `withServices: nil` (all peripherals) and match the beacon in
+    /// `parseBeadServiceData` by its **Service Data** (0x16) entry keyed by 0xBEAD.
+    /// Filtering with `withServices: [beadServiceUUID]` does NOT work: CoreBluetooth's
+    /// service filter matches the advertised **Service UUID list** (0x02/0x03), and
+    /// Bearound beacons carry 0xBEAD only in Service Data — so the filter dropped the
+    /// very beacons we want (regression introduced in v2.3.2 / 25ee37c; restored here).
     private func beginScan() {
         let allowDuplicates = true
         centralManager.scanForPeripherals(
-            withServices: [beadServiceUUID],
+            withServices: nil,
             options: [CBCentralManagerScanOptionAllowDuplicatesKey: allowDuplicates]
         )
-        print("[BluetoothManager] Started BLE scanning (Service UUID BEAD, duplicates=\(allowDuplicates))")
+        print("[BluetoothManager] Started BLE scanning (all peripherals, filtered by Service Data 0xBEAD, duplicates=\(allowDuplicates))")
     }
 
     func stopScanning() {
