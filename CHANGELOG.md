@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.4.6] - 2026-07-14
+
+- fix(sdk): scan volta a detectar — `withServices: nil` + match por Service Data 0xBEAD (restaura regressão da v2.3.2)
+- feat(example): BeAroundScan exibe notificações em foreground (`willPresent`)
+
 ## [3.4.5] - 2026-07-04
 
 ### Added
