@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.5.1] - 2026-07-22
+
+### Changed
+
+- **Version-alignment release — no code changes.** Keeps the native SDKs in lockstep with Android v3.5.1 (scan-reliability + host-list fixes, Android-only), as required by the React Native wrapper's native-version alignment check. The iOS SDK is byte-for-byte identical to 3.5.0 apart from the version number.
+
 ## [3.5.0] - 2026-07-14
 
 ### Fixed
