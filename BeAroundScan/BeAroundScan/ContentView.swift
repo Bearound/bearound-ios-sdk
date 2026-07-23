@@ -591,7 +591,7 @@ struct TwoEyesDebugScreen: View {
     @Environment(\.dismiss) private var dismiss
 
     var body: some View {
-        NavigationStack {
+        AdaptiveNavigation {
             ScrollView {
                 VStack(alignment: .leading, spacing: 16) {
                     // Header summary — one line that captures the dual state at a glance.
@@ -1676,7 +1676,7 @@ struct EyeCard: View {
             Text("\(value)")
                 .font(.system(size: 16, weight: .bold, design: .rounded))
                 .foregroundColor(fg)
-                .contentTransition(.numericText())
+                .numericContentTransitionCompat()
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.vertical, 4)
@@ -1736,6 +1736,33 @@ struct GeofenceEventRow: View {
         case .scanPaused: "SCAN PAUSADO"
         case .bluetoothZoneEnter: "BLUETOOTH → DENTRO"
         case .bluetoothZoneExit: "BLUETOOTH → FORA"
+        }
+    }
+}
+
+// MARK: - iOS 15 compatibility
+
+/// Usa NavigationStack no iOS 16+ e cai para NavigationView no iOS 15.
+private struct AdaptiveNavigation<Content: View>: View {
+    @ViewBuilder var content: () -> Content
+
+    var body: some View {
+        if #available(iOS 16.0, *) {
+            NavigationStack(root: content)
+        } else {
+            NavigationView(content: content)
+                .navigationViewStyle(.stack)
+        }
+    }
+}
+
+private extension View {
+    /// Aplica contentTransition(.numericText()) só no iOS 16+; no iOS 15 é no-op.
+    @ViewBuilder func numericContentTransitionCompat() -> some View {
+        if #available(iOS 16.0, *) {
+            self.contentTransition(.numericText())
+        } else {
+            self
         }
     }
 }
