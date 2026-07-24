@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.6.1] - 2026-07-24
+
+### Fixed
+
+- **Background beacon detection was structurally dead for the BLE eye**: iOS silently discards CoreBluetooth scan results while the app is backgrounded when the scan filter is `nil`. The scan now uses a state-dependent filter — `nil` in foreground (maximum capture, matches Service-Data-only beacons, firmware ≤ v5) and `[0xBEAD]` in background (the only mode iOS delivers in background; requires firmware v6+, which announces 0xBEAD in the advertised Service UUID list). With ≤ v5 beacons the background filter matches nothing — exactly what `nil` delivered, so no regression — and v6 beacons light up continuous background detection. The specific filter is also what CBCentralManager state restoration re-registers after a relaunch. The scan re-registers on every foreground/background transition.
+
+### Changed
+
+- Version jumps to 3.6.1 to keep the iOS/Android native MAJOR.MINOR line aligned (Android is on 3.6.x), as required by the React Native wrapper's version check.
+
 ## [3.5.1] - 2026-07-22
 
 ### Changed

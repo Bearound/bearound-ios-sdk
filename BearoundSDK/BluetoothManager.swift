@@ -295,6 +295,11 @@ class BluetoothManager: NSObject {
         if isScanning && currentScanMode == .idle {
             os_log("[BLE] app -> background: promoting IDLE -> ACTIVE for BT wake-up persistence", log: bleLog, type: .info)
             wakeToActive()
+        } else if isScanning {
+            // Re-register with the background filter ([0xBEAD]): iOS discards
+            // nil-filter scan results while backgrounded, and only a specific
+            // service filter keeps deliveries (fw v6+ announces the UUID).
+            restartScan()
         }
     }
 
@@ -302,6 +307,11 @@ class BluetoothManager: NSObject {
         isInBackground = false
         // No demotion here — the regular activeToIdleGrace will demote us back to IDLE
         // when beacons stop being seen. Foreground arrival itself doesn't change scan mode.
+        if isScanning {
+            // Back to the unfiltered scan (nil): catches Service-Data-only beacons
+            // (fw ≤ v5) that the background filter cannot see.
+            restartScan()
+        }
     }
 
     // MARK: - Public Methods
@@ -355,21 +365,32 @@ class BluetoothManager: NSObject {
         beginScan()
     }
 
-    /// Starts the CoreBluetooth scan.
+    /// Starts the CoreBluetooth scan with a filter chosen by app state.
     ///
-    /// We scan with `withServices: nil` (all peripherals) and match the beacon in
+    /// **Foreground — `withServices: nil`** (all peripherals): we match the beacon in
     /// `parseBeadServiceData` by its **Service Data** (0x16) entry keyed by 0xBEAD.
-    /// Filtering with `withServices: [beadServiceUUID]` does NOT work: CoreBluetooth's
-    /// service filter matches the advertised **Service UUID list** (0x02/0x03), and
-    /// Bearound beacons carry 0xBEAD only in Service Data — so the filter dropped the
-    /// very beacons we want (regression introduced in v2.3.2 / 25ee37c; restored here).
+    /// A `[beadServiceUUID]` filter would miss firmware ≤ v5, which carries 0xBEAD
+    /// only in Service Data — CoreBluetooth's service filter matches the advertised
+    /// **Service UUID list** (0x02/0x03), not Service Data (regression v2.3.2 /
+    /// 25ee37c taught us this the hard way).
+    ///
+    /// **Background — `withServices: [beadServiceUUID]`**: iOS silently discards
+    /// nil-filter scans while backgrounded, so nil delivers NOTHING there. A specific
+    /// service filter is the only way to receive scan results in background — and it
+    /// requires the beacon to ANNOUNCE 0xBEAD in its Service UUID list (AD 0x03),
+    /// which firmware v6+ does. With ≤ v5 beacons this filter matches nothing in
+    /// background, which is exactly what nil delivered — no regression, and v6
+    /// beacons light the background eye up. The specific filter is also what
+    /// CBCentralManager state restoration re-registers after a relaunch.
     private func beginScan() {
         let allowDuplicates = true
+        let services: [CBUUID]? = isInBackground ? [beadServiceUUID] : nil
         centralManager.scanForPeripherals(
-            withServices: nil,
+            withServices: services,
             options: [CBCentralManagerScanOptionAllowDuplicatesKey: allowDuplicates]
         )
-        print("[BluetoothManager] Started BLE scanning (all peripherals, filtered by Service Data 0xBEAD, duplicates=\(allowDuplicates))")
+        os_log("[BLE] beginScan — filter=%{public}@ (background=%{public}d)",
+               log: bleLog, type: .info, services == nil ? "nil (all)" : "0xBEAD", isInBackground ? 1 : 0)
     }
 
     func stopScanning() {
