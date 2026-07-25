@@ -639,6 +639,12 @@ public class BeAroundSDK {
                     beaconsForDelegate.append(beacon)
                 }
 
+                // Cross-eye evidence for the CL exit hysteresis: the BLE eye seeing the
+                // beacon is proof of presence the kernel's sparse windows may be missing.
+                if !trackedBeacons.isEmpty {
+                    self.beaconManager.noteBeaconEvidence()
+                }
+
                 // Drive sync from detection: timer is suspended in deep background, so the
                 // BT-eye wake is the only chance to upload. Debounced.
                 if !trackedBeacons.isEmpty {

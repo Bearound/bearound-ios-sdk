@@ -70,6 +70,27 @@ class BeaconManager: NSObject {
     enum RangingOwner { case none, coldStart, locationOnlyFallback, region }
     private(set) var rangingOwner: RangingOwner = .none
 
+    // MARK: - Exit hysteresis (kernel exits are candidates, not verdicts)
+    //
+    // With a 1:3 firmware the kernel's sparse background listen windows can miss the
+    // iBeacon frame for minutes with the beacon RIGHT THERE (bench: exits fired with
+    // -48 dBm on the air, re-enter 0-3 s later). A kernel exit that arrives while we
+    // have RECENT beacon evidence is therefore a CANDIDATE: we ask iOS to re-determine
+    // the state and only propagate the exit when it is confirmed (timeout or .outside).
+    // Evidence = CL ranging sample OR a BLE-eye sighting injected via noteBeaconEvidence().
+    private var lastBeaconEvidenceAt: Date?
+    private var exitConfirmationPending = false
+    private var confirmingExit = false
+    private var exitConfirmationWorkItem: DispatchWorkItem?
+    private let exitEvidenceGrace: TimeInterval = 60.0
+    private let exitConfirmationTimeout: TimeInterval = 12.0
+
+    /// Called by the SDK whenever ANY eye sees the beacon (BLE didDiscover included) so
+    /// the exit hysteresis has cross-eye evidence, not just CL ranging samples.
+    func noteBeaconEvidence() {
+        lastBeaconEvidenceAt = Date()
+    }
+
     /// Explicit cold-relaunch marker set by the SDK when it auto-configures after a
     /// background relaunch — replaces the old `!isScanning` inference, which raced:
     /// autoConfigureFromStorage() could flip isScanning=true BEFORE didEnterRegion
@@ -494,6 +515,7 @@ class BeaconManager: NSObject {
 
     private func processBeacons(_ beacons: [CLBeacon]) {
         lastBeaconUpdate = Date()
+        if !beacons.isEmpty { lastBeaconEvidenceAt = Date() }
 
         if beacons.isEmpty {
             emptyBeaconCount += 1
@@ -836,6 +858,15 @@ extension BeaconManager: CLLocationManagerDelegate {
               isInForeground ? 1 : 0, isScanning ? 1 : 0, isRanging ? 1 : 0)
         #endif
 
+        // A (re-)enter cancels any pending exit confirmation — the kernel's exit was
+        // the sparse-window artifact the hysteresis exists to absorb.
+        if exitConfirmationPending {
+            exitConfirmationPending = false
+            exitConfirmationWorkItem?.cancel()
+            NSLog("[BeAroundSDK] PRESENCE_EXIT_CANDIDATE cancelado — enter/inside chegou")
+            DetectionLogStore.append(type: "PRESENCE_EXIT_CANDIDATE", detail: "cancelado: re-enter/inside na janela de confirmação")
+        }
+
         let wasAlreadyInRegion = isInBeaconRegion
         isInBeaconRegion = true
         if !wasAlreadyInRegion {
@@ -905,6 +936,30 @@ extension BeaconManager: CLLocationManagerDelegate {
     func locationManager(_: CLLocationManager, didExitRegion region: CLRegion) {
         guard let beaconRegion = region as? CLBeaconRegion else { return }
 
+        // Exit hysteresis: recent evidence makes this exit a CANDIDATE, not a verdict.
+        if !confirmingExit {
+            let sinceEvidence = lastBeaconEvidenceAt.map { Date().timeIntervalSince($0) } ?? .infinity
+            if sinceEvidence < exitEvidenceGrace, isInBeaconRegion {
+                NSLog("[BeAroundSDK] PRESENCE_EXIT_CANDIDATE — evidence %.0fs ago, asking iOS to re-determine", sinceEvidence)
+                DetectionLogStore.append(type: "PRESENCE_EXIT_CANDIDATE", detail: String(format: "exit do kernel com evidência há %.0fs — aguardando confirmação", sinceEvidence))
+                exitConfirmationPending = true
+                exitConfirmationWorkItem?.cancel()
+                let work = DispatchWorkItem { [weak self] in
+                    guard let self, self.exitConfirmationPending else { return }
+                    self.exitConfirmationPending = false
+                    self.confirmingExit = true
+                    NSLog("[BeAroundSDK] PRESENCE_EXIT_CONFIRMED (timeout sem re-enter)")
+                    DetectionLogStore.append(type: "PRESENCE_EXIT_CONFIRMED", detail: "confirmado por timeout")
+                    self.locationManager(self.locationManager, didExitRegion: beaconRegion)
+                }
+                exitConfirmationWorkItem = work
+                DispatchQueue.main.asyncAfter(deadline: .now() + exitConfirmationTimeout, execute: work)
+                locationManager.requestState(for: beaconRegion)
+                return
+            }
+        }
+        confirmingExit = false
+
         NSLog("[BeAroundSDK] EXITED BEACON REGION")
 
         let wasInRegion = isInBeaconRegion
@@ -953,7 +1008,15 @@ extension BeaconManager: CLLocationManagerDelegate {
             }
 
         case .outside:
-            if isInBeaconRegion {
+            if exitConfirmationPending {
+                // requestState answered .outside — the candidate exit is real.
+                exitConfirmationPending = false
+                exitConfirmationWorkItem?.cancel()
+                confirmingExit = true
+                NSLog("[BeAroundSDK] PRESENCE_EXIT_CONFIRMED (.outside na re-determinação)")
+                DetectionLogStore.append(type: "PRESENCE_EXIT_CONFIRMED", detail: "confirmado por .outside")
+                locationManager(manager, didExitRegion: beaconRegion)
+            } else if isInBeaconRegion {
                 locationManager(manager, didExitRegion: beaconRegion)
             }
 
