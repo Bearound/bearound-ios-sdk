@@ -63,6 +63,10 @@ class BeaconManager: NSObject {
     /// power state. Mirror twin of BluetoothManager.keepContinuousScanWhenBleOnly.
     var rangeWhenBluetoothUnavailable = false
 
+    /// Scan-log throttle (see processBeacons): last logged composition + when.
+    private var lastScanLogSignature = ""
+    private var lastScanLogAt = Date.distantPast
+
     /// Starts CL ranging immediately if we are inside the region and not ranging yet.
     /// Used by the SDK when the CL-only fallback flips ON while already in the zone —
     /// without this, ranging would only start on the NEXT region transition.
@@ -483,6 +487,7 @@ class BeaconManager: NSObject {
         defer { beaconLock.unlock() }
 
         var updatedBeacons: [Beacon] = []
+        var scanLogParts: [String] = []
         let now = Date()
         let currentBeaconIds = Set(beacons.map { "\($0.major.intValue).\($0.minor.intValue)" })
 
@@ -493,6 +498,7 @@ class BeaconManager: NSObject {
             let identifier = "\(major).\(minor)"
 
             let isValidRSSI = clBeacon.rssi != 0 && clBeacon.rssi != 127
+            scanLogParts.append("\(identifier) rssi=\(clBeacon.rssi)\(isValidRSSI ? "" : (rangeWhenBluetoothUnavailable ? "→aceito(CL-only)" : "→DROP"))")
 
             if isValidRSSI {
                 let averagedRSSI = calculateMovingAverageRSSI(for: identifier, newRSSI: clBeacon.rssi)
@@ -510,6 +516,24 @@ class BeaconManager: NSObject {
                 beaconLastSeen[identifier] = now
                 beaconMissCount[identifier] = 0
                 updatedBeacons.append(beacon)
+            } else if rangeWhenBluetoothUnavailable {
+                // CL-only mode (no usable Bluetooth for this app): iOS reports ranged
+                // beacons with rssi=0 in this profile, and dropping them meant
+                // "inside the zone, zero captures, zero syncs" (field: iPhone 17
+                // Pro Max, Location-only). PRESENCE is the signal here — accept
+                // with the raw (possibly 0) RSSI and proximity, no smoothing.
+                let beacon = Beacon(
+                    uuid: beaconUUID,
+                    major: major,
+                    minor: minor,
+                    rssi: clBeacon.rssi,
+                    proximity: BeaconProximity(fromCL: clBeacon.proximity),
+                    accuracy: clBeacon.accuracy
+                )
+                detectedBeacons[identifier] = beacon
+                beaconLastSeen[identifier] = now
+                beaconMissCount[identifier] = 0
+                updatedBeacons.append(beacon)
             } else if let lastSeen = beaconLastSeen[identifier],
                       let cachedBeacon = detectedBeacons[identifier] {
                 let timeSinceLastSeen = now.timeIntervalSince(lastSeen)
@@ -523,6 +547,18 @@ class BeaconManager: NSObject {
                     beaconMissCount.removeValue(forKey: identifier)
                 }
             }
+        }
+
+        // Ranged-scan log (diagnostic, persisted): one entry per composition change or
+        // every 10 s — answers "which beacons is the ranging seeing, and why didn't
+        // one enter" without needing a console attached (NSLog doesn't reach the
+        // syslog relay on iOS 26).
+        let scanSignature = scanLogParts.joined(separator: ", ")
+        if !scanSignature.isEmpty,
+           scanSignature != lastScanLogSignature || now.timeIntervalSince(lastScanLogAt) > 10 {
+            lastScanLogSignature = scanSignature
+            lastScanLogAt = now
+            DetectionLogStore.append(type: "Scan", detail: scanSignature)
         }
 
         // Handle missed beacons with grace period
