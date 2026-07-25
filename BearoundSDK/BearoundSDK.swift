@@ -251,6 +251,12 @@ public class BeAroundSDK {
             return
         }
 
+        // Hold the relaunch window open from the very first instant of a background
+        // relaunch — NOT only when didEnterRegion arrives. Field case: the CL answers
+        // `unknown` on boot, nothing re-asks, and with no enter (→ no ranging, no
+        // assertion) iOS kills the idle process in ~10 s before the state resolves.
+        beginRelaunchWindowTask()
+
         // Explicit cold-relaunch marker: this path only runs on a background relaunch,
         // and it may flip isScanning=true BEFORE didEnterRegion is delivered — the old
         // `!isScanning` inference then skipped the 25 s seeding ranging AND the relaunch

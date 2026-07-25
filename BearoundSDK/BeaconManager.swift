@@ -85,6 +85,21 @@ class BeaconManager: NSObject {
     private let exitEvidenceGrace: TimeInterval = 60.0
     private let exitConfirmationTimeout: TimeInterval = 12.0
 
+    /// Bounded retry for CL_STATE_UNKNOWN: re-request the region state a few times
+    /// with short backoff so a cold boot resolves inside/outside before the process
+    /// is reaped. Cancelled implicitly by any definitive answer (counter resets).
+    private var unknownStateRetries = 0
+    private func scheduleUnknownStateRetry(manager: CLLocationManager, region: CLBeaconRegion) {
+        guard isScanning, unknownStateRetries < 3 else { return }
+        unknownStateRetries += 1
+        let attempt = unknownStateRetries
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) { [weak self] in
+            guard let self, self.isScanning else { return }
+            NSLog("[BeAroundSDK] CL_STATE_UNKNOWN retry %d — requesting state again", attempt)
+            manager.requestState(for: region)
+        }
+    }
+
     /// Called by the SDK whenever ANY eye sees the beacon (BLE didDiscover included) so
     /// the exit hysteresis has cross-eye evidence, not just CL ranging samples.
     func noteBeaconEvidence() {
@@ -1003,6 +1018,7 @@ extension BeaconManager: CLLocationManagerDelegate {
 
         switch state {
         case .inside:
+            unknownStateRetries = 0
             if !isInBeaconRegion || !isRanging {
                 locationManager(manager, didEnterRegion: beaconRegion)
             }
@@ -1026,6 +1042,10 @@ extension BeaconManager: CLLocationManagerDelegate {
             // field-observed "exit → enter within the same second" pairs (unknown on
             // relaunch → false exit → .inside a moment later → re-enter).
             DetectionLogStore.append(type: "CL_STATE_UNKNOWN", detail: "estado anterior preservado (inside=\(isInBeaconRegion))")
+            // Preserving is not enough on a cold boot: if nobody re-asks, the process
+            // dies idle before iOS ever resolves the state. Re-request with a short
+            // backoff (bounded) while scanning.
+            scheduleUnknownStateRetry(manager: manager, region: beaconRegion)
 
         @unknown default:
             NSLog("[BeAroundSDK] Unknown CLRegionState (%d) — preserving previous state", state.rawValue)
