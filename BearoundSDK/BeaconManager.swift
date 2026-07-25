@@ -63,6 +63,19 @@ class BeaconManager: NSObject {
     /// power state. Mirror twin of BluetoothManager.keepContinuousScanWhenBleOnly.
     var rangeWhenBluetoothUnavailable = false
 
+    /// Who started the current CL ranging — so stops only touch what they own.
+    /// Prevents the field-reviewed "orphan ranging" state (Bluetooth back on, fallback
+    /// off, but CL ranging left running with no owner) and lets the cold-start burst
+    /// coexist with the Location-only fallback without stepping on each other.
+    enum RangingOwner { case none, coldStart, locationOnlyFallback, region }
+    private(set) var rangingOwner: RangingOwner = .none
+
+    /// Explicit cold-relaunch marker set by the SDK when it auto-configures after a
+    /// background relaunch — replaces the old `!isScanning` inference, which raced:
+    /// autoConfigureFromStorage() could flip isScanning=true BEFORE didEnterRegion
+    /// arrived, skipping the 25 s seeding ranging AND the relaunch window task.
+    var expectColdStartRanging = false
+
     /// Scan-log throttle (see processBeacons): last logged composition + when.
     private var lastScanLogSignature = ""
     private var lastScanLogAt = Date.distantPast
@@ -76,7 +89,19 @@ class BeaconManager: NSObject {
         NSLog("[BeAroundSDK] CL-only fallback: starting CoreLocation ranging (already in region)")
         locationManager.startRangingBeacons(satisfying: region.beaconIdentityConstraint)
         isRanging = true
+        rangingOwner = .locationOnlyFallback
         startWatchdog()
+    }
+
+    /// Stops CL ranging ONLY when the Location-only fallback started it. Called when
+    /// Bluetooth becomes usable again — the BLE eye takes tracking back; a cold-start
+    /// burst or region-owned ranging is left untouched.
+    func stopFallbackRanging() {
+        guard rangingOwner == .locationOnlyFallback, isRanging, let region = beaconRegion else { return }
+        NSLog("[BeAroundSDK] CL-only fallback: Bluetooth is back — stopping CoreLocation ranging")
+        locationManager.stopRangingBeacons(satisfying: region.beaconIdentityConstraint)
+        isRanging = false
+        rangingOwner = .none
     }
 
     /// Called when first beacon is detected in background - triggers immediate sync
@@ -761,6 +786,15 @@ extension BeaconManager: CLLocationManagerDelegate {
         // (BLE-only vs Location-backed). Fired on all transitions, not just denial.
         onAuthorizationChanged?()
 
+        if status == .authorizedAlways || status == .authorizedWhenInUse {
+            // Authorization granted AFTER start (common flow: app asks while scanning
+            // is already on). Re-arm region monitoring now — without this the Location
+            // eye stayed dead until the next full restart.
+            if isScanning {
+                startMonitoring()
+            }
+        }
+
         if status == .denied || status == .restricted {
             let error = NSError(
                 domain: "BeAroundSDK",
@@ -823,7 +857,8 @@ extension BeaconManager: CLLocationManagerDelegate {
         // BLE central can take several seconds to wake from state-restoration.
         // We bounded the window to `terminatedAppRangingDuration` (25s) so we
         // collapse back to BLE-only as soon as possible.
-        if !actuallyInForeground && !isScanning {
+        if !actuallyInForeground && (expectColdStartRanging || !isScanning) {
+            expectColdStartRanging = false
             configureBackgroundUpdates(enabled: true)
             NSLog("[BeAroundSDK] APP RELAUNCHED FROM TERMINATED STATE - starting ranging for %.0fs (one-shot)",
                   terminatedAppRangingDuration)
@@ -845,6 +880,7 @@ extension BeaconManager: CLLocationManagerDelegate {
 
             locationManager.startRangingBeacons(satisfying: clBeaconRegion.beaconIdentityConstraint)
             isRanging = true
+            rangingOwner = .coldStart
             startWatchdog()
             startBackgroundRangingTimer(duration: terminatedAppRangingDuration)
             return
@@ -859,6 +895,7 @@ extension BeaconManager: CLLocationManagerDelegate {
             NSLog("[BeAroundSDK] Region entered — Bluetooth unavailable, ranging via CoreLocation (CL-only mode)")
             locationManager.startRangingBeacons(satisfying: clBeaconRegion.beaconIdentityConstraint)
             isRanging = true
+            rangingOwner = .locationOnlyFallback
             startWatchdog()
             return
         }
@@ -907,14 +944,28 @@ extension BeaconManager: CLLocationManagerDelegate {
     func locationManager(_ manager: CLLocationManager, didDetermineState state: CLRegionState, for region: CLRegion) {
         guard let beaconRegion = region as? CLBeaconRegion else { return }
 
-        NSLog("[BeAroundSDK] Region state determined: %d", state.rawValue)
+        NSLog("[BeAroundSDK] CL_REGION_STATE state=%d currentInside=%d", state.rawValue, isInBeaconRegion ? 1 : 0)
 
-        if state == .inside {
-            locationManager(manager, didEnterRegion: beaconRegion)
-        } else if isInBeaconRegion {
-            // iOS reports we're now outside but we thought we were inside —
-            // route through the exit handler so active scan gets stopped.
-            locationManager(manager, didExitRegion: beaconRegion)
+        switch state {
+        case .inside:
+            if !isInBeaconRegion || !isRanging {
+                locationManager(manager, didEnterRegion: beaconRegion)
+            }
+
+        case .outside:
+            if isInBeaconRegion {
+                locationManager(manager, didExitRegion: beaconRegion)
+            }
+
+        case .unknown:
+            // CLRegionState.unknown means Core Location has not determined the state
+            // yet — it is NOT an exit. Routing it through didExitRegion produced the
+            // field-observed "exit → enter within the same second" pairs (unknown on
+            // relaunch → false exit → .inside a moment later → re-enter).
+            DetectionLogStore.append(type: "CL_STATE_UNKNOWN", detail: "estado anterior preservado (inside=\(isInBeaconRegion))")
+
+        @unknown default:
+            NSLog("[BeAroundSDK] Unknown CLRegionState (%d) — preserving previous state", state.rawValue)
         }
     }
 

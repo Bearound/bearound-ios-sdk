@@ -185,6 +185,12 @@ public class BeAroundSDK {
     private var syncTimer: DispatchSourceTimer?
     private var dutyCycleTimer: DispatchSourceTimer?
     private var collectedBeacons: [String: Beacon] = [:]
+    /// Sampling model with volume containment: the SAME beacon re-syncs at most once
+    /// per this interval (Android-parity 60 s). Keeps the per-sample ingest contract
+    /// unchanged while cutting steady-state volume ~4x (a parked device stops emitting
+    /// an event on every scan cycle).
+    private static let sampleReportInterval: TimeInterval = 60.0
+
     private let beaconQueue = DispatchQueue(label: "com.bearound.sdk.beaconQueue")
     private var isSyncing = false
 
@@ -244,6 +250,12 @@ public class BeAroundSDK {
             NSLog("[BeAroundSDK] Already configured, skipping auto-configure")
             return
         }
+
+        // Explicit cold-relaunch marker: this path only runs on a background relaunch,
+        // and it may flip isScanning=true BEFORE didEnterRegion is delivered — the old
+        // `!isScanning` inference then skipped the 25 s seeding ranging AND the relaunch
+        // window task. The flag survives that race; didEnterRegion consumes it.
+        beaconManager.expectColdStartRanging = true
 
         guard let savedConfig = SDKConfigStorage.load() else {
             NSLog("[BeAroundSDK] No saved configuration for background relaunch")
@@ -385,11 +397,9 @@ public class BeAroundSDK {
                 var updatedBeacons: [Beacon] = []
                 for var beacon in enrichedBeacons {
                     let key = "\(beacon.major).\(beacon.minor)"
-                    if let existing = self.collectedBeacons[key] {
-                        beacon.syncedAt = existing.syncedAt
-                    }
-                    // Real detection → always pending sync
-                    beacon.alreadySynced = false
+                    let pending = self.pendingStateForSample(existing: self.collectedBeacons[key])
+                    beacon.syncedAt = pending.syncedAt
+                    beacon.alreadySynced = pending.alreadySynced
                     self.collectedBeacons[key] = beacon
                     updatedBeacons.append(beacon)
                 }
@@ -441,7 +451,7 @@ public class BeAroundSDK {
                 self.mergeBLEBeacons()
                 self.cleanupStaleBeacons()
 
-                let backgroundBeacons = Array(self.collectedBeacons.values).filter { $0.rssi != 0 }
+                let backgroundBeacons = Array(self.collectedBeacons.values).filter { $0.rssi != 0 || $0.discoverySources.contains(.coreLocation) }
                 NSLog("[BeAroundSDK] Background beacon count after cleanup/merge: %d", backgroundBeacons.count)
 
                 // Record to the internal detection log (diagnostic only — no user-facing
@@ -565,6 +575,18 @@ public class BeAroundSDK {
             }
         }
 
+        // Diagnostic-only: BLE silent past the grace while backgrounded. iOS coalesces
+        // repeated ads in background, so this is visibility loss — NOT a zone exit.
+        bluetoothManager.onBluetoothVisibilityStale = { elapsed in
+            DetectionLogStore.append(type: "BLE_VISIBILITY_STALE", detail: String(format: "sem callback há %.0fs (zona preservada)", elapsed))
+        }
+
+        // Lifecycle: scanner stopped by host/SDK — surfaced for observability, never
+        // translated into a presence exit.
+        bluetoothManager.onScanningStopped = {
+            DetectionLogStore.append(type: "BLE_SCAN_STOPPED", detail: "scanner desligado (lifecycle, não presença)")
+        }
+
         // v2.5 — surface duty-cycle mode transitions of the BT eye to the host.
         // notifyScanModeChanged already dispatches on main, but we re-route through
         // the same path the other delegate calls use for consistency.
@@ -580,17 +602,11 @@ public class BeAroundSDK {
             os_log("[SDK] BLE onBeaconsUpdated count=%{public}d clScanning=%{public}d",
                    log: sdkLog, type: .info, trackedBeacons.count, self.beaconManager.isScanning ? 1 : 0)
 
-            beaconQueue.async {
-                let trackedKeys = Set(trackedBeacons.map { "\($0.major).\($0.minor)" })
-
-                // Cleanup: only remove BLE-only beacons that left range (don't remove CL beacons)
-                for key in self.collectedBeacons.keys where !trackedKeys.contains(key) {
-                    if let beacon = self.collectedBeacons[key],
-                       !beacon.discoverySources.contains(.coreLocation) {
-                        self.collectedBeacons.removeValue(forKey: key)
-                    }
-                }
-            }
+            // (Removed) The 10 s tracked-snapshot purge deleted collectedBeacons entries
+            // whenever iOS coalesced BLE callbacks for >10 s in background — the beacon
+            // then came back as brand-new and re-synced. collectedBeacons represents the
+            // presence session, not the last didDiscover snapshot; sample freshness is
+            // governed by pendingStateForSample()'s report window instead.
 
             beaconQueue.async {
                 var beaconsForDelegate: [Beacon] = []
@@ -616,10 +632,9 @@ public class BeAroundSDK {
                         txPower: tracked.txPower,
                         discoverySources: [tracked.discoverySource]
                     )
-                    if let existing = self.collectedBeacons[key] {
-                        beacon.syncedAt = existing.syncedAt
-                    }
-                    beacon.alreadySynced = false
+                    let pending = self.pendingStateForSample(existing: self.collectedBeacons[key])
+                    beacon.syncedAt = pending.syncedAt
+                    beacon.alreadySynced = pending.alreadySynced
                     self.collectedBeacons[key] = beacon
                     beaconsForDelegate.append(beacon)
                 }
@@ -1056,32 +1071,25 @@ public class BeAroundSDK {
             return
         }
 
-        // .medium / .low: Duty cycle — N cycles of 10s scan + pause, then sync
-        let scanDuration = config.precisionScanDuration
-        let pauseDuration = config.precisionPauseDuration
-        let cycleCount = config.precisionCycleCount
+        // .medium / .low: continuous scan + sync timer. The old pseudo-duty-cycle
+        // (resumeScanning/pauseScanning chained via un-cancellable asyncAfter closures)
+        // fought the v2.6 always-registered-scan doctrine, and its orphan closures kept
+        // firing after stopScanning(). iOS already duty-cycles a registered scan for
+        // power; the SDK only needs the sync cadence.
         let cycleInterval = config.precisionCycleInterval
+        bluetoothManager.resumeScanning()
 
-        NSLog("[BeAroundSDK] Precision %@: %d cycles of %.0fs scan + %.0fs pause, interval=%.0fs",
-              precision.rawValue, cycleCount, scanDuration, pauseDuration, cycleInterval)
-
-        // Start first set of cycles immediately
-        startDutyCycles(scanDuration: scanDuration, pauseDuration: pauseDuration, cycleCount: cycleCount)
-
-        // Repeat every cycleInterval
         let timer = DispatchSource.makeTimerSource(queue: DispatchQueue.global(qos: .utility))
         syncTimer = timer
         timer.schedule(deadline: .now() + cycleInterval, repeating: cycleInterval)
         timer.setEventHandler { [weak self] in
             guard let self else { return }
-            // Sync at the start of each new interval (after previous cycles completed)
             self.syncTrigger = "precision_\(precision.rawValue)_timer"
             self.syncBeacons()
-
-            // Start new set of cycles
-            self.startDutyCycles(scanDuration: scanDuration, pauseDuration: pauseDuration, cycleCount: cycleCount)
         }
         timer.resume()
+
+        NSLog("[BeAroundSDK] Precision %@: continuous scan, sync every %.0fs", precision.rawValue, cycleInterval)
     }
 
     /// Runs N duty cycles of scan+pause for BLE and CL
@@ -1202,6 +1210,14 @@ public class BeAroundSDK {
 
     // MARK: - Beacon Sync
 
+    /// Sampling + volume containment: a beacon already synced stays "synced" until
+    /// [sampleReportInterval] has elapsed since syncedAt — then it becomes eligible again.
+    private func pendingStateForSample(existing: Beacon?) -> (alreadySynced: Bool, syncedAt: Date?) {
+        guard let existing, let syncedAt = existing.syncedAt else { return (false, existing?.syncedAt) }
+        let withinWindow = Date().timeIntervalSince(syncedAt) < Self.sampleReportInterval
+        return (existing.alreadySynced && withinWindow, syncedAt)
+    }
+
     private func syncBeaconsImmediately() {
         syncBeacons()
     }
@@ -1219,7 +1235,7 @@ public class BeAroundSDK {
                 self.beaconQueue.async {
                     self.mergeBLEBeacons()
                     let hasValidBeacon = self.collectedBeacons.values.contains {
-                        !$0.alreadySynced && $0.rssi != 0
+                        !$0.alreadySynced && ($0.rssi != 0 || $0.discoverySources.contains(.coreLocation))
                     }
                     guard hasValidBeacon else {
                         NSLog("[BeAroundSDK] First-valid-beacon probe (%.1fs): no valid beacon yet", delay)
@@ -1292,7 +1308,7 @@ public class BeAroundSDK {
                 }
 
                 // Only send beacons that haven't been synced yet, and filter invalid RSSI
-                beaconsToSend = Array(collectedBeacons.values).filter { !$0.alreadySynced && $0.rssi != 0 }
+                beaconsToSend = Array(collectedBeacons.values).filter { !$0.alreadySynced && ($0.rssi != 0 || $0.discoverySources.contains(.coreLocation)) }
                 NSLog("[BeAroundSDK] Syncing %d of %d beacons (pending only)", beaconsToSend.count, collectedBeacons.count)
             }
 
@@ -1391,21 +1407,10 @@ public class BeAroundSDK {
                             self.delegate?.didUpdateBeacons(updatedBeacons)
                         }
 
-                        // Schedule delayed removal after 10 seconds
-                        DispatchQueue.main.asyncAfter(deadline: .now() + 10) { [weak self] in
-                            guard let self else { return }
-                            self.beaconQueue.async {
-                                for key in syncedKeys {
-                                    // Only remove if still marked as synced (not re-detected)
-                                    if self.collectedBeacons[key]?.alreadySynced == true {
-                                        self.collectedBeacons.removeValue(forKey: key)
-                                        NSLog("[BeAroundSDK] REMOVED (10s expired): %@", key)
-                                    } else {
-                                        NSLog("[BeAroundSDK] KEPT (re-detected): %@", key)
-                                    }
-                                }
-                            }
-                        }
+                        // (Removed) The 10 s post-sync removal recreated every parked beacon
+                        // as "new and unsynced" on its next advertisement → perpetual re-sync.
+                        // Entries now stay in collectedBeacons and re-report at most once per
+                        // sampleReportInterval (see pendingStateForSample).
 
                         // Drain retry queue after new beacons synced
                         if self.shouldRetryFailedBatches() {
@@ -1489,7 +1494,7 @@ public class BeAroundSDK {
 
             let chunkBatches = self.offlineBatchStorage.loadOldestBatches(Self.retryChunkSize)
             let chunkCount = chunkBatches.count
-            let beaconsToSend = chunkBatches.flatMap { $0 }.filter { $0.rssi != 0 }
+            let beaconsToSend = chunkBatches.flatMap { $0 }.filter { $0.rssi != 0 || $0.discoverySources.contains(.coreLocation) }
 
             guard !beaconsToSend.isEmpty else {
                 // All beacons in this chunk had rssi=0, skip and try next
@@ -1887,10 +1892,9 @@ extension BeAroundSDK: BluetoothManagerDelegate {
                 txPower: txPower,
                 discoverySources: sources
             )
-            if let existing = self.collectedBeacons[key] {
-                beacon.syncedAt = existing.syncedAt
-            }
-            beacon.alreadySynced = false
+            let pending = self.pendingStateForSample(existing: self.collectedBeacons[key])
+            beacon.syncedAt = pending.syncedAt
+            beacon.alreadySynced = pending.alreadySynced
             self.collectedBeacons[key] = beacon
         }
     }
@@ -1921,6 +1925,11 @@ extension BeAroundSDK: BluetoothManagerDelegate {
             // instead of waiting for the next region transition.
             if fallback, beaconManager.isInBeaconRegion {
                 beaconManager.startRangingIfNeeded()
+            } else if !fallback {
+                // Bluetooth voltou: o ranging do fallback deixa de ter dono — parar
+                // apenas se foi o fallback que o iniciou (RangingOwner), devolvendo o
+                // tracking ao BLE eye sem matar um ranging de cold-start em andamento.
+                beaconManager.stopFallbackRanging()
             }
         }
     }

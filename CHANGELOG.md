@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.6.2] - 2026-07-25
+
+### Fixed
+
+- **`CLRegionState.unknown` no longer treated as a region exit** — it means "not determined yet", not "outside". Routing it through the exit handler produced the field-observed exit→enter pairs within the same second.
+- **BLE silence in background no longer fabricates a zone exit**: iOS coalesces repeated advertisements and stretches scan intervals while backgrounded, so 300 s without a callback is visibility loss, not absence. Background silence now emits a diagnostic (`BLE_VISIBILITY_STALE`) and preserves the zone; the foreground exit (where the nil-filter scan delivers everything) still works.
+- **`stopScanning()` no longer emits a presence exit** — "scanner off" (lifecycle) and "user left" (presence) are different facts and no longer share a callback.
+- **Removed the 10 s tracked-snapshot purge and the 10 s post-sync removal** that together recreated every parked beacon as "new and unsynced" on each background wake — the cause of a device parked next to one beacon emitting an event on every cycle. Samples now re-report at most **once per 60 s per beacon** (Android parity), cutting steady-state volume ~4× with the per-sample ingest contract unchanged.
+- **Location-only profile now syncs end-to-end**: presence samples with `rssi=0` (iOS withholds the measurement without app Bluetooth permission) were accepted at the door and silently dropped by four downstream `rssi != 0` filters. CoreLocation-sourced samples now pass.
+- **Bluetooth off→on no longer leaves the scan dead**: powering off mid-scan sets a resume marker; power recovery restarts the scan automatically.
+- **CL-only fallback now has a symmetric off-path** (`RangingOwner`): when Bluetooth becomes usable again, ranging started by the fallback stops and tracking returns to the BLE eye — no more orphan CoreLocation ranging.
+- **Cold-relaunch ranging no longer races auto-configure**: the relaunch is marked explicitly instead of inferred from `!isScanning`, so the 25 s seeding ranging and the relaunch window task always run.
+- **Removed the pseudo-duty-cycle** (un-cancellable `asyncAfter` chains that kept firing after `stopScanning()`); MEDIUM/LOW use the continuous registered scan + sync timer, same doctrine as HIGH.
+- **BGTask scheduling is idempotent** (pending request cancelled before submit) and logs no longer promise execution times (`earliestBeginDate` is a floor; iOS decides).
+- Location authorization granted after start now re-arms region monitoring immediately.
+
 ## [3.6.1] - 2026-07-24
 
 ### Fixed

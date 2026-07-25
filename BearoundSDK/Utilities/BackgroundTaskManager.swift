@@ -84,9 +84,13 @@ public class BackgroundTaskManager {
         // Request execution in 15 minutes (system may delay based on conditions)
         request.earliestBeginDate = Date(timeIntervalSinceNow: 15 * 60)
 
+        // Idempotent: cancel any pending request first so repeated schedule calls
+        // never accumulate (BGTaskScheduler errors out past a pending-request cap).
+        BGTaskScheduler.shared.cancel(taskRequestWithIdentifier: Self.syncTaskIdentifier)
         do {
             try BGTaskScheduler.shared.submit(request)
-            NSLog("[BeAroundSDK] Background sync scheduled for ~15 minutes")
+            // earliestBeginDate is a FLOOR, not a schedule — iOS decides when (if) to run.
+            NSLog("[BeAroundSDK] Background sync submitted (earliest in 15 min; execution at iOS discretion)")
         } catch {
             NSLog("[BeAroundSDK] Failed to schedule background sync: %@", error.localizedDescription)
         }
@@ -106,9 +110,10 @@ public class BackgroundTaskManager {
         // Request execution in 30 minutes
         request.earliestBeginDate = Date(timeIntervalSinceNow: 30 * 60)
 
+        BGTaskScheduler.shared.cancel(taskRequestWithIdentifier: Self.processingTaskIdentifier)
         do {
             try BGTaskScheduler.shared.submit(request)
-            NSLog("[BeAroundSDK] Background processing task scheduled for ~30 minutes")
+            NSLog("[BeAroundSDK] Background processing submitted (earliest in 30 min; execution at iOS discretion)")
         } catch {
             NSLog("[BeAroundSDK] Failed to schedule background processing: %@", error.localizedDescription)
         }
