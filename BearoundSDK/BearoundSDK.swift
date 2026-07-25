@@ -419,6 +419,15 @@ public class BeAroundSDK {
                 DispatchQueue.main.async {
                     self.delegate?.didUpdateBeacons(updatedBeacons)
                 }
+
+                // Detection-driven sync for the CoreLocation path — the missing link:
+                // only the BLE path requested a sync on detection, so in CL-only the
+                // first upload waited for the 15 s precision timer (field: enter at
+                // 15:33:01, samples flowing, zero syncs for 40 s). Pending sample →
+                // coordinator now (fg fast-path floor / bg batch window apply).
+                if updatedBeacons.contains(where: { !$0.alreadySynced }) {
+                    self.requestSync(reason: "cl_ranging_detection")
+                }
             }
         }
 
