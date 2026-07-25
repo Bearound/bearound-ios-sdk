@@ -1899,5 +1899,29 @@ extension BeAroundSDK: BluetoothManagerDelegate {
         if !isPoweredOn {
             NSLog("[BeAroundSDK] Bluetooth powered off")
         }
+        refreshLocationOnlyRangingMode()
+    }
+
+    /// CL-only fallback wiring: when the app has no usable Bluetooth (permission
+    /// denied/restricted or radio off), the BLE eye is dead — hand steady-state
+    /// ranging to the Location eye so a Location-only permission profile still
+    /// captures beacons. Re-evaluated on every CB state/authorization change.
+    private func refreshLocationOnlyRangingMode() {
+        var bluetoothUsable = bluetoothManager.isPoweredOn
+        if #available(iOS 13.1, *) {
+            let auth = CBCentralManager.authorization
+            if auth == .denied || auth == .restricted { bluetoothUsable = false }
+        }
+        let fallback = !bluetoothUsable
+        if beaconManager.rangeWhenBluetoothUnavailable != fallback {
+            beaconManager.rangeWhenBluetoothUnavailable = fallback
+            NSLog("[BeAroundSDK] CL-only ranging fallback %@ (bluetoothUsable=%d)",
+                  fallback ? "ENABLED" : "disabled", bluetoothUsable ? 1 : 0)
+            // Entering the fallback while already inside the region: kick ranging now
+            // instead of waiting for the next region transition.
+            if fallback, beaconManager.isInBeaconRegion {
+                beaconManager.startRangingIfNeeded()
+            }
+        }
     }
 }

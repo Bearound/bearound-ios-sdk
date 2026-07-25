@@ -54,6 +54,27 @@ class BeaconManager: NSObject {
     /// CRITICAL: Called when ranging completes in background - triggers sync
     var onBackgroundRangingComplete: (() -> Void)?
 
+    /// When true, the Location eye takes over beacon RANGING in steady-state (region
+    /// entered with the app running). Normally ranging belongs to the BLE eye — but when
+    /// the host has NO usable Bluetooth (permission denied/restricted, radio off), staying
+    /// "BLE-only" means total blindness: region enters/exits fire and nothing is ever
+    /// captured (field: iPhone 17 Pro Max, Location-only permission — enters logged, zero
+    /// beacons, zero syncs, even in foreground). Set by the SDK from the CB authorization/
+    /// power state. Mirror twin of BluetoothManager.keepContinuousScanWhenBleOnly.
+    var rangeWhenBluetoothUnavailable = false
+
+    /// Starts CL ranging immediately if we are inside the region and not ranging yet.
+    /// Used by the SDK when the CL-only fallback flips ON while already in the zone —
+    /// without this, ranging would only start on the NEXT region transition.
+    func startRangingIfNeeded() {
+        guard rangeWhenBluetoothUnavailable, isInBeaconRegion, !isRanging,
+              let region = beaconRegion else { return }
+        NSLog("[BeAroundSDK] CL-only fallback: starting CoreLocation ranging (already in region)")
+        locationManager.startRangingBeacons(satisfying: region.beaconIdentityConstraint)
+        isRanging = true
+        startWatchdog()
+    }
+
     /// Called when first beacon is detected in background - triggers immediate sync
     var onFirstBackgroundBeaconDetected: (() -> Void)?
 
@@ -793,9 +814,18 @@ extension BeaconManager: CLLocationManagerDelegate {
             return
         }
 
-        // Steady-state (FG or BG with scanning already running): do NOT start
-        // CL ranging. Beacons are tracked by the BLE eye (BluetoothManager).
-        // Region monitoring keeps running kernel-level to detect the exit.
+        // Steady-state (FG or BG with scanning already running): normally do NOT
+        // start CL ranging — beacons are tracked by the BLE eye (BluetoothManager),
+        // and region monitoring keeps running kernel-level to detect the exit.
+        // EXCEPT when the BLE eye is unavailable (no BT permission / radio off):
+        // then CL ranging is the only working eye — start it or nothing is captured.
+        if rangeWhenBluetoothUnavailable, !isRanging {
+            NSLog("[BeAroundSDK] Region entered — Bluetooth unavailable, ranging via CoreLocation (CL-only mode)")
+            locationManager.startRangingBeacons(satisfying: clBeaconRegion.beaconIdentityConstraint)
+            isRanging = true
+            startWatchdog()
+            return
+        }
         NSLog("[BeAroundSDK] Region entered — staying on BLE-only (no CL ranging)")
     }
 
@@ -810,6 +840,12 @@ extension BeaconManager: CLLocationManagerDelegate {
             onRegionExit?()
             // Host (SDK) should stop BLE central scan now that we left the region.
             onActiveScanShouldStop?()
+        }
+        // CL-only mode: the ranging we started on entry must stop on exit (the BLE
+        // eye path has its own lifecycle; this one is ours).
+        if rangeWhenBluetoothUnavailable, isRanging, let region = self.beaconRegion {
+            locationManager.stopRangingBeacons(satisfying: region.beaconIdentityConstraint)
+            isRanging = false
         }
         stopWatchdog()
         stopRangingRefreshTimer()
