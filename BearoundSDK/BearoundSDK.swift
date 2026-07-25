@@ -193,6 +193,14 @@ public class BeAroundSDK {
     private var consecutiveFailures = 0
     private var lastFailureTime: Date?
     private var backgroundTaskId: UIBackgroundTaskIdentifier = .invalid
+
+    /// Dedicated assertion for the terminated-relaunch window. Separate from
+    /// [backgroundTaskId] (the sync/upload assertion): iOS grants a location-relaunched
+    /// app only ~10 s of runtime, while the cold-start CL ranging one-shot needs 25 s
+    /// (terminatedAppRangingDuration) to seed a beacon + fire the safety sync. Without
+    /// this assertion the process was suspended mid-ranging and the region relaunch
+    /// produced ZERO syncs (field: iPhone 15 Pro Max — 3 relaunches logged, no sync).
+    private var relaunchWindowTaskId: UIBackgroundTaskIdentifier = .invalid
     private var isInBackground = false
     private var wasLaunchedInBackground = false
     private var syncTrigger = "unknown"
@@ -415,6 +423,9 @@ public class BeAroundSDK {
             NSLog("[BeAroundSDK] Background ranging complete - syncing NOW")
             self.syncTrigger = "background_ranging_complete"
             self.syncBeaconsImmediately()
+            // The cold-start window served its purpose; the sync above holds its own
+            // assertion (backgroundTaskId) for the upload itself.
+            self.endRelaunchWindowTask()
         }
 
         // Triggered on first beacon detection in background (unlock/display on)
@@ -457,6 +468,11 @@ public class BeAroundSDK {
         beaconManager.onAppRelaunchedFromTerminated = { [weak self] in
             guard let self else { return }
             NSLog("[BeAroundSDK] APP RELAUNCHED FROM TERMINATED - ensuring configuration")
+
+            // Hold the relaunch window open NOW: without this the OS suspends the
+            // process ~10 s after the background relaunch, killing the 25 s cold-start
+            // ranging before it can seed a beacon or fire its safety sync.
+            self.beginRelaunchWindowTask()
 
             if self.configuration == nil {
                 self.autoConfigureFromStorage()
@@ -1781,6 +1797,28 @@ public class BeAroundSDK {
         } else {
             // Safe: callers run on beaconQueue (never main), so this cannot deadlock.
             DispatchQueue.main.sync(execute: work)
+        }
+    }
+
+    /// Acquires the terminated-relaunch window assertion (see [relaunchWindowTaskId]).
+    private func beginRelaunchWindowTask() {
+        let work = { [weak self] in
+            guard let self, self.relaunchWindowTaskId == .invalid else { return }
+            self.relaunchWindowTaskId = UIApplication.shared.beginBackgroundTask(withName: "BeAroundSDK-RelaunchWindow") { [weak self] in
+                NSLog("[BeAroundSDK] Relaunch window expiring")
+                self?.endRelaunchWindowTask()
+            }
+            NSLog("[BeAroundSDK] Relaunch window task started: %lu", self.relaunchWindowTaskId.rawValue)
+        }
+        if Thread.isMainThread { work() } else { DispatchQueue.main.sync(execute: work) }
+    }
+
+    private func endRelaunchWindowTask() {
+        DispatchQueue.main.async { [weak self] in
+            guard let self, relaunchWindowTaskId != .invalid else { return }
+            NSLog("[BeAroundSDK] Relaunch window task ended: %lu", relaunchWindowTaskId.rawValue)
+            UIApplication.shared.endBackgroundTask(relaunchWindowTaskId)
+            relaunchWindowTaskId = .invalid
         }
     }
 
