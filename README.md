@@ -40,7 +40,7 @@ BearoundSDK provides BLE beacon detection and indoor location technology for iOS
 - **Swift**: 5.0+
 - **Xcode**: 11.0+
 - **Bluetooth** — the primary detection path (Bluetooth eye). No Location permission is required for foreground/background detection.
-- **Location "Always"** — optional. Unlocks the Location eye (force-quit survival via region monitoring); see [Terminated App Detection](#terminated-app-detection).
+- **Location "Always"** — optional. Unlocks the Location eye (terminated-app detection via region monitoring); see [Terminated App Detection](#terminated-app-detection).
 
 ### Installation
 
@@ -93,7 +93,7 @@ Add the following key to your `Info.plist` (required — Bluetooth is the primar
 <string>This app uses Bluetooth to detect nearby Bearound beacons.</string>
 ```
 
-If you opt into the **Location eye** (force-quit survival — see [Terminated App Detection](#terminated-app-detection)), also add:
+If you opt into the **Location eye** (terminated-app detection — see [Terminated App Detection](#terminated-app-detection)), also add:
 
 ```xml
 <key>NSLocationWhenInUseUsageDescription</key>
@@ -240,10 +240,19 @@ The SDK uses multiple mechanisms to ensure beacon data is synced even when the a
 | Mechanism | Trigger | Permission required | Reliability |
 |-----------|---------|--------------------|-------------|
 | **CoreBluetooth State Restoration** | iOS detects BLE advertisement with Bearound service UUID | **Bluetooth only** | High — works when terminated by iOS, **independent of Location** |
-| **CoreLocation Region Monitoring** | iOS detects beacon region entry/exit | Location "Always" | High — works when terminated, survives force-quit |
+| **CoreLocation Region Monitoring** | iOS detects beacon region entry/exit | Location "Always" | High — works when terminated; relaunch after a USER force-quit is iOS behavior, not a contractual guarantee |
 | **Background Fetch** | iOS periodically wakes app | — | Low — not guaranteed timing |
 | **BGTaskScheduler** (`io.bearound.sdk.sync` / `io.bearound.sdk.processing`) | iOS schedules when resources available | — | Medium — opportunistic |
 | **Silent push** (Bearound `content-available` push) | Backend pushes to the device's APNs token | Push Notifications capability | Medium — subject to APNs/iOS budget |
+
+### Platform guarantees — read before promising SLAs
+
+iOS owns the scanning schedule. What the SDK can and cannot promise:
+
+- **iOS controls the frequency and windows** of Bluetooth and iBeacon scanning. In background, repeated advertisements are **coalesced** and discovery can take longer — the absence of a callback does not mean the beacon left. The SDK offers **no detection SLA in seconds**.
+- **Region monitoring** can wake or relaunch the app for eligible events, subject to permissions, Background App Refresh, system state and the iOS version's policies. **A user force-quit must not be treated as a guaranteed-relaunch scenario.**
+- **`BGTaskScheduler`**: `earliestBeginDate` is a floor, not a schedule — iOS decides when (and whether) to run. Use it for retries and opportunistic maintenance, never for cadence.
+- **Radio physics**: BLE signal is attenuated by walls, doors, objects, water and the human body itself, even at short distances.
 
 **Note**: When the user force-quits the app (swipe up from app switcher), iOS **purges CoreBluetooth State Restoration** — the Bluetooth eye stops until the next manual launch. Only CoreLocation region monitoring (Location eye, "Always") survives a user force-quit. See [Known Limitations](#known-limitations).
 
@@ -331,7 +340,7 @@ BeAroundSDK.shared.stopScanning()
 ```
 
 **Important Notes:**
-- Bluetooth is the primary detection path; Location is only needed for the Location eye (force-quit survival)
+- Bluetooth is the primary detection path; Location is only needed for the Location eye (terminated-app detection)
 - The SDK automatically handles background/foreground transitions
 - Use `configure()` only once during app lifecycle
 
@@ -342,7 +351,7 @@ BeAroundSDK.shared.stopScanning()
 **Location (optional — Location eye):** request it through the SDK, not with your own `CLLocationManager`:
 
 ```swift
-// Opt into the Location eye (force-quit survival). Requires the NSLocation*
+// Opt into the Location eye (terminated-app detection). Requires the NSLocation*
 // keys in Info.plist. No-op if already granted at the requested level.
 BeAroundSDK.shared.requestLocationAuthorization(.always)
 // or .whenInUse for foreground-only ranging
@@ -354,11 +363,11 @@ if BeAroundSDK.isLocationAvailable() {
     let status = BeAroundSDK.authorizationStatus()
     switch status {
     case .authorizedAlways:
-        print("✅ Location eye fully enabled (survives force-quit)")
+        print("✅ Location eye fully enabled (terminated-app detection)")
     case .authorizedWhenInUse:
         print("⚠️ Location eye limited to foreground ranging")
     case .denied, .restricted:
-        print("ℹ️ Bluetooth-only mode (no force-quit survival)")
+        print("ℹ️ Bluetooth-only mode (no terminated-app relaunch path)")
     case .notDetermined:
         print("⏳ Not requested yet")
     @unknown default:
@@ -568,7 +577,7 @@ Background tasks are managed with `UIBackgroundTaskIdentifier` to ensure data sy
 
 ### Terminated App Detection
 
-The SDK runs a **hybrid two-eye model** — each "eye" is an independent wake-up path. The host app picks which eyes to enable based on its permission posture and force-quit-survival needs.
+The SDK runs a **hybrid two-eye model** — each "eye" is an independent wake-up path. The host app picks which eyes to enable based on its permission posture and terminated-detection needs.
 
 | | Bluetooth eye (Path A) | Location eye (Path B) |
 |---|---|---|
@@ -588,7 +597,7 @@ The SDK runs a **hybrid two-eye model** — each "eye" is an independent wake-up
 - **Apps that need bulletproof wake-up:** opt into the Location eye via `BeAroundSDK.shared.requestLocationAuthorization(.always)`. The SDK keeps both eyes running side-by-side — whichever path fires first triggers ingest.
 
 ```swift
-// Opt into the Location eye (force-quit survival)
+// Opt into the Location eye (terminated-app detection)
 BeAroundSDK.shared.requestLocationAuthorization(.always)
 
 // Then start scanning. Both eyes will run if their permissions are granted.
@@ -1012,7 +1021,7 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
         )
         BeAroundSDK.shared.setUserProperties(properties)
 
-        // Opt into the Location eye (force-quit survival) — optional
+        // Opt into the Location eye (terminated-app detection) — optional
         BeAroundSDK.shared.requestLocationAuthorization(.always)
 
         // Set delegate, then start scanning
