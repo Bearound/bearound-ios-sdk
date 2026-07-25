@@ -54,6 +54,31 @@ class BeaconManager: NSObject {
     /// CRITICAL: Called when ranging completes in background - triggers sync
     var onBackgroundRangingComplete: (() -> Void)?
 
+    /// When true, the Location eye takes over beacon RANGING in steady-state (region
+    /// entered with the app running). Normally ranging belongs to the BLE eye — but when
+    /// the host has NO usable Bluetooth (permission denied/restricted, radio off), staying
+    /// "BLE-only" means total blindness: region enters/exits fire and nothing is ever
+    /// captured (field: iPhone 17 Pro Max, Location-only permission — enters logged, zero
+    /// beacons, zero syncs, even in foreground). Set by the SDK from the CB authorization/
+    /// power state. Mirror twin of BluetoothManager.keepContinuousScanWhenBleOnly.
+    var rangeWhenBluetoothUnavailable = false
+
+    /// Scan-log throttle (see processBeacons): last logged composition + when.
+    private var lastScanLogSignature = ""
+    private var lastScanLogAt = Date.distantPast
+
+    /// Starts CL ranging immediately if we are inside the region and not ranging yet.
+    /// Used by the SDK when the CL-only fallback flips ON while already in the zone —
+    /// without this, ranging would only start on the NEXT region transition.
+    func startRangingIfNeeded() {
+        guard rangeWhenBluetoothUnavailable, isInBeaconRegion, !isRanging,
+              let region = beaconRegion else { return }
+        NSLog("[BeAroundSDK] CL-only fallback: starting CoreLocation ranging (already in region)")
+        locationManager.startRangingBeacons(satisfying: region.beaconIdentityConstraint)
+        isRanging = true
+        startWatchdog()
+    }
+
     /// Called when first beacon is detected in background - triggers immediate sync
     var onFirstBackgroundBeaconDetected: (() -> Void)?
 
@@ -462,6 +487,7 @@ class BeaconManager: NSObject {
         defer { beaconLock.unlock() }
 
         var updatedBeacons: [Beacon] = []
+        var scanLogParts: [String] = []
         let now = Date()
         let currentBeaconIds = Set(beacons.map { "\($0.major.intValue).\($0.minor.intValue)" })
 
@@ -472,6 +498,7 @@ class BeaconManager: NSObject {
             let identifier = "\(major).\(minor)"
 
             let isValidRSSI = clBeacon.rssi != 0 && clBeacon.rssi != 127
+            scanLogParts.append("\(identifier) rssi=\(clBeacon.rssi)\(isValidRSSI ? "" : (rangeWhenBluetoothUnavailable ? "→aceito(CL-only)" : "→DROP"))")
 
             if isValidRSSI {
                 let averagedRSSI = calculateMovingAverageRSSI(for: identifier, newRSSI: clBeacon.rssi)
@@ -489,6 +516,24 @@ class BeaconManager: NSObject {
                 beaconLastSeen[identifier] = now
                 beaconMissCount[identifier] = 0
                 updatedBeacons.append(beacon)
+            } else if rangeWhenBluetoothUnavailable {
+                // CL-only mode (no usable Bluetooth for this app): iOS reports ranged
+                // beacons with rssi=0 in this profile, and dropping them meant
+                // "inside the zone, zero captures, zero syncs" (field: iPhone 17
+                // Pro Max, Location-only). PRESENCE is the signal here — accept
+                // with the raw (possibly 0) RSSI and proximity, no smoothing.
+                let beacon = Beacon(
+                    uuid: beaconUUID,
+                    major: major,
+                    minor: minor,
+                    rssi: clBeacon.rssi,
+                    proximity: BeaconProximity(fromCL: clBeacon.proximity),
+                    accuracy: clBeacon.accuracy
+                )
+                detectedBeacons[identifier] = beacon
+                beaconLastSeen[identifier] = now
+                beaconMissCount[identifier] = 0
+                updatedBeacons.append(beacon)
             } else if let lastSeen = beaconLastSeen[identifier],
                       let cachedBeacon = detectedBeacons[identifier] {
                 let timeSinceLastSeen = now.timeIntervalSince(lastSeen)
@@ -502,6 +547,18 @@ class BeaconManager: NSObject {
                     beaconMissCount.removeValue(forKey: identifier)
                 }
             }
+        }
+
+        // Ranged-scan log (diagnostic, persisted): one entry per composition change or
+        // every 10 s — answers "which beacons is the ranging seeing, and why didn't
+        // one enter" without needing a console attached (NSLog doesn't reach the
+        // syslog relay on iOS 26).
+        let scanSignature = scanLogParts.joined(separator: ", ")
+        if !scanSignature.isEmpty,
+           scanSignature != lastScanLogSignature || now.timeIntervalSince(lastScanLogAt) > 10 {
+            lastScanLogSignature = scanSignature
+            lastScanLogAt = now
+            DetectionLogStore.append(type: "Scan", detail: scanSignature)
         }
 
         // Handle missed beacons with grace period
@@ -793,9 +850,18 @@ extension BeaconManager: CLLocationManagerDelegate {
             return
         }
 
-        // Steady-state (FG or BG with scanning already running): do NOT start
-        // CL ranging. Beacons are tracked by the BLE eye (BluetoothManager).
-        // Region monitoring keeps running kernel-level to detect the exit.
+        // Steady-state (FG or BG with scanning already running): normally do NOT
+        // start CL ranging — beacons are tracked by the BLE eye (BluetoothManager),
+        // and region monitoring keeps running kernel-level to detect the exit.
+        // EXCEPT when the BLE eye is unavailable (no BT permission / radio off):
+        // then CL ranging is the only working eye — start it or nothing is captured.
+        if rangeWhenBluetoothUnavailable, !isRanging {
+            NSLog("[BeAroundSDK] Region entered — Bluetooth unavailable, ranging via CoreLocation (CL-only mode)")
+            locationManager.startRangingBeacons(satisfying: clBeaconRegion.beaconIdentityConstraint)
+            isRanging = true
+            startWatchdog()
+            return
+        }
         NSLog("[BeAroundSDK] Region entered — staying on BLE-only (no CL ranging)")
     }
 
@@ -810,6 +876,12 @@ extension BeaconManager: CLLocationManagerDelegate {
             onRegionExit?()
             // Host (SDK) should stop BLE central scan now that we left the region.
             onActiveScanShouldStop?()
+        }
+        // CL-only mode: the ranging we started on entry must stop on exit (the BLE
+        // eye path has its own lifecycle; this one is ours).
+        if rangeWhenBluetoothUnavailable, isRanging, let region = self.beaconRegion {
+            locationManager.stopRangingBeacons(satisfying: region.beaconIdentityConstraint)
+            isRanging = false
         }
         stopWatchdog()
         stopRangingRefreshTimer()

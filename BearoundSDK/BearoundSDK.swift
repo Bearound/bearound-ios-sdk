@@ -193,6 +193,14 @@ public class BeAroundSDK {
     private var consecutiveFailures = 0
     private var lastFailureTime: Date?
     private var backgroundTaskId: UIBackgroundTaskIdentifier = .invalid
+
+    /// Dedicated assertion for the terminated-relaunch window. Separate from
+    /// [backgroundTaskId] (the sync/upload assertion): iOS grants a location-relaunched
+    /// app only ~10 s of runtime, while the cold-start CL ranging one-shot needs 25 s
+    /// (terminatedAppRangingDuration) to seed a beacon + fire the safety sync. Without
+    /// this assertion the process was suspended mid-ranging and the region relaunch
+    /// produced ZERO syncs (field: iPhone 15 Pro Max — 3 relaunches logged, no sync).
+    private var relaunchWindowTaskId: UIBackgroundTaskIdentifier = .invalid
     private var isInBackground = false
     private var wasLaunchedInBackground = false
     private var syncTrigger = "unknown"
@@ -415,6 +423,9 @@ public class BeAroundSDK {
             NSLog("[BeAroundSDK] Background ranging complete - syncing NOW")
             self.syncTrigger = "background_ranging_complete"
             self.syncBeaconsImmediately()
+            // The cold-start window served its purpose; the sync above holds its own
+            // assertion (backgroundTaskId) for the upload itself.
+            self.endRelaunchWindowTask()
         }
 
         // Triggered on first beacon detection in background (unlock/display on)
@@ -457,6 +468,11 @@ public class BeAroundSDK {
         beaconManager.onAppRelaunchedFromTerminated = { [weak self] in
             guard let self else { return }
             NSLog("[BeAroundSDK] APP RELAUNCHED FROM TERMINATED - ensuring configuration")
+
+            // Hold the relaunch window open NOW: without this the OS suspends the
+            // process ~10 s after the background relaunch, killing the 25 s cold-start
+            // ranging before it can seed a beacon or fire its safety sync.
+            self.beginRelaunchWindowTask()
 
             if self.configuration == nil {
                 self.autoConfigureFromStorage()
@@ -1784,6 +1800,28 @@ public class BeAroundSDK {
         }
     }
 
+    /// Acquires the terminated-relaunch window assertion (see [relaunchWindowTaskId]).
+    private func beginRelaunchWindowTask() {
+        let work = { [weak self] in
+            guard let self, self.relaunchWindowTaskId == .invalid else { return }
+            self.relaunchWindowTaskId = UIApplication.shared.beginBackgroundTask(withName: "BeAroundSDK-RelaunchWindow") { [weak self] in
+                NSLog("[BeAroundSDK] Relaunch window expiring")
+                self?.endRelaunchWindowTask()
+            }
+            NSLog("[BeAroundSDK] Relaunch window task started: %lu", self.relaunchWindowTaskId.rawValue)
+        }
+        if Thread.isMainThread { work() } else { DispatchQueue.main.sync(execute: work) }
+    }
+
+    private func endRelaunchWindowTask() {
+        DispatchQueue.main.async { [weak self] in
+            guard let self, relaunchWindowTaskId != .invalid else { return }
+            NSLog("[BeAroundSDK] Relaunch window task ended: %lu", relaunchWindowTaskId.rawValue)
+            UIApplication.shared.endBackgroundTask(relaunchWindowTaskId)
+            relaunchWindowTaskId = .invalid
+        }
+    }
+
     private func endBackgroundTask() {
         DispatchQueue.main.async { [weak self] in
             guard let self, backgroundTaskId != .invalid else { return }
@@ -1860,6 +1898,30 @@ extension BeAroundSDK: BluetoothManagerDelegate {
     func didUpdateBluetoothState(isPoweredOn: Bool) {
         if !isPoweredOn {
             NSLog("[BeAroundSDK] Bluetooth powered off")
+        }
+        refreshLocationOnlyRangingMode()
+    }
+
+    /// CL-only fallback wiring: when the app has no usable Bluetooth (permission
+    /// denied/restricted or radio off), the BLE eye is dead — hand steady-state
+    /// ranging to the Location eye so a Location-only permission profile still
+    /// captures beacons. Re-evaluated on every CB state/authorization change.
+    private func refreshLocationOnlyRangingMode() {
+        var bluetoothUsable = bluetoothManager.isPoweredOn
+        if #available(iOS 13.1, *) {
+            let auth = CBCentralManager.authorization
+            if auth == .denied || auth == .restricted { bluetoothUsable = false }
+        }
+        let fallback = !bluetoothUsable
+        if beaconManager.rangeWhenBluetoothUnavailable != fallback {
+            beaconManager.rangeWhenBluetoothUnavailable = fallback
+            NSLog("[BeAroundSDK] CL-only ranging fallback %@ (bluetoothUsable=%d)",
+                  fallback ? "ENABLED" : "disabled", bluetoothUsable ? 1 : 0)
+            // Entering the fallback while already inside the region: kick ranging now
+            // instead of waiting for the next region transition.
+            if fallback, beaconManager.isInBeaconRegion {
+                beaconManager.startRangingIfNeeded()
+            }
         }
     }
 }
