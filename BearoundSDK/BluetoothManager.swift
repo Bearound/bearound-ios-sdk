@@ -207,6 +207,11 @@ class BluetoothManager: NSObject {
     /// the zone state is preserved and only this observability hook fires.
     var onBluetoothVisibilityStale: ((TimeInterval) -> Void)?
 
+    /// Cross-eye consult for the silence evaluator: returns true while the Location
+    /// eye currently reports INSIDE the beacon region. Injected by the SDK; nil when
+    /// no Location eye exists (BLE-only profile).
+    var locationEyeInsideProvider: (() -> Bool)?
+
     /// Lifecycle (NOT presence): the scanner was stopped by the host/SDK. Replaces the
     /// old behavior of fabricating a bluetooth-zone EXIT on stopScanning() — "scanner
     /// off" and "user left the store" are different facts and no longer share a callback.
@@ -739,13 +744,17 @@ class BluetoothManager: NSObject {
         let elapsed = Date().timeIntervalSince(last)
         guard elapsed > zoneExitGracePeriod else { return }
 
-        // In BACKGROUND, BLE silence is not evidence of absence: iOS ignores
-        // AllowDuplicates, coalesces repeated advertisements and stretches the scan
-        // interval — the beacon can be right there with no callback for minutes.
-        // Emit a diagnostic and keep the zone. In FOREGROUND the nil-filter scan
-        // delivers everything, so a full grace period of silence is trustworthy.
-        if isInBackground {
-            NSLog("[BluetoothManager] BLE_VISIBILITY_STALE age=%.0fs (background) — zone preserved", elapsed)
+        // BLE silence is WEAK evidence: in background iOS coalesces advertisements
+        // (silence with the beacon right there is normal), and even in foreground it
+        // must never override a STRONGER eye. Cross-eye rule:
+        //  - Location eye says INSIDE → silence is visibility loss, zone preserved.
+        //  - Background → same (coalescing makes silence meaningless).
+        //  - Foreground BLE-only (no Location eye to consult) → 300 s of silence with
+        //    a nil-filter scan is the best signal available; exit as ESTIMATED.
+        let locationEyeSaysInside = locationEyeInsideProvider?() ?? false
+        if isInBackground || locationEyeSaysInside {
+            NSLog("[BluetoothManager] BLE_VISIBILITY_STALE age=%.0fs (bg=%d clInside=%d) — zone preserved",
+                  elapsed, isInBackground ? 1 : 0, locationEyeSaysInside ? 1 : 0)
             onBluetoothVisibilityStale?(elapsed)
             return
         }

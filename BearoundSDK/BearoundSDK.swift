@@ -577,6 +577,11 @@ public class BeAroundSDK {
 
         // Diagnostic-only: BLE silent past the grace while backgrounded. iOS coalesces
         // repeated ads in background, so this is visibility loss — NOT a zone exit.
+        // Cross-eye rule for BLE silence: while CL reports inside, silence is never exit.
+        bluetoothManager.locationEyeInsideProvider = { [weak self] in
+            self?.beaconManager.isInBeaconRegion ?? false
+        }
+
         bluetoothManager.onBluetoothVisibilityStale = { elapsed in
             DetectionLogStore.append(type: "BLE_VISIBILITY_STALE", detail: String(format: "sem callback há %.0fs (zona preservada)", elapsed))
         }
