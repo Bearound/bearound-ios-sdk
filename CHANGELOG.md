@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.6.2] - 2026-07-25
+
+Field-validated on an iPhone 17 Pro Max in the strictest profile (Location-only, Bluetooth denied, beacon at 1 m): stable zone presence with zero false exits, detection-driven sync, and the process surviving background/locked-screen from a cold relaunch.
+
+### Fixed
+
+- **Kernel region exits are candidates, not verdicts (exit hysteresis)**: with sparse background listen windows the kernel loses the iBeacon frame for minutes with the beacon right there (bench: 6 exits in 12 min at −59..−70 dBm, re-enter 1-3 s later). An exit arriving within 60 s of beacon evidence — from either eye (CL ranging sample or BLE sighting) — now triggers a state re-determination with a 12 s confirmation window; the re-enter cancels it before anything reaches the host. Real exits are untouched.
+- **Cold boot no longer starves**: the relaunch window assertion opens at auto-configure (first instant of a background relaunch), and `CLRegionState.unknown` schedules up to 3 state re-requests — previously the CL answered "unknown", nothing re-asked, and iOS reaped the idle process in ~10 s before the state ever resolved.
+- **BLE silence never overrides the Location eye (cross-eye rule)**: 300 s without a BLE callback only produces a zone exit in the foreground BLE-only profile (no stronger eye to consult, explicitly estimated); with CL reporting inside — or in background, where iOS coalesces advertisements — it emits a `BLE_VISIBILITY_STALE` diagnostic and preserves the zone.
+- **Coordinated sync (single funnel)**: every hot trigger goes through `requestSync(reason:)` on one serial queue. A request landing during an in-flight upload is queued and fired right after (previously **dropped**); timer and detection no longer double-upload seconds apart; the debounce only counts when an upload actually starts; the background-task assertion is acquired only when there is a real batch.
+- **Detection-driven sync for the CoreLocation path**: only the BLE path requested a sync on detection — Location-only waited for the 15 s precision timer (field: enter with samples flowing and no upload for 40 s). A pending CL sample now hits the coordinator like BLE does.
+- **Sync cadence**: foreground fast-path floor of 5 s for *dirty* samples (≥5 s elapsed AND |ΔRSSI| ≥ 3, or battery/metadata changed) with the precision timer as fallback; background batches each real wake into a 1 s window and uploads once. Unchanged samples stay under the 60 s per-beacon re-report (sampling model kept; steady-state volume ~4× lower).
+
+- **`CLRegionState.unknown` no longer treated as a region exit** — it means "not determined yet", not "outside". Routing it through the exit handler produced the field-observed exit→enter pairs within the same second.
+- **BLE silence in background no longer fabricates a zone exit**: iOS coalesces repeated advertisements and stretches scan intervals while backgrounded, so 300 s without a callback is visibility loss, not absence. Background silence now emits a diagnostic (`BLE_VISIBILITY_STALE`) and preserves the zone; the foreground exit (where the nil-filter scan delivers everything) still works.
+- **`stopScanning()` no longer emits a presence exit** — "scanner off" (lifecycle) and "user left" (presence) are different facts and no longer share a callback.
+- **Removed the 10 s tracked-snapshot purge and the 10 s post-sync removal** that together recreated every parked beacon as "new and unsynced" on each background wake — the cause of a device parked next to one beacon emitting an event on every cycle. Samples now re-report at most **once per 60 s per beacon** (Android parity), cutting steady-state volume ~4× with the per-sample ingest contract unchanged.
+- **Location-only profile now syncs end-to-end**: presence samples with `rssi=0` (iOS withholds the measurement without app Bluetooth permission) were accepted at the door and silently dropped by four downstream `rssi != 0` filters. CoreLocation-sourced samples now pass.
+- **Bluetooth off→on no longer leaves the scan dead**: powering off mid-scan sets a resume marker; power recovery restarts the scan automatically.
+- **CL-only fallback now has a symmetric off-path** (`RangingOwner`): when Bluetooth becomes usable again, ranging started by the fallback stops and tracking returns to the BLE eye — no more orphan CoreLocation ranging.
+- **Cold-relaunch ranging no longer races auto-configure**: the relaunch is marked explicitly instead of inferred from `!isScanning`, so the 25 s seeding ranging and the relaunch window task always run.
+- **Removed the pseudo-duty-cycle** (un-cancellable `asyncAfter` chains that kept firing after `stopScanning()`); MEDIUM/LOW use the continuous registered scan + sync timer, same doctrine as HIGH.
+- **BGTask scheduling is idempotent** (pending request cancelled before submit) and logs no longer promise execution times (`earliestBeginDate` is a floor; iOS decides).
+- Location authorization granted after start now re-arms region monitoring immediately.
+
 ## [3.6.1] - 2026-07-24
 
 ### Fixed

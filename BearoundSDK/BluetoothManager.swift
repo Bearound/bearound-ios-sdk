@@ -201,6 +201,27 @@ class BluetoothManager: NSObject {
     /// Fires once when the BLE eye has not seen any beacon for `zoneExitGracePeriod` (falling edge).
     var onBluetoothZoneExit: (() -> Void)?
 
+    /// Diagnostic (NOT semantic): fired when the BLE eye has been silent for
+    /// [zoneExitGracePeriod] while backgrounded. In background iOS coalesces repeated
+    /// advertisements and stretches scan intervals, so BLE silence ≠ physical exit —
+    /// the zone state is preserved and only this observability hook fires.
+    var onBluetoothVisibilityStale: ((TimeInterval) -> Void)?
+
+    /// Cross-eye consult for the silence evaluator: returns true while the Location
+    /// eye currently reports INSIDE the beacon region. Injected by the SDK; nil when
+    /// no Location eye exists (BLE-only profile).
+    var locationEyeInsideProvider: (() -> Bool)?
+
+    /// Lifecycle (NOT presence): the scanner was stopped by the host/SDK. Replaces the
+    /// old behavior of fabricating a bluetooth-zone EXIT on stopScanning() — "scanner
+    /// off" and "user left the store" are different facts and no longer share a callback.
+    var onScanningStopped: (() -> Void)?
+
+    /// Set when the radio powers off mid-scan so the scan auto-resumes when power
+    /// returns. Without it, BT off→on left isScanning=false and pendingAutoStart=false
+    /// — the scan never came back until an app restart (field review, bug 7).
+    private var shouldResumeAfterPowerRecovery = false
+
     // MARK: - Duty Cycle (v2.6)
     //
     // The radio is ALWAYS registered with iOS and scans continuously — there is no app-level
@@ -410,14 +431,15 @@ class BluetoothManager: NSObject {
         trackedBeacons.removeAll()
         lastBeaconSeenAt = nil
 
-        // When the BLE eye is shut off we surface a falling edge so consumers can
-        // drop their "in zone" state — even though the cause is scan-stopped, not
-        // "no beacons in range". Without this the UI would stay stuck on "in zone".
+        // Scanner OFF is a lifecycle fact, not a presence fact. Drop the internal
+        // zone state (so a later start re-detects cleanly) but do NOT fabricate a
+        // bluetooth-zone EXIT — "scanner stopped" and "user left" are different
+        // events, and conflating them injected false exits into the host.
         if isInBluetoothZone {
             isInBluetoothZone = false
             persistZoneState()
-            onBluetoothZoneExit?()
         }
+        onScanningStopped?()
 
         // Surface the mode reset so the UI doesn't get stuck showing "ACTIVE" or
         // a stale countdown after the user explicitly stopped the SDK.
@@ -719,12 +741,28 @@ class BluetoothManager: NSObject {
         guard isInBluetoothZone else { return }
         guard let last = lastBeaconSeenAt else { return }
 
-        if Date().timeIntervalSince(last) > zoneExitGracePeriod {
-            isInBluetoothZone = false
-            lastBeaconSeenAt = nil
-            persistZoneState()
-            onBluetoothZoneExit?()
+        let elapsed = Date().timeIntervalSince(last)
+        guard elapsed > zoneExitGracePeriod else { return }
+
+        // BLE silence is WEAK evidence: in background iOS coalesces advertisements
+        // (silence with the beacon right there is normal), and even in foreground it
+        // must never override a STRONGER eye. Cross-eye rule:
+        //  - Location eye says INSIDE → silence is visibility loss, zone preserved.
+        //  - Background → same (coalescing makes silence meaningless).
+        //  - Foreground BLE-only (no Location eye to consult) → 300 s of silence with
+        //    a nil-filter scan is the best signal available; exit as ESTIMATED.
+        let locationEyeSaysInside = locationEyeInsideProvider?() ?? false
+        if isInBackground || locationEyeSaysInside {
+            NSLog("[BluetoothManager] BLE_VISIBILITY_STALE age=%.0fs (bg=%d clInside=%d) — zone preserved",
+                  elapsed, isInBackground ? 1 : 0, locationEyeSaysInside ? 1 : 0)
+            onBluetoothVisibilityStale?(elapsed)
+            return
         }
+
+        isInBluetoothZone = false
+        lastBeaconSeenAt = nil
+        persistZoneState()
+        onBluetoothZoneExit?()
     }
 
     // MARK: - Private Methods
@@ -827,6 +865,11 @@ extension BluetoothManager: CBCentralManagerDelegate {
         delegate?.didUpdateBluetoothState(isPoweredOn: isPoweredOn)
 
         if isPoweredOn {
+            if shouldResumeAfterPowerRecovery, !isScanning, !pendingAutoStart {
+                shouldResumeAfterPowerRecovery = false
+                os_log("[BLE] power recovered — resuming scan", log: bleLog, type: .info)
+                startScanning()
+            }
             if pendingAutoStart {
                 pendingAutoStart = false
 
@@ -848,8 +891,9 @@ extension BluetoothManager: CBCentralManagerDelegate {
                 os_log("[BLE] poweredOn but idle (pending=false, scanning=false)", log: bleLog, type: .info)
             }
         } else if !isPoweredOn, isScanning {
-            os_log("[BLE] powered off while scanning — isScanning=false", log: bleLog, type: .error)
+            os_log("[BLE] powered off while scanning — will auto-resume on power recovery", log: bleLog, type: .error)
             isScanning = false
+            shouldResumeAfterPowerRecovery = true
         }
     }
 
