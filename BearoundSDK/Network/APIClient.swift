@@ -72,9 +72,16 @@ final class BackgroundSessionManager: NSObject {
 
     /// Uploads `bodyData` to `request` on the background session.
     /// Background sessions reject `httpBody` on upload tasks, so the body is passed as `Data`.
+    /// Orphan reconciliation hook (additive): when a background upload completes AFTER
+    /// the process was relaunched, the in-memory completion is gone — for retry-drain
+    /// uploads the batch ids travel in `taskDescription`, and a 2xx orphan calls this
+    /// so the delivered batches are removed instead of being re-sent (duplicates).
+    static var orphanRetryReconciler: (([String]) -> Void)?
+
     func upload(
         request: URLRequest,
         bodyData: Data,
+        reconcileContext: String? = nil,
         completion: @escaping (Result<Void, Error>) -> Void
     ) {
         // Background sessions reject in-memory NSData uploads ("Upload tasks from NSData are
@@ -91,6 +98,9 @@ final class BackgroundSessionManager: NSObject {
         }
 
         let task = session.uploadTask(with: request, fromFile: fileURL)
+        // Business key for post-relaunch reconciliation (Apple: taskDescription is the
+        // app's slot for tracking data). The live-completion path below is untouched.
+        if let reconcileContext { task.taskDescription = reconcileContext }
         lock.lock()
         completions[task.taskIdentifier] = completion
         responseData[task.taskIdentifier] = Data()
@@ -120,7 +130,21 @@ extension BackgroundSessionManager: URLSessionTaskDelegate {
 
         if let fileURL { try? FileManager.default.removeItem(at: fileURL) }
 
-        guard let completion else { return }
+        guard let completion else {
+            // ADDITIVE orphan path: the process was relaunched and the closure is gone.
+            // The validated live path never enters here. Reconcile what we can:
+            let http = task.response as? HTTPURLResponse
+            let ok = http.map { (200..<300).contains($0.statusCode) } ?? false
+            if let ctx = task.taskDescription, ctx.hasPrefix("retry:"), ok {
+                let ids = ctx.dropFirst(6).split(separator: ",").map(String.init)
+                NSLog("[BeAroundSDK] Orphan retry upload delivered (HTTP %d) — reconciling %d batch(es)", http?.statusCode ?? -1, ids.count)
+                Self.orphanRetryReconciler?(ids)
+            } else {
+                NSLog("[BeAroundSDK] Orphan upload finished (ctx=%@, ok=%d) — no reconciliation needed; live samples re-report naturally",
+                      task.taskDescription ?? "live", ok ? 1 : 0)
+            }
+            return
+        }
 
         if let error {
             NSLog("[BeAroundSDK] Upload task %d failed: %@", taskId, error.localizedDescription)
@@ -191,6 +215,7 @@ class APIClient {
         userDevice: UserDevice,
         userProperties: UserProperties?,
         syncTrigger: String = "unknown",
+        reconcileContext: String? = nil,
         completion: @escaping (Result<Void, Error>) -> Void
     ) {
         // Empty-beacons payloads are valid: syncTrigger="register" sends beacons:[] intentionally.
@@ -279,7 +304,7 @@ class APIClient {
         // Background sessions don't allow `httpBody` on upload tasks — the body must be
         // passed as `Data`. Don't set request.httpBody here.
         NSLog("[BeAroundSDK] Sending %d beacon(s) to %@ trigger=%@ (background upload)", beacons.count, url.absoluteString, syncTrigger)
-        sessionManager.upload(request: request, bodyData: bodyData, completion: completion)
+        sessionManager.upload(request: request, bodyData: bodyData, reconcileContext: reconcileContext, completion: completion)
     }
 
     /// The `sdk` block of the /ingest payload. Extracted so a unit test can assert

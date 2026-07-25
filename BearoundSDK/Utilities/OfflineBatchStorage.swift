@@ -286,6 +286,47 @@ class OfflineBatchStorage {
         return batches
     }
 
+    /// Loads the N oldest batches WITH their ids — the retry drain uses this so the
+    /// set it later removes is exactly the set it sent (the old load-N/remove-oldest-N
+    /// pair raced with concurrent saves and could delete an unsent batch).
+    func loadOldestBatchesWithIds(_ count: Int) -> [(id: String, beacons: [Beacon])] {
+        storageQueue.sync {
+            guard let directory = storageDirectory,
+                  let files = try? fileManager.contentsOfDirectory(atPath: directory.path) else { return [] }
+            let jsonFiles = files.filter { $0.hasSuffix(".json") }.sorted()
+            var result: [(String, [Beacon])] = []
+            for filename in jsonFiles.prefix(count) {
+                let fileURL = directory.appendingPathComponent(filename)
+                do {
+                    let data = try Data(contentsOf: fileURL)
+                    let decoder = JSONDecoder()
+                    decoder.dateDecodingStrategy = .iso8601
+                    let batch = try decoder.decode(StoredBatch.self, from: data)
+                    result.append((String(filename.dropLast(5)), batch.beacons.map { $0.toBeacon() }))
+                } catch {
+                    NSLog("[BeAroundSDK] Failed to load batch %@: %@", filename, error.localizedDescription)
+                    try? fileManager.removeItem(at: fileURL)
+                }
+            }
+            return result
+        }
+    }
+
+    /// Removes specific batches by id (delivered set == sent set, no TOCTOU).
+    @discardableResult
+    func removeBatches(ids: [String]) -> Int {
+        storageQueue.sync {
+            guard let directory = storageDirectory else { return 0 }
+            var removed = 0
+            for id in ids {
+                let fileURL = directory.appendingPathComponent("\(id).json")
+                if (try? fileManager.removeItem(at: fileURL)) != nil { removed += 1 }
+            }
+            if removed > 0 { NSLog("[BeAroundSDK] Removed %d delivered batches by id", removed) }
+            return removed
+        }
+    }
+
     /// Removes the oldest batch from storage (call after successful sync)
     /// - Returns: true if removed successfully
     @discardableResult

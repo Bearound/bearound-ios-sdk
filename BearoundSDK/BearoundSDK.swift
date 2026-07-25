@@ -228,6 +228,16 @@ public class BeAroundSDK {
         }
 
         setupCallbacks()
+
+        // Orphan retry-upload reconciliation (post-relaunch): remove the delivered
+        // batches so the drain never re-sends them. Weak SDK ref via singleton is fine
+        // here — the hook only fires after a relaunch, when shared is alive.
+        BackgroundSessionManager.orphanRetryReconciler = { [weak self] ids in
+            self?.beaconQueue.async {
+                self?.offlineBatchStorage.removeBatches(ids: ids)
+                DetectionLogStore.append(type: "SYNC_ORPHAN_RECONCILED", detail: "\(ids.count) batch(es) entregues pós-relaunch removidos do retry")
+            }
+        }
         setupAppStateObservers()
 
         // Auto-configure when app is relaunched
@@ -1617,13 +1627,15 @@ public class BeAroundSDK {
                 return
             }
 
-            let chunkBatches = self.offlineBatchStorage.loadOldestBatches(Self.retryChunkSize)
+            let chunkWithIds = self.offlineBatchStorage.loadOldestBatchesWithIds(Self.retryChunkSize)
+            let chunkIds = chunkWithIds.map { $0.id }
+            let chunkBatches = chunkWithIds.map { $0.beacons }
             let chunkCount = chunkBatches.count
             let beaconsToSend = chunkBatches.flatMap { $0 }.filter { $0.rssi != 0 || $0.discoverySources.contains(.coreLocation) }
 
             guard !beaconsToSend.isEmpty else {
                 // All beacons in this chunk had rssi=0, skip and try next
-                self.offlineBatchStorage.removeOldestBatches(chunkCount)
+                self.offlineBatchStorage.removeBatches(ids: chunkIds)
                 NSLog("[BeAroundSDK] Skipped %d empty retry batches", chunkCount)
                 self.drainRetryQueue()
                 return
@@ -1656,7 +1668,8 @@ public class BeAroundSDK {
                 sdkInfo: sdkInfo,
                 userDevice: userDevice,
                 userProperties: self.userProperties,
-                syncTrigger: "retry_drain"
+                syncTrigger: "retry_drain",
+                reconcileContext: "retry:" + chunkIds.joined(separator: ",")
             ) { [weak self] result in
                 guard let self else { return }
 
@@ -1681,7 +1694,7 @@ public class BeAroundSDK {
                         self.syncDidFinishCoordination()
                         self.consecutiveFailures = 0
                         self.lastFailureTime = nil
-                        self.offlineBatchStorage.removeOldestBatches(chunkCount)
+                        self.offlineBatchStorage.removeBatches(ids: chunkIds)
 
                         // Continue draining if more batches remain
                         if self.offlineBatchStorage.batchCount > 0 {

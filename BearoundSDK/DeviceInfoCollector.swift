@@ -24,9 +24,38 @@ final class DeviceInfoCollector: @unchecked Sendable {
 
 	private var permissionCacheReady = false
 
+	// Persistent network monitor (field review item 22): the old networkType() built
+	// a fresh NWPathMonitor + queue and blocked on a semaphore for up to 500 ms on
+	// EVERY sync — with the 5 s foreground fast-path that became a constant tax on
+	// the sync path. One monitor for the SDK's lifetime keeps a snapshot instead.
+	private let pathMonitorQueue = DispatchQueue(label: "com.bearound.network.monitor", qos: .utility)
+	private var pathMonitor: NWPathMonitor?
+	private var networkSnapshot: String = "none"
+	private let networkLock = NSLock()
+
 	init(isColdStart: Bool = true) {
 		appStartTime = Date()
 		self.isColdStart = isColdStart
+
+		// Persistent monitor started AFTER all stored properties are initialized
+		// (the update handler captures self).
+		if #available(iOS 12.0, *) {
+			let monitor = NWPathMonitor()
+			monitor.pathUpdateHandler = { [weak self] path in
+				guard let self else { return }
+				let value: String
+				if path.status == .satisfied {
+					value = path.usesInterfaceType(.cellular) ? "cellular" : "wifi"
+				} else {
+					value = "none"
+				}
+				self.networkLock.lock()
+				self.networkSnapshot = value
+				self.networkLock.unlock()
+			}
+			monitor.start(queue: pathMonitorQueue)
+			self.pathMonitor = monitor
+		}
 
 		Task {
 			await updateNotificationPermissionCache()
@@ -204,32 +233,10 @@ final class DeviceInfoCollector: @unchecked Sendable {
 
 	private func networkType() -> String {
 		if #available(iOS 12.0, *) {
-			let monitor = NWPathMonitor()
-			let semaphore = DispatchSemaphore(value: 0)
-			var result = "none"
-			
-			monitor.pathUpdateHandler = { path in
-				if path.status == .satisfied {
-					if path.usesInterfaceType(.cellular) {
-						result = "cellular"
-					} else if path.usesInterfaceType(.wifi) {
-						result = "wifi"
-					} else if path.usesInterfaceType(.wiredEthernet) {
-						result = "wifi"
-					} else {
-						result = "wifi"
-					}
-				} else {
-					result = "none"
-				}
-				semaphore.signal()
-			}
-			
-			let queue = DispatchQueue(label: "com.bearound.network.monitor")
-			monitor.start(queue: queue)
-			_ = semaphore.wait(timeout: .now() + 0.5)
-			monitor.cancel()
-			
+			// Snapshot from the persistent monitor — no allocation, no 500 ms block.
+			networkLock.lock()
+			let result = networkSnapshot
+			networkLock.unlock()
 			return result
 		} else {
 			// Fallback for iOS < 12.0
