@@ -397,9 +397,15 @@ public class BeAroundSDK {
                 var updatedBeacons: [Beacon] = []
                 for var beacon in enrichedBeacons {
                     let key = "\(beacon.major).\(beacon.minor)"
-                    let pending = self.pendingStateForSample(existing: self.collectedBeacons[key])
-                    beacon.syncedAt = pending.syncedAt
-                    beacon.alreadySynced = pending.alreadySynced
+                    let existingSample = self.collectedBeacons[key]
+                    if self.sampleIsDirty(existing: existingSample, newRSSI: beacon.rssi, newMetadata: beacon.metadata) {
+                        beacon.syncedAt = existingSample?.syncedAt
+                        beacon.alreadySynced = false
+                    } else {
+                        let pending = self.pendingStateForSample(existing: existingSample)
+                        beacon.syncedAt = pending.syncedAt
+                        beacon.alreadySynced = pending.alreadySynced
+                    }
                     self.collectedBeacons[key] = beacon
                     updatedBeacons.append(beacon)
                 }
@@ -637,9 +643,15 @@ public class BeAroundSDK {
                         txPower: tracked.txPower,
                         discoverySources: [tracked.discoverySource]
                     )
-                    let pending = self.pendingStateForSample(existing: self.collectedBeacons[key])
-                    beacon.syncedAt = pending.syncedAt
-                    beacon.alreadySynced = pending.alreadySynced
+                    let existingSample = self.collectedBeacons[key]
+                    if self.sampleIsDirty(existing: existingSample, newRSSI: beacon.rssi, newMetadata: beacon.metadata) {
+                        beacon.syncedAt = existingSample?.syncedAt
+                        beacon.alreadySynced = false
+                    } else {
+                        let pending = self.pendingStateForSample(existing: existingSample)
+                        beacon.syncedAt = pending.syncedAt
+                        beacon.alreadySynced = pending.alreadySynced
+                    }
                     self.collectedBeacons[key] = beacon
                     beaconsForDelegate.append(beacon)
                 }
@@ -1073,8 +1085,7 @@ public class BeAroundSDK {
             syncTimer = timer
             timer.schedule(deadline: .now() + config.syncInterval, repeating: config.syncInterval)
             timer.setEventHandler { [weak self] in
-                self?.syncTrigger = "precision_high_timer"
-                self?.syncBeacons()
+                self?.requestSync(reason: "precision_high_timer")
             }
             timer.resume()
 
@@ -1094,9 +1105,7 @@ public class BeAroundSDK {
         syncTimer = timer
         timer.schedule(deadline: .now() + cycleInterval, repeating: cycleInterval)
         timer.setEventHandler { [weak self] in
-            guard let self else { return }
-            self.syncTrigger = "precision_\(precision.rawValue)_timer"
-            self.syncBeacons()
+            self?.requestSync(reason: "precision_\(precision.rawValue)_timer")
         }
         timer.resume()
 
@@ -1221,6 +1230,97 @@ public class BeAroundSDK {
 
     // MARK: - Beacon Sync
 
+    // MARK: - Sync coordinator
+    //
+    // Every hot trigger funnels through requestSync() on beaconQueue (serial), fixing
+    // the uncoordinated-trigger family from the field review: a request landing during
+    // an in-flight upload is QUEUED (not lost), timer and detection share one throttle
+    // (no more double upload 1 s apart), and the foreground fast-path/background batch
+    // window give low latency without duplicate payloads.
+    private var syncPendingAfterCurrent = false
+    private var pendingSyncReasons: Set<String> = []
+    private var lastSyncFireAt: Date?
+    private var coordinatorScheduled = false
+    private var bgBatchWorkItem: DispatchWorkItem?
+    /// Foreground fast-path floor: a dirty sample may trigger an upload this soon after
+    /// the previous one (HIGH). The 15 s precision timer remains as the fallback tick.
+    private let foregroundMinimumSyncInterval: TimeInterval = 5.0
+    /// Background: real callbacks open a short batch window, collect everything that
+    /// arrives, then upload once — work fast and return, per Apple's bg guidance.
+    private let backgroundBatchWindow: TimeInterval = 1.0
+
+    /// Single entry point for every sync trigger.
+    func requestSync(reason: String) {
+        beaconQueue.async { [weak self] in
+            guard let self else { return }
+            self.pendingSyncReasons.insert(reason)
+
+            if self.isSyncing {
+                // Don't lose it: fire again right after the current upload finishes.
+                self.syncPendingAfterCurrent = true
+                return
+            }
+            if self.coordinatorScheduled { return }
+
+            if self.isInBackground {
+                // Short batch window: coalesce the burst from one wake, send once.
+                self.coordinatorScheduled = true
+                let work = DispatchWorkItem { [weak self] in self?.coordinatorFire() }
+                self.bgBatchWorkItem = work
+                self.beaconQueue.asyncAfter(deadline: .now() + self.backgroundBatchWindow, execute: work)
+                return
+            }
+
+            // Foreground: honor the fast-path floor.
+            let sinceLast = self.lastSyncFireAt.map { Date().timeIntervalSince($0) } ?? .infinity
+            if sinceLast >= self.foregroundMinimumSyncInterval {
+                self.coordinatorFire()
+            } else {
+                self.coordinatorScheduled = true
+                let wait = self.foregroundMinimumSyncInterval - sinceLast
+                self.beaconQueue.asyncAfter(deadline: .now() + wait) { [weak self] in
+                    self?.coordinatorFire()
+                }
+            }
+        }
+    }
+
+    /// Runs on beaconQueue. Consumes the pending reasons and starts one sync.
+    private func coordinatorFire() {
+        coordinatorScheduled = false
+        bgBatchWorkItem = nil
+        guard !pendingSyncReasons.isEmpty else { return }
+        guard !isSyncing else { syncPendingAfterCurrent = true; return }
+        let reasons = pendingSyncReasons.sorted().joined(separator: "+")
+        pendingSyncReasons.removeAll()
+        lastSyncFireAt = Date()
+        syncTrigger = reasons   // written ONLY here on beaconQueue — the old cross-queue race is gone for coordinated paths
+        syncBeacons()
+    }
+
+    /// Called wherever isSyncing returns to false: fires the queued follow-up so a
+    /// sample that arrived mid-upload is never lost.
+    private func syncDidFinishCoordination() {
+        beaconQueue.async { [weak self] in
+            guard let self, self.syncPendingAfterCurrent else { return }
+            self.syncPendingAfterCurrent = false
+            self.coordinatorFire()
+        }
+    }
+
+    /// Dirty check: is this callback a NEW business sample, or a repeat of what the
+    /// backend already knows? New = enough time passed OR the signal moved OR the
+    /// metadata changed. Repeats stay under the 60 s re-report umbrella.
+    private let dirtyMinimumInterval: TimeInterval = 5.0
+    private let dirtyMinimumRSSIDelta: Int = 3
+    private func sampleIsDirty(existing: Beacon?, newRSSI: Int, newMetadata: BeaconMetadata?) -> Bool {
+        guard let existing else { return true }
+        if let syncedAt = existing.syncedAt, Date().timeIntervalSince(syncedAt) >= dirtyMinimumInterval,
+           abs(existing.rssi - newRSSI) >= dirtyMinimumRSSIDelta { return true }
+        if existing.metadata?.batteryLevel != newMetadata?.batteryLevel { return true }
+        return false
+    }
+
     /// Sampling + volume containment: a beacon already synced stays "synced" until
     /// [sampleReportInterval] has elapsed since syncedAt — then it becomes eligible again.
     private func pendingStateForSample(existing: Beacon?) -> (alreadySynced: Bool, syncedAt: Date?) {
@@ -1267,18 +1367,12 @@ public class BeAroundSDK {
     ///   - trigger: The `syncTrigger` to tag the sync with.
     ///   - minInterval: Minimum seconds between two debounced syncs (default 10s).
     private func syncBeaconsDebounced(trigger: String, minInterval: TimeInterval = 10) {
-        debouncedSyncQueue.async { [weak self] in
-            guard let self else { return }
-            let now = Date()
-            if let last = self.lastDebouncedSyncTime, now.timeIntervalSince(last) < minInterval {
-                NSLog("[BeAroundSDK] Debounced sync skipped (last was %.0fs ago, min=%.0fs, trigger=%@)",
-                      now.timeIntervalSince(last), minInterval, trigger)
-                return
-            }
-            self.lastDebouncedSyncTime = now
-            self.syncTrigger = trigger
-            NSLog("[BeAroundSDK] Debounced sync firing (trigger=%@)", trigger)
-            self.syncBeaconsImmediately()
+        // Facade kept for call-site compatibility — throttling now lives in the sync
+        // coordinator (fg fast-path floor / bg batch window), which also queues a
+        // request that lands mid-upload instead of dropping it.
+        requestSync(reason: trigger)
+        if false {
+            _ = minInterval
         }
     }
 
@@ -1286,11 +1380,9 @@ public class BeAroundSDK {
         beaconQueue.async { [weak self] in
             guard let self else { return }
 
-            // Begin background task to ensure we complete before iOS kills us
-            self.beginBackgroundTask()
-
             guard !isSyncing else {
-                self.endBackgroundTask()
+                // Queue, don't drop: the coordinator fires again after the current upload.
+                self.syncPendingAfterCurrent = true
                 return
             }
 
@@ -1325,13 +1417,18 @@ public class BeAroundSDK {
 
             guard !beaconsToSend.isEmpty else {
                 NSLog("[BeAroundSDK] No new beacons to sync")
-                self.endBackgroundTask()
                 // No new beacons — drain retry queue if pending batches exist
                 if self.shouldRetryFailedBatches() {
                     self.drainRetryQueue()
                 }
+                self.syncDidFinishCoordination()
                 return
             }
+
+            // Acquire the background assertion ONLY when there is a real batch to send
+            // — the previous top-of-function acquisition burned begin/end cycles on
+            // every empty tick (expensive at higher cadences).
+            self.beginBackgroundTask()
 
             isSyncing = true
             let beaconCount = beaconsToSend.count
@@ -1399,6 +1496,7 @@ public class BeAroundSDK {
                     // Mark synced + reset isSyncing in a SINGLE beaconQueue block to prevent race conditions
                     beaconQueue.async {
                         self.isSyncing = false
+                        self.syncDidFinishCoordination()
                         self.consecutiveFailures = 0
                         self.lastFailureTime = nil
 
@@ -1448,6 +1546,7 @@ public class BeAroundSDK {
 
                     beaconQueue.async {
                         self.isSyncing = false
+                        self.syncDidFinishCoordination()
                         self.consecutiveFailures += 1
                         self.lastFailureTime = Date()
 
@@ -1564,6 +1663,7 @@ public class BeAroundSDK {
 
                     self.beaconQueue.async {
                         self.isSyncing = false
+                        self.syncDidFinishCoordination()
                         self.consecutiveFailures = 0
                         self.lastFailureTime = nil
                         self.offlineBatchStorage.removeOldestBatches(chunkCount)
@@ -1595,6 +1695,7 @@ public class BeAroundSDK {
 
                     self.beaconQueue.async {
                         self.isSyncing = false
+                        self.syncDidFinishCoordination()
                         self.consecutiveFailures += 1
                         self.lastFailureTime = Date()
                     }
@@ -1903,9 +2004,15 @@ extension BeAroundSDK: BluetoothManagerDelegate {
                 txPower: txPower,
                 discoverySources: sources
             )
-            let pending = self.pendingStateForSample(existing: self.collectedBeacons[key])
-            beacon.syncedAt = pending.syncedAt
-            beacon.alreadySynced = pending.alreadySynced
+            let existingSample = self.collectedBeacons[key]
+            if self.sampleIsDirty(existing: existingSample, newRSSI: beacon.rssi, newMetadata: beacon.metadata) {
+                beacon.syncedAt = existingSample?.syncedAt
+                beacon.alreadySynced = false
+            } else {
+                let pending = self.pendingStateForSample(existing: existingSample)
+                beacon.syncedAt = pending.syncedAt
+                beacon.alreadySynced = pending.alreadySynced
+            }
             self.collectedBeacons[key] = beacon
         }
     }
