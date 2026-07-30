@@ -169,8 +169,33 @@ extension BackgroundSessionManager: URLSessionDelegate {
     }
 }
 
+/// How a batch should reach the ingester.
+///
+/// `.background` — hand the upload to the background `URLSession` (survives suspension and
+/// termination; the system daemon decides WHEN it runs — for a suspended app that can be
+/// minutes). `.immediateFirst` — try a short-timeout foreground-class session first, inside
+/// the caller's execution window (foreground or an active background-task assertion), and
+/// fall back to the background session ONLY on a transport failure. Server HTTP errors do
+/// not fall back: the request reached the backend, retrying the same payload on another
+/// session would fail identically (the persisted batch/retry path owns that case).
+enum DeliveryPath {
+    case background
+    case immediateFirst
+}
+
 class APIClient {
     private let configuration: SDKConfiguration
+
+    /// Short-timeout session for `.immediateFirst` deliveries. Ephemeral: no cache/cookies,
+    /// nothing persisted — the durable path is the background session + OfflineBatchStorage.
+    /// 8s request timeout keeps the attempt well inside a ~30s background-task assertion.
+    private static let immediateSession: URLSession = {
+        let config = URLSessionConfiguration.ephemeral
+        config.timeoutIntervalForRequest = 8
+        config.timeoutIntervalForResource = 15
+        config.allowsCellularAccess = true
+        return URLSession(configuration: config)
+    }()
 
     /// The background session is shared process-wide and created exactly once.
     private var sessionManager: BackgroundSessionManager { BackgroundSessionManager.shared }
@@ -191,6 +216,7 @@ class APIClient {
         userDevice: UserDevice,
         userProperties: UserProperties?,
         syncTrigger: String = "unknown",
+        delivery: DeliveryPath = .background,
         completion: @escaping (Result<Void, Error>) -> Void
     ) {
         // Empty-beacons payloads are valid: syncTrigger="register" sends beacons:[] intentionally.
@@ -278,8 +304,57 @@ class APIClient {
 
         // Background sessions don't allow `httpBody` on upload tasks — the body must be
         // passed as `Data`. Don't set request.httpBody here.
-        NSLog("[BeAroundSDK] Sending %d beacon(s) to %@ trigger=%@ (background upload)", beacons.count, url.absoluteString, syncTrigger)
-        sessionManager.upload(request: request, bodyData: bodyData, completion: completion)
+        switch delivery {
+        case .background:
+            NSLog("[BeAroundSDK] Sending %d beacon(s) to %@ trigger=%@ (background upload)", beacons.count, url.absoluteString, syncTrigger)
+            sessionManager.upload(request: request, bodyData: bodyData, completion: completion)
+        case .immediateFirst:
+            NSLog("[BeAroundSDK] Sending %d beacon(s) to %@ trigger=%@ (immediate upload)", beacons.count, url.absoluteString, syncTrigger)
+            sendImmediate(request: request, bodyData: bodyData, completion: completion)
+        }
+    }
+
+    /// `.immediateFirst` delivery: short-timeout data task now; background session only as
+    /// the transport-failure fallback. See `DeliveryPath` for the full rationale.
+    private func sendImmediate(
+        request: URLRequest,
+        bodyData: Data,
+        completion: @escaping (Result<Void, Error>) -> Void
+    ) {
+        var immediateRequest = request
+        immediateRequest.httpBody = bodyData
+
+        let task = Self.immediateSession.dataTask(with: immediateRequest) { [sessionManager] responseBody, response, error in
+            if let error {
+                // Transport failure (offline, timeout, connection lost): the request may have
+                // never reached the backend — re-queue on the durable background session.
+                NSLog("[BeAroundSDK] Immediate upload transport failure (%@) — falling back to background session", error.localizedDescription)
+                DetectionLogStore.append(type: "Sync", detail: "envio imediato falhou (\(error.localizedDescription)) — fallback para background session")
+                sessionManager.upload(request: request, bodyData: bodyData, completion: completion)
+                return
+            }
+
+            guard let httpResponse = response as? HTTPURLResponse else {
+                completion(.failure(APIError.invalidResponse))
+                return
+            }
+
+            guard (200..<300).contains(httpResponse.statusCode) else {
+                // The backend answered — an identical retry on the background session would
+                // get the same status. Surface the error; persisted-batch retry owns it.
+                let body = responseBody.flatMap { String(data: $0, encoding: .utf8) }
+                    .map { String($0.prefix(512)) }
+                    .flatMap { $0.isEmpty ? nil : $0 }
+                NSLog("[BeAroundSDK] Immediate upload: HTTP %d body=%@", httpResponse.statusCode, body ?? "—")
+                completion(.failure(APIError.httpError(statusCode: httpResponse.statusCode, body: body)))
+                return
+            }
+
+            NSLog("[BeAroundSDK] Immediate upload succeeded (HTTP %d)", httpResponse.statusCode)
+            DetectionLogStore.append(type: "Sync", detail: "entregue via sessão imediata (HTTP \(httpResponse.statusCode))")
+            completion(.success(()))
+        }
+        task.resume()
     }
 
     /// The `sdk` block of the /ingest payload. Extracted so a unit test can assert

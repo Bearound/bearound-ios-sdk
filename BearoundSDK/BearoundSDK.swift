@@ -1039,7 +1039,8 @@ public class BeAroundSDK {
             sdkInfo: sdkInfo,
             userDevice: userDevice,
             userProperties: userProperties,
-            syncTrigger: "register"
+            syncTrigger: "register",
+            delivery: .immediateFirst
         ) { [weak self] result in
             switch result {
             case .success:
@@ -1480,7 +1481,8 @@ public class BeAroundSDK {
                 sdkInfo: sdkInfo,
                 userDevice: userDevice,
                 userProperties: userProperties,
-                syncTrigger: trigger
+                syncTrigger: trigger,
+                delivery: .immediateFirst
             ) { [weak self] result in
                 guard let self else { return }
 
@@ -1658,7 +1660,8 @@ public class BeAroundSDK {
                 sdkInfo: sdkInfo,
                 userDevice: userDevice,
                 userProperties: self.userProperties,
-                syncTrigger: "retry_drain"
+                syncTrigger: "retry_drain",
+                delivery: .immediateFirst
             ) { [weak self] result in
                 guard let self else { return }
 
