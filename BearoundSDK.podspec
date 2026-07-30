@@ -15,6 +15,12 @@ Pod::Spec.new do |spec|
 
   spec.source_files  = "BearoundSDK/**/*.{swift}"
 
+  # Ships the Apple-required privacy manifest AND doubles as the automatic
+  # version carrier: CocoaPods stamps this bundle's Info.plist with
+  # spec.version at install time, which BeAroundSDK.version reads under
+  # static linking (see SDKVersion in Constants.swift).
+  spec.resource_bundles = { "BearoundSDKPrivacy" => ["BearoundSDK/PrivacyInfo.xcprivacy"] }
+
   spec.frameworks = "Foundation", "CoreLocation", "CoreBluetooth"
 
   spec.swift_versions = "5.0"

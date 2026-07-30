@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **`BeAroundSDK.version` reported the HOST APP's version under static linking.** The getter read `CFBundleShortVersionString` via `Bundle(for:)`, which resolves to the app bundle when the SDK is statically linked (the CocoaPods default in React Native hosts) — showing "1.0" on screen and polluting the `sdk.version` field of every ingest/error-telemetry payload from those hosts. Resolution is now automatic in cascade: dynamic framework bundle → the pod's CocoaPods-stamped resource bundle (correct under static linking, no manual bump) → compiled constant as last resort, with a release-CI check keeping the constant honest against the tag.
+- **Privacy manifest now actually ships.** `PrivacyInfo.xcprivacy` existed in the repo but was never delivered by the podspec; it now ships via the `BearoundSDKPrivacy` resource bundle (Apple requirement for source pods), which doubles as the automatic version carrier above.
+
 ## [3.6.2] - 2026-07-25
 
 Field-validated on an iPhone 17 Pro Max in the strictest profile (Location-only, Bluetooth denied, beacon at 1 m): stable zone presence with zero false exits, detection-driven sync, and the process surviving background/locked-screen from a cold relaunch.

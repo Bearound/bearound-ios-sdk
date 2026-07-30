@@ -38,9 +38,11 @@ public class BeAroundSDK {
 
     public static let shared = BeAroundSDK()
 
-    public static var version: String {
-        (Bundle(for: BeAroundSDK.self).infoDictionary?["CFBundleShortVersionString"] as? String) ?? "unknown"
-    }
+    /// SDK version, resolved automatically (see `SDKVersion.resolved`). The old
+    /// implementation read `Bundle(for:)` directly, which under static linking
+    /// (React Native default) resolves to the HOST APP's bundle — "1.0" on
+    /// screen and in the ingest telemetry.
+    public static var version: String { SDKVersion.resolved }
 
     /// Single, reused CLLocationManager for **read-only** queries of authorization /
     /// accuracy status. Created once and held for the app lifetime so we avoid the
