@@ -65,6 +65,14 @@ jobs:
           if [ "$VERSION" != "$MV" ]; then echo "❌ MARKETING_VERSION ($MV) != release ($VERSION)"; exit 1; fi
           echo "✅ MARKETING_VERSION matches"
 
+      - name: Verify SDKVersion constant matches release
+        run: |
+          VERSION=${{ steps.get_version.outputs.version }}
+          SV=$(grep -m1 -E 'static let current = ' BearoundSDK/Constants.swift | sed -E 's/.*"([0-9.]+)".*/\1/')
+          echo "tag=$VERSION SDKVersion.current=$SV"
+          if [ "$VERSION" != "$SV" ]; then echo "❌ SDKVersion.current ($SV) != release ($VERSION)"; exit 1; fi
+          echo "✅ SDKVersion constant matches"
+
       - name: Verify changelog entry
         run: |
           VERSION=${{ steps.get_version.outputs.version }}
