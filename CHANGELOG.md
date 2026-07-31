@@ -5,10 +5,16 @@ All notable changes to BearoundSDK for iOS will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [3.6.3] - 2026-07-31
+
+Field-validated on an iPhone 17 Pro Max (iOS 27 beta) against the live ingest: foreground launch→backend in 14s, continuous seconds-level delivery for 3+ minutes in background, and a terminated wake (silent push) whose scan delivered in the same second — against the device-matrix baseline of 3-5 minutes (worst case: 20 minutes collecting without sending).
 
 ### Fixed
 
+- **Background detections now deliver in seconds, not minutes** (device-matrix top-5 #1). Uploads STARTED in background on a background `URLSession` are treated as discretionary by iOS — deferred for minutes, delivered "when the app opens" — regardless of `isDiscretionary = false`. Every ingest call site now uses `.immediateFirst` delivery: a short-timeout plain-session attempt inside the execution window the sync already holds, with the background session strictly as the transport-failure fallback (HTTP errors are final on either path; persist-before-send still guarantees eventual delivery). PRs #51/#52 landed this at two overlapping layers; #53 reconciled them into the single `DeliveryPath` design.
+- **A stuck upload froze the whole ingest pipeline**: `isSyncing` only returned to false inside the upload completion — which, for a deferred background-session upload of a suspended process, may only arrive when the app runs again. A 45s generation-guarded watchdog now releases the lock (the persisted batch keeps the in-flight payload safe).
+- **BGTask/silent-push handlers returned their execution window right after STARTING the sync** — iOS could suspend the process with the POST in flight. `performBackgroundSync` now parks a waiter and completes only when the upload settles (20s cap).
+- **Entering foreground now requests an immediate flush** (previously: first timer tick +15/60s) — also drains the persisted retry queue.
 - **`BeAroundSDK.version` reported the HOST APP's version under static linking.** The getter read `CFBundleShortVersionString` via `Bundle(for:)`, which resolves to the app bundle when the SDK is statically linked (the CocoaPods default in React Native hosts) — showing "1.0" on screen and polluting the `sdk.version` field of every ingest/error-telemetry payload from those hosts. Resolution is now automatic in cascade: dynamic framework bundle → the pod's CocoaPods-stamped resource bundle (correct under static linking, no manual bump) → compiled constant as last resort, with a release-CI check keeping the constant honest against the tag.
 - **Privacy manifest now actually ships.** `PrivacyInfo.xcprivacy` existed in the repo but was never delivered by the podspec; it now ships via the `BearoundSDKPrivacy` resource bundle (Apple requirement for source pods), which doubles as the automatic version carrier above.
 
