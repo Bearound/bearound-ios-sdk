@@ -70,66 +70,16 @@ final class BackgroundSessionManager: NSObject {
         ensureSessionAlive()
     }
 
-    /// Plain session for the immediate attempt. Short timeouts: the caller holds a
-    /// finite execution window (bg task assertion ≈ 25s+); a request that can't
-    /// finish inside it belongs on the background session instead.
-    private lazy var immediateSession: URLSession = {
-        let config = URLSessionConfiguration.ephemeral
-        config.timeoutIntervalForRequest = 12
-        config.timeoutIntervalForResource = 15
-        config.allowsCellularAccess = true
-        return URLSession(configuration: config)
-    }()
-
-    /// Uploads `bodyData` for `request` — immediate attempt first, background
-    /// session as the resilience fallback.
+    /// Uploads `bodyData` to `request` on the background session — the DURABLE path.
     ///
-    /// Why not background-session-only (the previous design): uploads STARTED in
-    /// background on a background session are treated as discretionary by iOS —
-    /// the system defers them to a favorable window (minutes), which surfaced in
-    /// the device matrix as "detected in seconds, delivered in minutes / when the
-    /// app opens" (top-5 fix #1). The plain attempt completes in seconds inside
-    /// the execution window our callers already hold; only transport-level
-    /// failures (URLError) fall back — HTTP errors are final either way.
+    /// This is pure background-session by design: the immediate-first attempt lives in
+    /// `APIClient.sendBeacons(delivery: .immediateFirst)`, which falls back HERE on
+    /// transport failure. Keeping this layer background-only avoids double immediate
+    /// attempts (PR #51 + #52 overlapped on the same fix; this is the reconciliation)
+    /// and preserves an honest `.background` mode for callers without an execution
+    /// window. Background sessions reject `httpBody` on upload tasks, so the body is
+    /// staged to a temp file (deleted in didCompleteWithError).
     func upload(
-        request: URLRequest,
-        bodyData: Data,
-        completion: @escaping (Result<Void, Error>) -> Void
-    ) {
-        let task = immediateSession.uploadTask(with: request, from: bodyData) { [weak self] data, response, error in
-            guard let self else { return }
-
-            if let error {
-                NSLog("[BeAroundSDK] Immediate upload failed (%@) — falling back to background session",
-                      error.localizedDescription)
-                self.uploadOnBackgroundSession(request: request, bodyData: bodyData, completion: completion)
-                return
-            }
-
-            guard let httpResponse = response as? HTTPURLResponse else {
-                completion(.failure(APIError.invalidResponse))
-                return
-            }
-
-            guard (200..<300).contains(httpResponse.statusCode) else {
-                let body = data.flatMap { String(data: $0, encoding: .utf8) }
-                    .map { String($0.prefix(512)) }
-                    .flatMap { $0.isEmpty ? nil : $0 }
-                NSLog("[BeAroundSDK] Immediate upload: HTTP %d body=%@", httpResponse.statusCode, body ?? "—")
-                completion(.failure(APIError.httpError(statusCode: httpResponse.statusCode, body: body)))
-                return
-            }
-
-            NSLog("[BeAroundSDK] Immediate upload succeeded (HTTP %d)", httpResponse.statusCode)
-            completion(.success(()))
-        }
-        task.resume()
-    }
-
-    /// The resilient path: survives process suspension/termination (delivery is
-    /// eventual — the system may defer it). Background sessions reject `httpBody`
-    /// on upload tasks, so the body is staged to a temp file.
-    private func uploadOnBackgroundSession(
         request: URLRequest,
         bodyData: Data,
         completion: @escaping (Result<Void, Error>) -> Void
