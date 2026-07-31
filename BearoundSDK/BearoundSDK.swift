@@ -723,6 +723,12 @@ public class BeAroundSDK {
         if isScanning {
             startSyncTimer()
         }
+
+        // Foreground flush: anything background couldn't deliver (frozen timers,
+        // deferred uploads, retry backlog) ships NOW instead of waiting the first
+        // timer tick (+15/60s). Kills the "events only arrive when I open the
+        // app... minutes later" symptom; also drains the persisted retry queue.
+        requestSync(reason: "foreground_flush")
     }
 
     // MARK: - Public API
@@ -1259,6 +1265,41 @@ public class BeAroundSDK {
     private var lastSyncFireAt: Date?
     private var coordinatorScheduled = false
     private var bgBatchWorkItem: DispatchWorkItem?
+
+    /// Monotonic id of the in-flight sync — lets the stuck-sync watchdog release
+    /// only ITS generation (a fresh sync must never be killed by an old timer).
+    private var syncGeneration = 0
+    /// The completion can simply never arrive while the process is suspended
+    /// (background-session upload deferred by the system). Without a watchdog,
+    /// `isSyncing` stays true forever and freezes every future sync of this
+    /// process — the whole ingest pipeline hangs on one upload.
+    private let syncWatchdogTimeout: TimeInterval = 45.0
+    /// Callers holding a system execution window (BGTask / silent push) park a
+    /// waiter here to give the window back only after the upload settles.
+    private var syncSettledWaiters: [(id: UUID, callback: (Bool) -> Void)] = []
+
+    /// beaconQueue only. Parks a waiter; on timeout it resolves `true` (the batch
+    /// was persisted + handed to the background session — delivery is eventual).
+    private func onSyncSettled(timeout: TimeInterval, _ callback: @escaping (Bool) -> Void) {
+        let id = UUID()
+        syncSettledWaiters.append((id: id, callback: callback))
+        beaconQueue.asyncAfter(deadline: .now() + timeout) { [weak self] in
+            guard let self else { return }
+            if let idx = self.syncSettledWaiters.firstIndex(where: { $0.id == id }) {
+                let waiter = self.syncSettledWaiters.remove(at: idx)
+                NSLog("[BeAroundSDK] Sync-settled waiter timed out after %.0fs — releasing window", timeout)
+                waiter.callback(true)
+            }
+        }
+    }
+
+    /// beaconQueue only. Resolves every parked waiter with the sync outcome.
+    private func notifySyncSettled(success: Bool) {
+        guard !syncSettledWaiters.isEmpty else { return }
+        let waiters = syncSettledWaiters
+        syncSettledWaiters.removeAll()
+        waiters.forEach { $0.callback(success) }
+    }
     /// Foreground fast-path floor: a dirty sample may trigger an upload this soon after
     /// the previous one (HIGH). The 15 s precision timer remains as the fallback tick.
     private let foregroundMinimumSyncInterval: TimeInterval = 5.0
@@ -1450,6 +1491,20 @@ public class BeAroundSDK {
             isSyncing = true
             let beaconCount = beaconsToSend.count
 
+            // Stuck-sync watchdog: if the completion hasn't arrived in time
+            // (suspended process, deferred background upload), release the lock so
+            // the NEXT detection can sync — the persisted batch keeps this one safe.
+            syncGeneration += 1
+            let watchdogGeneration = syncGeneration
+            beaconQueue.asyncAfter(deadline: .now() + syncWatchdogTimeout) { [weak self] in
+                guard let self, self.isSyncing, self.syncGeneration == watchdogGeneration else { return }
+                NSLog("[BeAroundSDK] Sync watchdog: releasing isSyncing after %.0fs (upload still pending — batch persisted)", self.syncWatchdogTimeout)
+                self.isSyncing = false
+                self.endBackgroundTask()
+                self.notifySyncSettled(success: false)
+                self.syncDidFinishCoordination()
+            }
+
             // Fix 3 — Persist-before-send: durably store this batch BEFORE the upload so the
             // detection survives app suspension/termination. On a SUCCESSFUL completion we
             // remove exactly this batch; on failure we leave it for retry. This is the safety
@@ -1513,6 +1568,7 @@ public class BeAroundSDK {
                     // Mark synced + reset isSyncing in a SINGLE beaconQueue block to prevent race conditions
                     beaconQueue.async {
                         self.isSyncing = false
+                        self.notifySyncSettled(success: true)
                         self.syncDidFinishCoordination()
                         self.consecutiveFailures = 0
                         self.lastFailureTime = nil
@@ -1563,6 +1619,7 @@ public class BeAroundSDK {
 
                     beaconQueue.async {
                         self.isSyncing = false
+                        self.notifySyncSettled(success: false)
                         self.syncDidFinishCoordination()
                         self.consecutiveFailures += 1
                         self.lastFailureTime = Date()
@@ -1819,8 +1876,13 @@ public class BeAroundSDK {
                 NSLog("[BeAroundSDK] Background sync: beacons=%d, failed=%d",
                       hasBeacons ? 1 : 0, hasFailedBatches ? 1 : 0)
                 self.syncTrigger = trigger
+                // Hold the system window until the upload settles: completing the
+                // BGTask/push handler right after STARTING the sync let iOS suspend
+                // the process with the POST still in flight (top-5 fix #1).
+                self.onSyncSettled(timeout: 20.0) { delivered in
+                    completion(delivered)
+                }
                 syncBeacons()
-                completion(true)
             } else {
                 NSLog("[BeAroundSDK] Background sync: nothing to sync")
                 completion(false)
