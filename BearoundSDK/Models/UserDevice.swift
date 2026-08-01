@@ -34,9 +34,14 @@ struct UserDevice {
     let coldStart: Bool
     let lowPowerMode: Bool?
     let locationAccuracy: String?
-    /// Hash of the connected access point's BSSID — replaces the raw `wifiSSID`, which
-    /// leaked the network name (and therefore the household) in clear text.
+    /// Hash of the connected access point's BSSID — the identity the backend uses.
     let apId: String?
+    /// Name of the connected network.
+    ///
+    /// **Temporary — kept for validating the collection while the access-point map is being
+    /// built.** `apId` is the field that matters; remove this one (and
+    /// `WifiObservation.ssid`) once the collection is trusted.
+    let wifiSSID: String?
     let connectionMetered: Bool?
     let connectionExpensive: Bool?
     let os: String?

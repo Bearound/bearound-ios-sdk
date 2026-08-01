@@ -150,9 +150,9 @@ final class DeviceInfoCollector: @unchecked Sendable {
 			coldStart: isColdStart ? Self.consumeColdStart() : false,
 			lowPowerMode: isLowPowerModeEnabled(),
 			locationAccuracy: locationAccuracyString(locationPermission),
-			// Replaces the old raw SSID: the network name identified the household in
-			// clear text, and nothing downstream needed the name — only a stable identity.
 			apId: wifiCollector.connectedApId(),
+			// Temporary companion to apId while the collection is being validated.
+			wifiSSID: wifiCollector.connectedSSID(),
 			connectionMetered: connectionMetered(),
 			connectionExpensive: connectionExpensive(),
 			os: "iOS",

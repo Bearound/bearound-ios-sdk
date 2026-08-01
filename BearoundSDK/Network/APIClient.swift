@@ -467,9 +467,12 @@ class APIClient {
         if let cellularGeneration = device.cellularGeneration {
             network["cellularGeneration"] = cellularGeneration
         }
-        // Carries the hashed access point, never the network name.
         if let apId = device.apId {
             network["apId"] = apId
+        }
+        // Temporary, for validating the collection — see WifiObservation.ssid.
+        if let wifiSSID = device.wifiSSID {
+            network["wifiSSID"] = wifiSSID
         }
 
         var permissions: [String: Any] = [
