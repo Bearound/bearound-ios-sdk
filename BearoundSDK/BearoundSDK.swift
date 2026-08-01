@@ -804,14 +804,25 @@ public class BeAroundSDK {
 
     // MARK: - Public API
 
+    /// Configures the SDK. Call once per launch, before ``startScanning()``.
+    ///
     /// - Parameters:
+    ///   - businessToken: your Bearound business token (required, non-empty).
+    ///   - scanPrecision: scan/sync precision profile. Default: `.high`.
+    ///   - maxQueuedPayloads: cap for offline-batch retention. Default: `.medium`.
+    ///   - technology: origin technology reported to the backend. Default `"ios-native"`
+    ///     (the React Native / Flutter bridges pass their own).
     ///   - periodicReconciliationEnabled: enables the periodic background reconciliation
     ///     (`BGAppRefreshTask`). Best effort — iOS decides when (if) the task runs.
-    ///   - periodicReconciliationInterval: EARLIEST allowed start of the next attempt
-    ///     (default 20 min; accepted range [10 min, 24 h], clamped with a log; invalid
-    ///     values fall back to the default). Not a guaranteed cadence.
-    ///   - periodicScanDuration: ceiling of the temporary BLE window inside the task,
-    ///     clamped to [3s, 15s] so the ~30s BGTask budget also fits the sync.
+    ///     Default: `true`.
+    ///   - periodicReconciliationInterval: **earliest** allowed start of the next attempt —
+    ///     a floor, never a guaranteed cadence. Accepted range **10 min … 24 h** (out-of-range
+    ///     values are clamped with a highlighted ⚠️ os_log; NaN/∞/≤0 fall back to the default).
+    ///     Default: 20 minutes.
+    ///   - periodicScanDuration: ceiling of the temporary BLE window inside the task.
+    ///     Accepted range **3 … 15 s** — the ~30s BGTask budget must also fit the sync
+    ///     (an oversized window makes every run expire and iOS stops granting executions).
+    ///     Default: 12 seconds.
     public func configure(
         businessToken: String,
         scanPrecision: ScanPrecision = .high,
