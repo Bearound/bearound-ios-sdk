@@ -17,6 +17,15 @@ import UserNotifications
 final class DeviceInfoCollector: @unchecked Sendable {
 	private let appStartTime: Date
 
+	/// Wi-Fi access point the device is joined to. Refreshed opportunistically because the
+	/// platform API is async while payload building is not.
+	private let wifiCollector = WifiCollector()
+
+	/// Read-only CLLocationManager, mirroring the pattern in `BearoundSDK`: we only ever
+	/// read `.location` (the fix CoreLocation already has cached) and never start updates,
+	/// so this costs no battery and no GPS wake-up.
+	private lazy var locationReader = CLLocationManager()
+
 	/// Whether this collector participates in cold-start tracking. The SDK's sync
 	/// collector passes true (and the FIRST payload of the process reports
 	/// coldStart=true, consumed via [consumeColdStart]); the ErrorReporter's collector
@@ -141,7 +150,9 @@ final class DeviceInfoCollector: @unchecked Sendable {
 			coldStart: isColdStart ? Self.consumeColdStart() : false,
 			lowPowerMode: isLowPowerModeEnabled(),
 			locationAccuracy: locationAccuracyString(locationPermission),
-			wifiSSID: wifiSSID(),
+			apId: wifiCollector.connectedApId(),
+			// Temporary companion to apId while the collection is being validated.
+			wifiSSID: wifiCollector.connectedSSID(),
 			connectionMetered: connectionMetered(),
 			connectionExpensive: connectionExpensive(),
 			os: "iOS",
@@ -150,8 +161,16 @@ final class DeviceInfoCollector: @unchecked Sendable {
 			availableStorageMb: availableStorageMb(),
 			systemLanguage: systemLanguage(),
 			thermalState: thermalState(),
-			systemUptimeMs: systemUptimeMs()
+			systemUptimeMs: systemUptimeMs(),
+			wifis: wifiCollector.current(),
+			location: DeviceLocation(locationReader.location)
 		)
+	}
+
+	/// Kicks off an async refresh of the connected access point. Called before a sync so
+	/// the next payload carries a fresh value; never blocks the caller.
+	func refreshWifi() {
+		wifiCollector.refresh()
 	}
 
 	private func deviceModel() -> String {
@@ -295,22 +314,9 @@ final class DeviceInfoCollector: @unchecked Sendable {
 		return nil
 	}
 
-	private func wifiSSID() -> String? {
-		guard let interfaces = CNCopySupportedInterfaces() as? [String] else {
-			return nil
-		}
-
-		for interface in interfaces {
-			if let interfaceInfo = CNCopyCurrentNetworkInfo(interface as CFString) as NSDictionary?
-			{
-				if let ssid = interfaceInfo[kCNNetworkInfoKeySSID as String] as? String {
-					return ssid
-				}
-			}
-		}
-
-		return nil
-	}
+	// The old `wifiSSID()` lived here. It read the network NAME, which identified the
+	// user's household in clear text and served no purpose downstream — `WifiCollector`
+	// now reports the hashed access point identity instead.
 
 	private func connectionMetered() -> Bool? {
 		let networkType = networkType()
