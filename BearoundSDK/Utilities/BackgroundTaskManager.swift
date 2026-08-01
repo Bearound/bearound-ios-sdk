@@ -24,6 +24,31 @@ public class BackgroundTaskManager {
 
     private var isRegistered = false
 
+    /// Periodic-reconciliation settings applied by the SDK on configure()/restore.
+    /// Written from the configure path, read from BGTask handlers — lock-guarded.
+    private let settingsLock = NSLock()
+    private var periodicEnabled = true
+    private var periodicInterval: TimeInterval = PeriodicReconciliationDefaults.interval
+    private var periodicScanDuration: TimeInterval = PeriodicReconciliationDefaults.scanDuration
+
+    /// Applies the host's periodic-reconciliation configuration. Values arrive already
+    /// sanitized by SDKConfiguration. Affects only FUTURE scheduling/executions — a
+    /// task already running is never interrupted by a reconfigure.
+    func applyPeriodicConfiguration(enabled: Bool, interval: TimeInterval, scanDuration: TimeInterval) {
+        settingsLock.lock()
+        periodicEnabled = enabled
+        periodicInterval = interval
+        periodicScanDuration = scanDuration
+        settingsLock.unlock()
+        NSLog("[BeAroundSDK] Periodic reconciliation config applied (enabled=%d, interval=%.0fs, scanWindow=%.0fs)",
+              enabled ? 1 : 0, interval, scanDuration)
+    }
+
+    private func periodicSettings() -> (enabled: Bool, interval: TimeInterval, scanDuration: TimeInterval) {
+        settingsLock.lock(); defer { settingsLock.unlock() }
+        return (periodicEnabled, periodicInterval, periodicScanDuration)
+    }
+
     /// Whether `registerTasks()` has successfully registered at least one BGTask identifier
     /// with `BGTaskScheduler`. Exposed read-only for diagnostics — if this is `false` after
     /// launch, the host app is missing the `registerTasks()` call and/or the
@@ -72,27 +97,34 @@ public class BackgroundTaskManager {
         }
     }
 
-    /// Schedules the next sync task (short execution)
-    /// The system will execute this when conditions are favorable
+    /// Schedules the next periodic reconciliation (BGAppRefreshTask).
+    /// The configured interval is only the EARLIEST allowed start — iOS decides
+    /// when (and whether) the task actually runs.
     public func scheduleSync() {
         guard isRegistered else {
             NSLog("[BeAroundSDK] Cannot schedule sync - tasks not registered")
             return
         }
 
+        let settings = periodicSettings()
+        guard settings.enabled else {
+            NSLog("[BeAroundSDK] Periodic reconciliation disabled — not scheduling")
+            return
+        }
+
         let request = BGAppRefreshTaskRequest(identifier: Self.syncTaskIdentifier)
-        // Request execution in 15 minutes (system may delay based on conditions)
-        request.earliestBeginDate = Date(timeIntervalSinceNow: 15 * 60)
+        request.earliestBeginDate = Date(timeIntervalSinceNow: settings.interval)
 
         // Idempotent: cancel any pending request first so repeated schedule calls
         // never accumulate (BGTaskScheduler errors out past a pending-request cap).
+        // Canceling a PENDING request never touches a task that is already running.
         BGTaskScheduler.shared.cancel(taskRequestWithIdentifier: Self.syncTaskIdentifier)
         do {
             try BGTaskScheduler.shared.submit(request)
             // earliestBeginDate is a FLOOR, not a schedule — iOS decides when (if) to run.
-            NSLog("[BeAroundSDK] Background sync submitted (earliest in 15 min; execution at iOS discretion)")
+            NSLog("[BeAroundSDK] Periodic reconciliation submitted (earliest in %.0fs; execution at iOS discretion)", settings.interval)
         } catch {
-            NSLog("[BeAroundSDK] Failed to schedule background sync: %@", error.localizedDescription)
+            NSLog("[BeAroundSDK] Failed to schedule periodic reconciliation: %@", error.localizedDescription)
         }
     }
 
@@ -126,6 +158,13 @@ public class BackgroundTaskManager {
         NSLog("[BeAroundSDK] Cancelled pending background tasks")
     }
 
+    /// Cancels only the FUTURE periodic-reconciliation request (used when the host
+    /// disables the feature). Never affects a task that is already executing.
+    public func cancelPeriodicReconciliation() {
+        BGTaskScheduler.shared.cancel(taskRequestWithIdentifier: Self.syncTaskIdentifier)
+        NSLog("[BeAroundSDK] Cancelled pending periodic reconciliation request")
+    }
+
     /// Wraps `setTaskCompleted` in a complete-once gate: the expiration handler
     /// and the async completion can BOTH fire (expiration first, sync completion
     /// arriving late) — completing the same BGTask twice is an API violation.
@@ -141,15 +180,24 @@ public class BackgroundTaskManager {
         }
     }
 
-    /// Handles the sync task when executed by the system (short execution ~30s)
-    /// Refreshes BLE scan for 3s to collect Service Data, then syncs
+    /// Handles the periodic reconciliation when executed by the system (~30s window).
     private func handleSyncTask(_ task: BGAppRefreshTask) {
-        NSLog("[BeAroundSDK] BGAppRefreshTask started — refreshing BLE + sync")
+        let settings = periodicSettings()
 
-        // Schedule the next sync before processing
+        // Schedule the next attempt FIRST — even if this run is skipped or expires,
+        // the periodic chain must stay armed.
         scheduleSync()
 
         let completeOnce = Self.makeCompleteOnce { task.setTaskCompleted(success: $0) }
+
+        // Disabled between scheduling and execution: skipping is a VALID completion.
+        guard settings.enabled else {
+            NSLog("[BeAroundSDK] BGAppRefreshTask skipped — periodic reconciliation disabled")
+            completeOnce(true)
+            return
+        }
+
+        NSLog("[BeAroundSDK] BGAppRefreshTask started — reconciliation (scanWindow=%.0fs)", settings.scanDuration)
 
         // Set expiration handler
         task.expirationHandler = {
@@ -157,8 +205,10 @@ public class BackgroundTaskManager {
             completeOnce(false)
         }
 
-        // Refresh BLE scan (3s collection) then sync
-        BeAroundSDK.shared.performBackgroundBLERefreshAndSync(bleScanDuration: 3.0, trigger: "bg_task_refresh") { success in
+        BeAroundSDK.shared.performBackgroundBLERefreshAndSync(
+            bleScanDuration: settings.scanDuration,
+            trigger: "bg_task_refresh"
+        ) { success in
             NSLog("[BeAroundSDK] BGAppRefreshTask completed (success=%d)", success ? 1 : 0)
             completeOnce(success)
         }

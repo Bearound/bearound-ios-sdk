@@ -40,30 +40,16 @@ struct SDKConfigurationTests {
     @Test("SDKConfiguration scan precision values")
     func scanPrecisionValues() {
         let high = SDKConfiguration(businessToken: "t", scanPrecision: .high)
-        #expect(high.precisionPauseDuration == 0)
-        #expect(high.precisionCycleCount == 0)
         #expect(high.precisionLocationAccuracy == 10)
         #expect(high.syncInterval == 15)
 
         let medium = SDKConfiguration(businessToken: "t", scanPrecision: .medium)
-        #expect(medium.precisionPauseDuration == 10)
-        #expect(medium.precisionCycleCount == 3)
         #expect(medium.precisionLocationAccuracy == 10)
         #expect(medium.syncInterval == 60)
 
         let low = SDKConfiguration(businessToken: "t", scanPrecision: .low)
-        #expect(low.precisionPauseDuration == 50)
-        #expect(low.precisionCycleCount == 1)
         #expect(low.precisionLocationAccuracy == 100)
         #expect(low.syncInterval == 60)
-    }
-
-    @Test("SDKConfiguration scan duration is always 10s")
-    func scanDurationConstant() {
-        for precision in ScanPrecision.allCases {
-            let config = SDKConfiguration(businessToken: "t", scanPrecision: precision)
-            #expect(config.precisionScanDuration == 10)
-        }
     }
 
     @Test("SDKConfiguration cycle interval is always 60s")
@@ -101,5 +87,75 @@ struct SDKConfigurationTests {
         // Bundle ID should be extracted from Bundle.main.bundleIdentifier
         // In tests, this might be "unknown" or the test bundle ID
         #expect(config.appId.isEmpty == false)
+    }
+}
+
+@Suite("Periodic Reconciliation Configuration")
+struct PeriodicReconciliationConfigurationTests {
+
+    @Test("Defaults: enabled, 20 minutes, 12s scan window")
+    func defaults() {
+        let config = SDKConfiguration(businessToken: "t")
+        #expect(config.periodicReconciliationEnabled == true)
+        #expect(config.periodicReconciliationInterval == 20 * 60)
+        #expect(config.periodicScanDuration == 12)
+    }
+
+    @Test("Interval shorter than 20 minutes is accepted as-is")
+    func shorterInterval() {
+        let config = SDKConfiguration(businessToken: "t", periodicReconciliationInterval: 10 * 60)
+        #expect(config.periodicReconciliationInterval == 10 * 60)
+    }
+
+    @Test("Interval longer than 20 minutes is accepted as-is")
+    func longerInterval() {
+        let config = SDKConfiguration(businessToken: "t", periodicReconciliationInterval: 6 * 60 * 60)
+        #expect(config.periodicReconciliationInterval == 6 * 60 * 60)
+    }
+
+    @Test("Interval exactly at the 60s floor is accepted")
+    func intervalAtFloor() {
+        let config = SDKConfiguration(businessToken: "t", periodicReconciliationInterval: 60)
+        #expect(config.periodicReconciliationInterval == 60)
+    }
+
+    @Test("Interval below the floor clamps to 60s")
+    func intervalBelowFloor() {
+        let config = SDKConfiguration(businessToken: "t", periodicReconciliationInterval: 5)
+        #expect(config.periodicReconciliationInterval == 60)
+    }
+
+    @Test("Zero, negative, infinite and NaN intervals fall back to the default")
+    func invalidIntervals() {
+        for bad in [0.0, -300.0, Double.infinity, -Double.infinity, Double.nan] {
+            let config = SDKConfiguration(businessToken: "t", periodicReconciliationInterval: bad)
+            #expect(config.periodicReconciliationInterval == PeriodicReconciliationDefaults.interval)
+        }
+    }
+
+    @Test("Scan duration below the minimum clamps to 3s")
+    func scanDurationBelowMinimum() {
+        let config = SDKConfiguration(businessToken: "t", periodicScanDuration: 0.5)
+        #expect(config.periodicScanDuration == 3)
+    }
+
+    @Test("Scan duration above the maximum clamps to 30s")
+    func scanDurationAboveMaximum() {
+        let config = SDKConfiguration(businessToken: "t", periodicScanDuration: 120)
+        #expect(config.periodicScanDuration == 30)
+    }
+
+    @Test("Invalid scan durations fall back to the default")
+    func invalidScanDurations() {
+        for bad in [0.0, -5.0, Double.infinity, Double.nan] {
+            let config = SDKConfiguration(businessToken: "t", periodicScanDuration: bad)
+            #expect(config.periodicScanDuration == PeriodicReconciliationDefaults.scanDuration)
+        }
+    }
+
+    @Test("Feature can be disabled")
+    func disabled() {
+        let config = SDKConfiguration(businessToken: "t", periodicReconciliationEnabled: false)
+        #expect(config.periodicReconciliationEnabled == false)
     }
 }

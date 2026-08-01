@@ -330,6 +330,16 @@ public class BeAroundSDK {
             sdkVersion: Self.version
         )
 
+        // Periodic reconciliation settings must survive background relaunches too —
+        // handleSyncTask/scheduleSync read them from the manager, not from the SDK.
+        if #available(iOS 13.0, *) {
+            BackgroundTaskManager.shared.applyPeriodicConfiguration(
+                enabled: savedConfig.periodicReconciliationEnabled,
+                interval: savedConfig.periodicReconciliationInterval,
+                scanDuration: savedConfig.periodicScanDuration
+            )
+        }
+
         // Only auto-start if scanning was active before termination
         guard SDKConfigStorage.loadIsScanning() else {
             NSLog("[BeAroundSDK] Scanning was disabled, not auto-starting")
@@ -794,17 +804,31 @@ public class BeAroundSDK {
 
     // MARK: - Public API
 
+    /// - Parameters:
+    ///   - periodicReconciliationEnabled: enables the periodic background reconciliation
+    ///     (`BGAppRefreshTask`). Best effort — iOS decides when (if) the task runs.
+    ///   - periodicReconciliationInterval: EARLIEST allowed start of the next attempt
+    ///     (default 20 min; floor 60s; invalid values fall back to the default). Not a
+    ///     guaranteed cadence.
+    ///   - periodicScanDuration: ceiling of the temporary BLE window inside the task,
+    ///     clamped to [3s, 30s].
     public func configure(
         businessToken: String,
         scanPrecision: ScanPrecision = .high,
         maxQueuedPayloads: MaxQueuedPayloads = .medium,
-        technology: String = "ios-native"
+        technology: String = "ios-native",
+        periodicReconciliationEnabled: Bool = true,
+        periodicReconciliationInterval: TimeInterval = PeriodicReconciliationDefaults.interval,
+        periodicScanDuration: TimeInterval = PeriodicReconciliationDefaults.scanDuration
     ) {
         let config = SDKConfiguration(
             businessToken: businessToken,
             scanPrecision: scanPrecision,
             maxQueuedPayloads: maxQueuedPayloads,
-            technology: technology
+            technology: technology,
+            periodicReconciliationEnabled: periodicReconciliationEnabled,
+            periodicReconciliationInterval: periodicReconciliationInterval,
+            periodicScanDuration: periodicScanDuration
         )
 
         configuration = config
@@ -815,6 +839,22 @@ public class BeAroundSDK {
 
         // Save for background relaunch
         SDKConfigStorage.save(config)
+
+        // Periodic reconciliation: apply the (sanitized) settings to the scheduler.
+        // A reconfigure only affects FUTURE requests — the next scheduleSync() call
+        // re-submits with the new interval (cancel-then-submit is already how the
+        // scheduler stays idempotent); a task already running is never touched.
+        // Disabling cancels pending future requests right away.
+        if #available(iOS 13.0, *) {
+            BackgroundTaskManager.shared.applyPeriodicConfiguration(
+                enabled: config.periodicReconciliationEnabled,
+                interval: config.periodicReconciliationInterval,
+                scanDuration: config.periodicScanDuration
+            )
+            if !config.periodicReconciliationEnabled {
+                BackgroundTaskManager.shared.cancelPeriodicReconciliation()
+            }
+        }
 
         // Auto-capture the APNs push token from the host app's AppDelegate (swizzling),
         // so clients get push targeting without writing any token-forwarding code.
@@ -2030,15 +2070,54 @@ public class BeAroundSDK {
     /// Called by BGTaskScheduler / silent push — refreshes BLE scan, collects Service Data, then syncs.
     /// `bleScanDuration` is the MAX wait: we sync as soon as a beacon is captured, or when it elapses.
     public func performBackgroundBLERefreshAndSync(bleScanDuration: TimeInterval = 10.0, trigger: String = "bg_task", completion: @escaping (Bool) -> Void) {
-        NSLog("[BeAroundSDK] BGTask: refreshing BLE scan for Service Data (trigger=%@, maxWait=%.0fs)", trigger, bleScanDuration)
+        NSLog("[BeAroundSDK] BGTask: reconciliation (trigger=%@, maxWait=%.0fs)", trigger, bleScanDuration)
 
-        // Ensure BLE is scanning
-        if !bluetoothManager.isScanning {
-            bluetoothManager.autoStartIfAuthorized()
-            NSLog("[BeAroundSDK] BGTask: BLE scan started")
+        // ── Reconciliation policy ─────────────────────────────────────────────
+        // The task must complement the standing CoreBluetooth/CoreLocation
+        // mechanisms, never fight them or the host's intent.
+        //
+        // 1. Host intent: if the host called stopScanning() (persisted intent is
+        //    OFF), the task NEVER arms a scan — it only drains pending data.
+        //    Ownership rule collapses to: when intent is ON, (re)arming the scan
+        //    is legitimate RECOVERY of a client iOS dropped, and leaving it armed
+        //    is the desired steady state; when intent is OFF we never start one,
+        //    so there is nothing to hand back.
+        // 2. Low Power Mode / serious+critical thermal state: never arm a NEW
+        //    scan window (an already-healthy scan is left untouched) — at most
+        //    synchronize what is already collected/persisted.
+        let wantsScanning = SDKConfigStorage.loadIsScanning()
+        let lowPower = ProcessInfo.processInfo.isLowPowerModeEnabled
+        let thermal = ProcessInfo.processInfo.thermalState
+        let thermalConstrained = thermal == .serious || thermal == .critical
+        let mayTouchScan = wantsScanning && !lowPower && !thermalConstrained
+
+        if mayTouchScan {
+            // Ensure BLE is scanning
+            if !bluetoothManager.isScanning {
+                bluetoothManager.autoStartIfAuthorized()
+                NSLog("[BeAroundSDK] BGTask: BLE scan started (recovery — host intent is scanning)")
+            } else {
+                bluetoothManager.refreshScan()
+                NSLog("[BeAroundSDK] BGTask: BLE scan refreshed")
+            }
         } else {
-            bluetoothManager.refreshScan()
-            NSLog("[BeAroundSDK] BGTask: BLE scan refreshed")
+            NSLog("[BeAroundSDK] BGTask: synchronize-only (intent=%d lowPower=%d thermal=%d) — no scan window",
+                  wantsScanning ? 1 : 0, lowPower ? 1 : 0, thermalConstrained ? 1 : 0)
+            // No scan window → nothing new will appear; sync whatever exists NOW.
+            beaconQueue.async { [weak self] in
+                guard let self else {
+                    completion(false)
+                    return
+                }
+                let hasAnything = !self.collectedBeacons.isEmpty || self.offlineBatchStorage.batchCount > 0
+                guard hasAnything else {
+                    NSLog("[BeAroundSDK] BGTask: nothing to synchronize — completing")
+                    completion(true)
+                    return
+                }
+                self.performBackgroundSync(trigger: trigger, completion: completion)
+            }
+            return
         }
 
         // Background BLE on a cold wake is slow: CoreBluetooth must power on (async), then the
@@ -2085,6 +2164,13 @@ public class BeAroundSDK {
                 apiClient?.ensureBackgroundSessionAlive()
                 offlineBatchStorage.maxBatchCount = savedConfig.maxQueuedPayloads.value
                 restoreUserIdentityIfNeeded()
+                if #available(iOS 13.0, *) {
+                    BackgroundTaskManager.shared.applyPeriodicConfiguration(
+                        enabled: savedConfig.periodicReconciliationEnabled,
+                        interval: savedConfig.periodicReconciliationInterval,
+                        scanDuration: savedConfig.periodicScanDuration
+                    )
+                }
                 NSLog("[BeAroundSDK] Auto-configured during background fetch")
             } else {
                 NSLog("[BeAroundSDK] Background fetch: no config")

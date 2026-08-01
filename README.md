@@ -133,10 +133,36 @@ For BGTaskScheduler support (iOS 13+), declare **both** task identifiers the SDK
 </array>
 ```
 
-- `io.bearound.sdk.sync` — `BGAppRefreshTask`, short background execution (~30s) to refresh the BLE scan and sync.
+- `io.bearound.sdk.sync` — `BGAppRefreshTask`, the **periodic reconciliation**: a short background execution (~30s) that requests to run no earlier than the configured interval, checks the current scan health, opens a short BLE collection window only when needed, and syncs pending data through the existing pipeline.
 - `io.bearound.sdk.processing` — `BGProcessingTask`, longer opportunistic execution (requires network).
 
 Both are registered with a single call: `BeAroundSDK.shared.registerBackgroundTasks()` in `application(_:didFinishLaunchingWithOptions:)`. If either identifier is missing from `Info.plist`, that task silently never runs.
+
+#### Periodic reconciliation — configuration
+
+The reconciliation cadence is configurable at `configure(...)` time:
+
+```swift
+BeAroundSDK.shared.configure(
+    businessToken: "your-business-token-here",
+    periodicReconciliationEnabled: true,      // default: true
+    periodicReconciliationInterval: 10 * 60,  // default: 20 min (floor: 60s)
+    periodicScanDuration: 12                  // default: 12s (clamped to 3–30s)
+)
+```
+
+To disable the layer entirely (pending future requests are cancelled):
+
+```swift
+BeAroundSDK.shared.configure(
+    businessToken: "your-business-token-here",
+    periodicReconciliationEnabled: false
+)
+```
+
+**What the interval means — read carefully.** The value is only the *earliest* the system may run the task ("requests an execution no earlier than the configured interval"). iOS alone decides when — and whether — the task actually executes, based on app usage, battery, and system conditions. Execution can happen much later than the interval, may be skipped in some cycles, and never happens after the user force-quits the app. This layer is **best effort and complementary**: CoreBluetooth + CoreLocation remain the primary detection mechanisms, and this feature does not keep the SDK or the process permanently alive.
+
+**What one execution does.** The task always re-arms the next attempt first. Then, honoring the host's intent and the device state: if the host called `stopScanning()`, it only drains pending data (never arms a scan); in Low Power Mode or serious/critical thermal state it never opens a new scan window (at most synchronizes what's already collected); otherwise it revives the BLE scan if iOS dropped it (or refreshes a live one), waits up to `periodicScanDuration` for data, and syncs through the SDK's normal single-flight pipeline — same persistence, same batching, same background `URLSession`.
 
 **Important**: The user must allow at least Location or Bluetooth access for the SDK to function properly (the SDK errors via `didFailWithError` when both are denied).
 
