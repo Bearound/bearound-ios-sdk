@@ -16,7 +16,34 @@ import UserNotifications
 
 final class DeviceInfoCollector: @unchecked Sendable {
 	private let appStartTime: Date
+
+	/// Whether this collector participates in cold-start tracking. The SDK's sync
+	/// collector passes true (and the FIRST payload of the process reports
+	/// coldStart=true, consumed via [consumeColdStart]); the ErrorReporter's collector
+	/// passes false and never consumes nor reports it.
 	private let isColdStart: Bool
+
+	/// Process-wide cold-start flag, spent by the first sync payload. The old design
+	/// stamped the constructor flag on EVERY payload — coldStart was true for the whole
+	/// process lifetime, carrying no signal.
+	private static let coldStartLock = NSLock()
+	private static var coldStartPending = true
+	private static func consumeColdStart() -> Bool {
+		coldStartLock.lock(); defer { coldStartLock.unlock() }
+		let value = coldStartPending
+		coldStartPending = false
+		return value
+	}
+
+	// Static device facts captured ONCE here instead of via UIDevice/UIScreen on every
+	// collect — collectDeviceInfo runs on the beaconQueue and UIKit properties are
+	// main-thread APIs by contract. Battery monitoring is also enabled once here (it
+	// was a per-call SETTER off-main, the riskiest of the bunch); the remaining
+	// per-sync reads are plain getters.
+	private let staticOSVersion: String
+	private let staticDeviceName: String
+	private let staticScreenWidth: Int
+	private let staticScreenHeight: Int
 
 	private var cachedNotificationPermission: String = "not_determined"
 
@@ -27,6 +54,14 @@ final class DeviceInfoCollector: @unchecked Sendable {
 	init(isColdStart: Bool = true) {
 		appStartTime = Date()
 		self.isColdStart = isColdStart
+
+		let device = UIDevice.current
+		device.isBatteryMonitoringEnabled = true
+		staticOSVersion = device.systemVersion
+		staticDeviceName = device.name
+		let screen = UIScreen.main
+		staticScreenWidth = Int(screen.bounds.width * screen.scale)
+		staticScreenHeight = Int(screen.bounds.height * screen.scale)
 
 		Task {
 			await updateNotificationPermissionCache()
@@ -72,9 +107,6 @@ final class DeviceInfoCollector: @unchecked Sendable {
 		bluetoothState: String,
 		appInForeground: Bool
 	) -> UserDevice {
-		let device = UIDevice.current
-		let screen = UIScreen.main
-
 		permissionLock.lock()
 		let notificationPermission = cachedNotificationPermission
 		let isCacheReady = permissionCacheReady
@@ -90,7 +122,7 @@ final class DeviceInfoCollector: @unchecked Sendable {
 			apnsEnvironment: APNSEnvironment.current(),
 			manufacturer: "Apple",
 			model: deviceModel(),
-			osVersion: device.systemVersion,
+			osVersion: staticOSVersion,
 			timestamp: Int(Date().timeIntervalSince1970 * 1000),
 			timezone: TimeZone.current.identifier,
 			batteryLevel: batteryLevel(),
@@ -102,11 +134,11 @@ final class DeviceInfoCollector: @unchecked Sendable {
 			cellularGeneration: cellularGeneration(),
 			ramTotalMb: ramTotalMb(),
 			ramAvailableMb: ramAvailableMb(),
-			screenWidth: Int(screen.bounds.width * screen.scale),
-			screenHeight: Int(screen.bounds.height * screen.scale),
+			screenWidth: staticScreenWidth,
+			screenHeight: staticScreenHeight,
 			appInForeground: appInForeground,
 			appUptimeMs: appUptimeMs(),
-			coldStart: isColdStart,
+			coldStart: isColdStart ? Self.consumeColdStart() : false,
 			lowPowerMode: isLowPowerModeEnabled(),
 			locationAccuracy: locationAccuracyString(locationPermission),
 			wifiSSID: wifiSSID(),
@@ -133,14 +165,13 @@ final class DeviceInfoCollector: @unchecked Sendable {
 		return modelCode ?? "Unknown"
 	}
 
+	// Battery monitoring is enabled once in init — these are plain getters now.
 	private func batteryLevel() -> Int {
-		UIDevice.current.isBatteryMonitoringEnabled = true
 		let level = UIDevice.current.batteryLevel
 		return level >= 0 ? Int(level * 100) : 0
 	}
 
 	private func isCharging() -> Bool {
-		UIDevice.current.isBatteryMonitoringEnabled = true
 		let state = UIDevice.current.batteryState
 		return state == .charging || state == .full
 	}
@@ -332,7 +363,7 @@ final class DeviceInfoCollector: @unchecked Sendable {
 	}
 
 	private func deviceName() -> String {
-		UIDevice.current.name
+		staticDeviceName
 	}
 
 	private func carrierName() -> String? {

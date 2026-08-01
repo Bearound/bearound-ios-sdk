@@ -227,6 +227,16 @@ public class BeAroundSDK {
     /// an event on every scan cycle).
     private static let sampleReportInterval: TimeInterval = 60.0
 
+    /// How long a synced beacon stays in collectedBeacons after delivery (Android parity:
+    /// 30s post-sync removal). Keeps the "synced" state visible to the host briefly while
+    /// bounding the dictionary — see cleanupStaleBeacons.
+    private static let syncedBeaconRetention: TimeInterval = 30.0
+
+    /// Statuses where an identical retry fails identically (payload/credential problem,
+    /// not transport). 413 included: a SINGLE batch over the limit is malformed, not
+    /// splittable. Android-parity — see the drain's head-of-line guard.
+    private static let permanentHTTPCodes: Set<Int> = [400, 401, 403, 404, 413, 422]
+
     private let beaconQueue = DispatchQueue(label: "com.bearound.sdk.beaconQueue")
     private var isSyncing = false
 
@@ -1208,8 +1218,19 @@ public class BeAroundSDK {
         var removedCount = 0
 
         for (key, beacon) in collectedBeacons {
-            // Skip synced beacons — their removal is handled by the 10s delayed cleanup
-            if beacon.alreadySynced { continue }
+            if beacon.alreadySynced {
+                // Synced entries used to be skipped, pointing at a "10s delayed cleanup"
+                // that no longer exists — so every beacon ever synced stayed in the dict
+                // until stopScanning() (unbounded growth as the device visits zones, and
+                // the whole array is copied to the delegate on every emission). Retention
+                // matches the Android SDK's 30s post-sync removal.
+                let syncedAt = beacon.syncedAt ?? beacon.timestamp
+                if now.timeIntervalSince(syncedAt) > Self.syncedBeaconRetention {
+                    collectedBeacons.removeValue(forKey: key)
+                    removedCount += 1
+                }
+                continue
+            }
             if now.timeIntervalSince(beacon.timestamp) > maxAge {
                 collectedBeacons.removeValue(forKey: key)
                 removedCount += 1
@@ -1226,8 +1247,6 @@ public class BeAroundSDK {
     private func mergeBLEBeacons() {
         let bleTracked = bluetoothManager.trackedBeaconsSnapshot()
         guard !bleTracked.isEmpty else { return }
-
-        let targetUUID = BeaconConstants.uuid
 
         for (key, tracked) in bleTracked {
             // Only enrich beacons that already exist in collectedBeacons
@@ -1699,7 +1718,11 @@ public class BeAroundSDK {
     /// Drains the retry queue by sending batches in chunks of 5, sequentially.
     /// On success of each chunk, immediately sends the next until the queue is empty.
     /// On failure, stops draining (will retry on next sync cycle).
-    private func drainRetryQueue() {
+    /// - Parameter singleBatchMode: send ONE batch per request. Entered after a chunk is
+    ///   rejected with a permanent HTTP status: the chunk mixes several persisted batches,
+    ///   so the poison one can't be identified — single mode isolates it (delivered ones
+    ///   drain, the rejected one is quarantined) and the queue keeps moving.
+    private func drainRetryQueue(singleBatchMode: Bool = false) {
         beaconQueue.async { [weak self] in
             guard let self else { return }
             guard !self.isSyncing else {
@@ -1722,7 +1745,7 @@ public class BeAroundSDK {
             // P7 — id-addressed drain: remove EXACTLY the batches this chunk sent,
             // not "the N oldest at removal time" (a save/expiry between load and
             // remove used to shift the window onto unsent batches).
-            let chunkRecords = self.offlineBatchStorage.loadOldestBatchesWithIds(Self.retryChunkSize)
+            let chunkRecords = self.offlineBatchStorage.loadOldestBatchesWithIds(singleBatchMode ? 1 : Self.retryChunkSize)
             let chunkIds = chunkRecords.map { $0.id }
             let chunkCount = chunkRecords.count
             let beaconsToSend = chunkRecords.flatMap { $0.beacons }.filter { $0.rssi != 0 || $0.discoverySources.contains(.coreLocation) }
@@ -1838,6 +1861,14 @@ public class BeAroundSDK {
                         self.delegate?.didFailWithError(error)
                     }
 
+                    // Head-of-line guard: classify the failure. A permanent HTTP status
+                    // (payload/credential problem — an identical retry fails identically)
+                    // must NOT park the whole queue behind the poison batch for 7 days.
+                    var permanentStatus: Int?
+                    if case APIError.httpError(let code, _) = error, Self.permanentHTTPCodes.contains(code) {
+                        permanentStatus = code
+                    }
+
                     self.beaconQueue.async {
                         // P2 — stale-completion guard (drain generation).
                         guard self.syncGeneration == drainGeneration else {
@@ -1846,6 +1877,29 @@ public class BeAroundSDK {
                         }
                         self.endBackgroundTask()
                         self.isSyncing = false
+
+                        if let status = permanentStatus {
+                            // Backend reachable — not a transport failure for the breaker.
+                            if chunkCount == 1 {
+                                // This exact batch is the poison: quarantine it, keep draining.
+                                let poisonId = chunkIds[0]
+                                NSLog("[BeAroundSDK] Batch %@ permanently rejected (HTTP %d) — quarantining, drain continues", poisonId, status)
+                                DiagnosticsStore.shared.recordError("Batch quarantined (HTTP \(status)): \(poisonId)")
+                                DetectionLogStore.append(type: "Sync falhou", detail: "batch rejeitado pelo backend (HTTP \(status)) — quarentenado")
+                                self.offlineBatchStorage.quarantineBatch(id: poisonId)
+                                self.syncDidFinishCoordination()
+                                self.drainRetryQueue()
+                            } else {
+                                // Several batches in one request — can't tell WHICH one is
+                                // poison. Re-drain one batch per request to isolate it.
+                                NSLog("[BeAroundSDK] Chunk of %d rejected permanently (HTTP %d) — switching to single-batch drain", chunkCount, status)
+                                self.syncDidFinishCoordination()
+                                self.drainRetryQueue(singleBatchMode: true)
+                            }
+                            return
+                        }
+
+                        // Transient (network/408/429/5xx): stop; workers/backoff retry later.
                         // P18 — the drain terminal must resolve parked waiters too.
                         self.notifySyncSettled(success: false)
                         self.syncDidFinishCoordination()
@@ -1905,13 +1959,17 @@ public class BeAroundSDK {
 
         NSLog("[BeAroundSDK] Handling background URLSession events for '%@'", identifier)
 
-        // Make sure we have a configured apiClient (and therefore a live background session)
-        // even if the app was cold-launched purely to deliver these events.
+        // ORDER MATTERS: store the system handler (which also revives the background
+        // session) BEFORE any other SDK restoration. autoConfigureFromStorage() can
+        // touch the session too — if events drained before the handler was stored,
+        // urlSessionDidFinishEvents found nil and the system assertion was never
+        // released (the OS then penalizes the app's background budget).
+        BackgroundSessionManager.shared.setSystemEventsCompletionHandler(completionHandler)
+
+        // Now restore the rest of the SDK for a cold launch driven purely by these events.
         if configuration == nil {
             autoConfigureFromStorage()
         }
-
-        BackgroundSessionManager.shared.setSystemEventsCompletionHandler(completionHandler)
     }
 
     /// Snapshot of the most recent background scan+sync attempt. Host apps can read this in the

@@ -37,8 +37,21 @@ final class BackgroundSessionManager: NSObject {
     /// background events. Must be invoked on the main thread once events drain.
     private var systemEventsCompletionHandler: (() -> Void)?
 
-    /// The single background session. Lazily created exactly once, then retained forever.
-    private(set) lazy var session: URLSession = {
+    /// Set when urlSessionDidFinishEvents fired BEFORE the handler was stored (the two
+    /// arrive on independent queues, so both orders happen). Without it that ordering
+    /// permanently leaked the system assertion — the handler arrived, was stored, and
+    /// nobody ever called it.
+    private var eventsFinishedBeforeHandler = false
+
+    /// The single background session. Created ONCE in init — `shared` being a `static
+    /// let` makes that thread-safe via the Swift runtime. The previous `lazy var` was
+    /// not: `lazy` has no lock, so two threads racing the first access could run the
+    /// initializer twice — and two live background URLSessions with the SAME identifier
+    /// is undefined behavior at the daemon level.
+    private(set) var session: URLSession!
+
+    private override init() {
+        super.init()
         let config = URLSessionConfiguration.background(
             withIdentifier: BackgroundSessionManager.backgroundSessionIdentifier
         )
@@ -47,26 +60,33 @@ final class BackgroundSessionManager: NSObject {
         config.allowsCellularAccess = true
         config.timeoutIntervalForResource = 86400
         NSLog("[BeAroundSDK] Created background URLSession '%@'", BackgroundSessionManager.backgroundSessionIdentifier)
-        return URLSession(configuration: config, delegate: self, delegateQueue: nil)
-    }()
-
-    private override init() {
-        super.init()
+        session = URLSession(configuration: config, delegate: self, delegateQueue: nil)
     }
 
-    /// Touching `.session` forces the lazy session to instantiate so pending delegate
-    /// callbacks (from a background-relaunch) are delivered. Safe to call repeatedly — the
-    /// lazy guarantees only one session per identifier is ever created.
+    /// Touching the singleton instantiates it (and therefore the session, created in
+    /// init) so pending delegate callbacks from a background-relaunch are delivered.
+    /// Safe to call repeatedly — `static let shared` guarantees a single instance.
     func ensureSessionAlive() {
         _ = session
     }
 
     /// Stores the system completion handler delivered on background-relaunch and makes sure
-    /// the session is reconstructed so the OS can hand us the pending events.
+    /// the session is reconstructed so the OS can hand us the pending events. If the events
+    /// already finished before the handler arrived, it is invoked immediately.
     func setSystemEventsCompletionHandler(_ handler: @escaping () -> Void) {
         lock.lock()
-        systemEventsCompletionHandler = handler
+        let finishedAlready = eventsFinishedBeforeHandler
+        eventsFinishedBeforeHandler = false
+        if !finishedAlready {
+            systemEventsCompletionHandler = handler
+        }
         lock.unlock()
+
+        if finishedAlready {
+            NSLog("[BeAroundSDK] Background events finished before handler arrived — calling it now")
+            DispatchQueue.main.async { handler() }
+            return
+        }
         ensureSessionAlive()
     }
 
@@ -185,6 +205,11 @@ extension BackgroundSessionManager: URLSessionDelegate {
         lock.lock()
         let handler = systemEventsCompletionHandler
         systemEventsCompletionHandler = nil
+        if handler == nil {
+            // Events drained before the app layer delivered the handler — remember it
+            // so setSystemEventsCompletionHandler() can complete immediately on arrival.
+            eventsFinishedBeforeHandler = true
+        }
         lock.unlock()
 
         if let handler {
@@ -192,6 +217,8 @@ extension BackgroundSessionManager: URLSessionDelegate {
             DispatchQueue.main.async {
                 handler()
             }
+        } else {
+            NSLog("[BeAroundSDK] Background URLSession finished events before handler arrived — flagged for immediate completion")
         }
     }
 }

@@ -210,6 +210,26 @@ class OfflineBatchStorage {
         storageQueue.sync { ids.reduce(0) { $0 + (_removeBatch(id: $1) ? 1 : 0) } }
     }
 
+    /// Takes a backend-REJECTED batch out of the send queue (renamed to `<id>.rejected` —
+    /// kept for diagnosis, swept by the same 7-day expiry). Without this, one poison
+    /// batch at the head of the FIFO blocked every batch behind it until expiry.
+    @discardableResult
+    func quarantineBatch(id: String) -> Bool {
+        storageQueue.sync {
+            guard let directory = storageDirectory, !id.isEmpty else { return false }
+            let source = directory.appendingPathComponent(id)
+            guard fileManager.fileExists(atPath: source.path) else { return false }
+            do {
+                try fileManager.moveItem(at: source, to: directory.appendingPathComponent("\(id).rejected"))
+                NSLog("[BeAroundSDK] Quarantined rejected batch %@", id)
+                return true
+            } catch {
+                NSLog("[BeAroundSDK] Failed to quarantine batch %@: %@", id, error.localizedDescription)
+                return false
+            }
+        }
+    }
+
     /// Loads the oldest batch from storage (FIFO)
     func loadOldestBatch() -> [Beacon]? {
         storageQueue.sync { _loadOldestRecords(1).first?.beacons }
@@ -411,8 +431,10 @@ class OfflineBatchStorage {
         let now = Date()
         var removedCount = 0
 
-        for filename in files where filename.hasSuffix(".json") {
-            // Extract timestamp from filename (format: timestamp_uuid.json)
+        // .json = pending; .rejected = backend-refused quarantine. Both carry the
+        // timestamp in the filename and expire on the same 7-day clock.
+        for filename in files where filename.hasSuffix(".json") || filename.hasSuffix(".rejected") {
+            // Extract timestamp from filename (format: timestamp_uuid.json[.rejected])
             let components = filename.split(separator: "_")
             guard let timestampString = components.first,
                   let timestamp = TimeInterval(timestampString) else {

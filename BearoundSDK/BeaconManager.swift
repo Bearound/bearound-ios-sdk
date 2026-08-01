@@ -682,13 +682,18 @@ class BeaconManager: NSObject {
 
     // MARK: - Timers
 
+    // NOTE (threading): all three health timers below fire on a GLOBAL queue but their
+    // handlers reach CLLocationManager (start/stopRangingBeacons). CoreLocation requires
+    // its manager to be driven from the thread it was created on (main, with a run
+    // loop) — so every handler hops to main before touching state or the manager.
+
     private func startWatchdog() {
         stopWatchdog()
 
         let timer = DispatchSource.makeTimerSource(queue: DispatchQueue.global(qos: .utility))
         timer.schedule(deadline: .now() + 30.0)
         timer.setEventHandler { [weak self] in
-            self?.checkRangingHealth()
+            DispatchQueue.main.async { self?.checkRangingHealth() }
         }
         rangingWatchdog = timer
         timer.resume()
@@ -705,7 +710,7 @@ class BeaconManager: NSObject {
         let timer = DispatchSource.makeTimerSource(queue: DispatchQueue.global(qos: .utility))
         timer.schedule(deadline: .now() + 120.0, repeating: 120.0)
         timer.setEventHandler { [weak self] in
-            self?.refreshRanging()
+            DispatchQueue.main.async { self?.refreshRanging() }
         }
         rangingRefreshTimer = timer
         timer.resume()
@@ -726,7 +731,7 @@ class BeaconManager: NSObject {
         let timer = DispatchSource.makeTimerSource(queue: DispatchQueue.global(qos: .utility))
         timer.schedule(deadline: .now() + duration)
         timer.setEventHandler { [weak self] in
-            self?.stopBackgroundTemporaryRanging()
+            DispatchQueue.main.async { self?.stopBackgroundTemporaryRanging() }
         }
         backgroundRangingTimer = timer
         timer.resume()
