@@ -483,6 +483,15 @@ class APIClient {
         if let locationAccuracy = device.locationAccuracy {
             permissions["locationAccuracy"] = locationAccuracy
         }
+        // Advertising ID lives here because that is where the ingest already reads it from
+        // (`device.permissions.advertisingId`) — provided by the SDK so the backend can skip
+        // the matchmaker round-trip.
+        if let advertisingId = device.advertisingId {
+            permissions["advertisingId"] = advertisingId
+        }
+        if let trackingAuthorization = device.trackingAuthorization {
+            permissions["trackingAuthorization"] = trackingAuthorization
+        }
 
         let memory: [String: Any] = [
             "totalMb": device.ramTotalMb,

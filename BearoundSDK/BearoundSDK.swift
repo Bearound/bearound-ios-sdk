@@ -1105,6 +1105,31 @@ public class BeAroundSDK {
         beaconManager.requestLocationAuthorization(level)
     }
 
+    /// Shows the App Tracking Transparency prompt and, once authorised, starts reporting the
+    /// IDFA with every payload.
+    ///
+    /// The SDK never shows this dialog on its own: Apple requires it to appear in a context
+    /// the user understands, and an app that prompts at an arbitrary moment gets rejected.
+    /// Call it at a moment that makes sense in your onboarding — ideally after explaining
+    /// why — and only while the app is in the foreground (iOS ignores it otherwise).
+    ///
+    /// Requires `NSUserTrackingUsageDescription` in your `Info.plist`; without that key iOS
+    /// does not show the dialog and the status stays `notDetermined` forever.
+    ///
+    /// Answering is a one-time event per install — later calls return the stored decision
+    /// with no UI, so it is safe to call on every launch.
+    ///
+    /// - Parameter completion: authorisation status on the main queue — `authorized`,
+    ///   `denied`, `restricted`, `notDetermined`, or `unavailable` below iOS 14.
+    public func requestTrackingAuthorization(completion: ((String) -> Void)? = nil) {
+        AdvertisingIdCollector.requestAuthorization(completion: completion)
+    }
+
+    /// Current App Tracking Transparency status, without showing any prompt.
+    public static func trackingAuthorizationStatus() -> String {
+        AdvertisingIdCollector.authorizationStatus()
+    }
+
     // MARK: - Device Register
 
     /// Sends a POST /ingest with `beacons: []` and `syncTrigger: "register"` when needed.

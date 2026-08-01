@@ -101,7 +101,16 @@ Start; the steps below refine it).
    Do NOT add the location usage strings by default: the Bluetooth-only default keeps
    ONLY NSBluetoothAlwaysUsageDescription. Add NSLocationWhenInUseUsageDescription and
    NSLocationAlwaysAndWhenInUseUsageDescription ONLY if you enable the Location eye
-   (step 4). Do NOT add NSUserTrackingUsageDescription (the SDK does not use the IDFA).
+   (step 4).
+   - NSUserTrackingUsageDescription — add it ONLY if I ask for the advertising
+     identifier (IDFA). ASK ME before adding it: prompting for tracking obliges the app
+     to declare Tracking in its App Store privacy label, so it is my call, not yours.
+     If I say yes, add the key AND call
+     BeAroundSDK.shared.requestTrackingAuthorization { status in ... } from the
+     FOREGROUND at a point in onboarding where the user has just been told why — never
+     inside didFinishLaunching (iOS ignores a prompt fired before the app is active, and
+     an out-of-context prompt gets the app rejected). Without the key iOS shows no
+     dialog at all and the status stays notDetermined forever.
 
 4. Location eye (force-quit survival). Bluetooth-only detection works without it, but
    iOS PURGES the Bluetooth eye on a USER force-quit (swipe-kill from the app switcher).
