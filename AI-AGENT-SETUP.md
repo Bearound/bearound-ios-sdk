@@ -153,7 +153,9 @@ Guardrails — follow strictly:
   left on development silently fails the silent-push wake in production), with
   CODE_SIGN_ENTITLEMENTS pointing at the .entitlements in BOTH configs; the Xcode
   Background Modes capability -> enable Remote notifications (plus Location updates
-  and Uses Bluetooth LE accessories); and on-device Always location + Background App
+  and Uses Bluetooth LE accessories); the Access WiFi Information capability, which
+  unlocks the Wi-Fi observations (optional — without it the SDK just omits those
+  fields and everything else works); and on-device Always location + Background App
   Refresh. Do not attempt those yourself.
 ```
 

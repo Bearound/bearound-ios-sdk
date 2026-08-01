@@ -109,18 +109,36 @@ to**. The purpose is positioning coverage: an access point seen repeatedly next 
 beacon gets a position of its own, and from then on it can place a device even where no
 beacon reaches.
 
-To enable it, add the **Access WiFi Information** capability to your app target (Signing &
-Capabilities → + Capability), which writes:
+##### Turning it on — two steps
+
+**1. Add the capability** (Xcode, one-time — this is not a runtime prompt):
+
+> Select your app target → **Signing & Capabilities** → **+ Capability** → **Access WiFi
+> Information**
+
+Xcode adds it to your `.entitlements` file:
 
 ```xml
 <key>com.apple.developer.networking.wifi-info</key>
 <true/>
 ```
 
-Location authorisation (When In Use is enough) is also required by iOS for this API.
+The capability must also be enabled on your App ID in the Apple Developer portal — Xcode
+usually handles that with automatic signing. If your provisioning profile is managed
+manually, regenerate it after enabling the capability, otherwise the build installs but iOS
+silently returns nothing.
 
-**Without the capability nothing breaks** — iOS simply returns nothing and the SDK omits the
-field, exactly as it behaves today.
+**2. Request location authorisation** — iOS will not reveal the access point without it:
+
+```swift
+BeAroundSDK.shared.requestLocationAuthorization(.whenInUse)
+```
+
+`.whenInUse` is enough here. If you already call `.always` for the Location eye, you are
+covered and there is nothing else to do.
+
+**Nothing degrades if you skip either step** — iOS returns nothing, the SDK omits the fields,
+and detection, background behaviour and every other payload field are unaffected.
 
 The identity that matters is `apId`: a one-way SHA-256 hash of the access point's hardware
 address, canonicalised so that the same router yields the same identifier on iOS and on
@@ -451,6 +469,10 @@ BeAroundSDK.shared.stopScanning()
 BeAroundSDK.shared.requestLocationAuthorization(.always)
 // or .whenInUse for foreground-only ranging
 ```
+
+The same call unlocks [Wi-Fi observations](#wi-fi-observations-optional) — iOS requires
+location authorisation before it will reveal the connected access point, and `.whenInUse` is
+enough for that.
 
 **Check Permission Status:**
 ```swift
