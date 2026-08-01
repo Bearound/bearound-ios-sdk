@@ -93,6 +93,14 @@ final class ErrorReporter {
     /// Stored as a static so it survives even if `shared` were ever torn down (it isn't).
     private static var previousExceptionHandler: (@convention(c) (NSException) -> Void)?
 
+    /// Directory for crash envelopes written by the uncaught-exception handler and
+    /// drained on the next launch. Prepared once in `install(...)` (so the crash
+    /// handler itself never has to create directories) and immutable afterwards.
+    private var crashEnvelopeDir: URL?
+
+    /// At most this many pending crash envelopes are kept on disk (oldest dropped).
+    private static let maxPendingCrashEnvelopes = 5
+
     /// Isolated URLSession for telemetry — never the SDK's background upload session.
     private lazy var session: URLSession = {
         let config = URLSessionConfiguration.ephemeral
@@ -160,6 +168,11 @@ final class ErrorReporter {
         handlerInstalled = true
         lock.unlock()
 
+        // Prepare the crash-envelope directory OUTSIDE the crash path, then drain
+        // any envelope a previous run's crash left behind.
+        prepareCrashEnvelopeDir()
+        drainPendingCrashEnvelopes()
+
         // Chain the handler: capture whoever is installed now (Crashlytics/Sentry/host) and
         // ALWAYS delegate to it from inside our handler (golden rule #3).
         ErrorReporter.previousExceptionHandler = NSGetUncaughtExceptionHandler()
@@ -186,32 +199,129 @@ final class ErrorReporter {
     // MARK: - Uncaught exception path
 
     /// Handles an uncaught `NSException`. Reports ONLY if a stack frame belongs to our library
-    /// (golden rule #2). Runs a SHORT SYNCHRONOUS POST because the process is about to die — a
-    /// GCD-async dispatch would never fire. Fully guarded; never rethrows.
+    /// (golden rule #2).
     ///
-    /// Every operation below is non-throwing by construction (no `try`), so there is no Swift
-    /// error to catch — the "never destabilize the crash path" guarantee is upheld by using only
-    /// total, side-effect-safe operations here (no force-unwraps, no async, short bounded POST).
+    /// The crash path does the MINIMUM possible work: filter by origin and write a small JSON
+    /// envelope to a pre-created directory (one atomic file write, ~ms). It deliberately does
+    /// NOT build the device snapshot (which spins up a CBCentralManager and hops to the main
+    /// thread — a deadlock risk if the crash IS on main) and does NOT touch the network (the
+    /// old 5s synchronous POST held the dying process hostage and frequently never completed).
+    /// The envelope is completed with a fresh device snapshot and uploaded on the NEXT launch
+    /// by `drainPendingCrashEnvelopes()`.
+    ///
+    /// Locks are only ever `try`-acquired here: another thread may have died holding `lock`,
+    /// and blocking on it would hang the crash handler. On contention we fail OPEN (write the
+    /// envelope anyway) — the drain re-checks `enabled` and applies rate-limit/dedupe in a
+    /// healthy process before anything is sent.
     private func handleUncaught(_ exception: NSException) {
         let symbols = exception.callStackSymbols
         guard crashOriginatedInOurLibrary(symbols) else { return }
 
-        guard isEnabledSnapshot() else { return }
+        // Non-blocking enablement probe (see doc comment).
+        if lock.try() {
+            let isEnabled = enabled && handlerInstalled
+            lock.unlock()
+            guard isEnabled else { return }
+        }
 
-        let stack = symbols.joined(separator: "\n")
-        let type = exception.name.rawValue
-        let message = exception.reason ?? ""
-        let firstLine = symbols.first ?? ""
+        guard let dir = crashEnvelopeDir else { return }
 
-        guard shouldSend(type: type, context: "uncaught", firstStackLine: firstLine) else { return }
+        let stack = String(symbols.joined(separator: "\n").prefix(ErrorReporter.stackTraceCap))
+        let envelope: [String: Any] = [
+            "type": exception.name.rawValue,
+            "message": exception.reason ?? "",
+            "stackTrace": stack,
+            "context": "uncaught",
+            "occurredAt": iso.string(from: Date()),
+        ]
 
-        let payload = buildPayload(
-            type: type,
-            message: message,
-            stackTrace: stack,
-            context: "uncaught"
-        )
-        sendSynchronously(payload)
+        guard JSONSerialization.isValidJSONObject(envelope),
+              let data = try? JSONSerialization.data(withJSONObject: envelope) else { return }
+
+        let filename = "crash-\(Date().timeIntervalSince1970).json"
+        try? data.write(to: dir.appendingPathComponent(filename), options: .atomic)
+    }
+
+    // MARK: - Crash envelope persistence
+
+    /// Creates the envelope directory. Called once from `install(...)`, never from the
+    /// crash handler.
+    private func prepareCrashEnvelopeDir() {
+        guard crashEnvelopeDir == nil else { return }
+        guard let appSupport = FileManager.default.urls(
+            for: .applicationSupportDirectory, in: .userDomainMask
+        ).first else { return }
+
+        let dir = appSupport.appendingPathComponent("BearoundCrashEnvelopes")
+        do {
+            try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+            crashEnvelopeDir = dir
+        } catch {
+            // No directory → the crash handler silently skips persistence. Never fatal.
+        }
+    }
+
+    /// Uploads envelopes written by a previous run's crash handler, then removes them.
+    /// Runs off the calling thread; each envelope goes through the same rate-limit/dedupe
+    /// gate as live reports and is completed with a CURRENT device snapshot (the crash-time
+    /// snapshot is intentionally not captured — see `handleUncaught`).
+    ///
+    /// An envelope is deleted once the server responds (any HTTP status — telemetry is
+    /// fire-and-forget); on a transport-level failure it stays on disk for the next launch.
+    private func drainPendingCrashEnvelopes() {
+        guard let dir = crashEnvelopeDir else { return }
+
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            guard let self else { return }
+            guard self.isEnabledSnapshot() else { return }
+
+            let fm = FileManager.default
+            guard let files = try? fm.contentsOfDirectory(atPath: dir.path) else { return }
+            // Oldest→newest by the timestamp embedded in the filename.
+            let envelopes = files.filter { $0.hasPrefix("crash-") && $0.hasSuffix(".json") }.sorted()
+            guard !envelopes.isEmpty else { return }
+
+            // Cap: keep only the newest N, drop the surplus outright.
+            let surplus = envelopes.dropLast(ErrorReporter.maxPendingCrashEnvelopes)
+            for name in surplus {
+                try? fm.removeItem(at: dir.appendingPathComponent(name))
+            }
+
+            for name in envelopes.suffix(ErrorReporter.maxPendingCrashEnvelopes) {
+                let url = dir.appendingPathComponent(name)
+                guard let data = try? Data(contentsOf: url),
+                      let dict = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                      let type = dict["type"] as? String,
+                      let stackTrace = dict["stackTrace"] as? String else {
+                    // Corrupted envelope — drop it.
+                    try? fm.removeItem(at: url)
+                    continue
+                }
+
+                let firstLine = stackTrace.components(separatedBy: "\n").first ?? ""
+                guard self.shouldSend(type: type, context: "uncaught", firstStackLine: firstLine) else {
+                    try? fm.removeItem(at: url)
+                    continue
+                }
+
+                var payload = self.buildPayload(
+                    type: type,
+                    message: dict["message"] as? String ?? "",
+                    stackTrace: stackTrace,
+                    context: "uncaught"
+                )
+                // Preserve the crash-time timestamp captured by the handler.
+                if let occurredAt = dict["occurredAt"] as? String {
+                    payload["occurredAt"] = occurredAt
+                }
+
+                self.sendAsync(payload) { delivered in
+                    if delivered {
+                        try? fm.removeItem(at: url)
+                    }
+                }
+            }
+        }
     }
 
     // MARK: - Internal-error path
@@ -502,25 +612,19 @@ final class ErrorReporter {
 
     // MARK: - Transport
 
-    /// Async fire-and-forget delivery (used on the internal-error path).
-    private func sendAsync(_ payload: [String: Any]) {
-        guard let request = makeRequest(payload) else { return }
-        let task = session.dataTask(with: request) { _, _, _ in
-            // Fire-and-forget: ignore result. Never retry, never surface.
+    /// Async fire-and-forget delivery. `completion(delivered)` reports whether the server
+    /// produced ANY response (used by the crash-envelope drain to decide file cleanup);
+    /// live internal-error reports pass no completion and ignore the outcome entirely.
+    private func sendAsync(_ payload: [String: Any], completion: ((Bool) -> Void)? = nil) {
+        guard let request = makeRequest(payload) else {
+            completion?(false)
+            return
+        }
+        let task = session.dataTask(with: request) { _, response, _ in
+            // Fire-and-forget: never retry, never surface.
+            completion?(response != nil)
         }
         task.resume()
-    }
-
-    /// Synchronous, short delivery (used on the uncaught-exception path, where the process is
-    /// about to terminate and an async task would never run). Bounded by the request timeout.
-    private func sendSynchronously(_ payload: [String: Any]) {
-        guard let request = makeRequest(payload) else { return }
-        let sem = DispatchSemaphore(value: 0)
-        let task = session.dataTask(with: request) { _, _, _ in
-            sem.signal()
-        }
-        task.resume()
-        _ = sem.wait(timeout: .now() + ErrorReporter.requestTimeout)
     }
 
     private func makeRequest(_ payload: [String: Any]) -> URLRequest? {

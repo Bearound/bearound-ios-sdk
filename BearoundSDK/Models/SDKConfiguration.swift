@@ -48,34 +48,12 @@ public struct SDKConfiguration {
 
     // MARK: - Per-precision duty-cycle values
     //
-    // NOTE (iOS): these scan/pause/cycle values describe a duty cycle that is **NOT applied to
-    // the BLE radio on iOS** — the radio scans continuously in every precision (iOS handles its
-    // own power duty-cycling). They are kept for cross-platform parity (the values are honored on
-    // Android). The only precision-derived values iOS actually uses are `precisionLocationAccuracy`
-    // and `syncInterval`.
+    // NOTE (iOS): the radio scans continuously in every precision (iOS handles its own power
+    // duty-cycling). The only precision-derived values iOS uses are `precisionLocationAccuracy`,
+    // `precisionCycleInterval` (sync cadence for medium/low) and `syncInterval`. Android honors
+    // a fuller duty-cycle model on its side of the cross-platform contract.
 
-    /// Duration of each scan window (seconds). Not applied to the radio on iOS (radio is continuous).
-    var precisionScanDuration: TimeInterval { 10 }
-
-    /// Pause duration between scan windows (seconds). Not applied to the radio on iOS (radio is continuous).
-    var precisionPauseDuration: TimeInterval {
-        switch scanPrecision {
-        case .high: return 0
-        case .medium: return 10
-        case .low: return 50
-        }
-    }
-
-    /// Number of scan cycles per interval (0 = continuous). Not applied to the radio on iOS (radio is continuous).
-    var precisionCycleCount: Int {
-        switch scanPrecision {
-        case .high: return 0
-        case .medium: return 3
-        case .low: return 1
-        }
-    }
-
-    /// Full cycle interval (seconds)
+    /// Sync cadence for medium/low precision (seconds).
     var precisionCycleInterval: TimeInterval { 60 }
 
     /// Location accuracy for CoreLocation (meters)

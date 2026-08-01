@@ -14,6 +14,13 @@ import Foundation
 /// - FIFO ordering (oldest batch sent first)
 /// - Auto-cleanup of batches older than 7 days
 /// - Respects maximum queue size from configuration
+///
+/// Thread-safety: every public entry point runs on the serial `storageQueue`
+/// (callers come from beaconQueue, the URLSession delegate queue and the host's
+/// main thread via the public diagnostics API — unserialized, two of them could
+/// interleave directory listing with file removal). Internal `_`-prefixed
+/// helpers assume they are already on the queue and must NOT call the public
+/// wrappers (re-entrant `sync` on a serial queue deadlocks).
 class OfflineBatchStorage {
 
     // MARK: - Configuration
@@ -64,8 +71,12 @@ class OfflineBatchStorage {
             }
         }
 
-        func toBeacon() -> Beacon {
-            let beaconUUID = UUID(uuidString: uuid) ?? UUID()
+        /// Returns nil for a corrupted record instead of masking it: the previous
+        /// `UUID(uuidString:) ?? UUID()` fallback invented a brand-new random UUID,
+        /// which then shipped to the ingester as a legitimate-looking beacon from a
+        /// namespace that never existed.
+        func toBeacon() -> Beacon? {
+            guard let beaconUUID = UUID(uuidString: uuid) else { return nil }
             let beaconProximity = BeaconProximity(rawValue: proximity) ?? .unknown
 
             var beaconMetadata: BeaconMetadata?
@@ -119,13 +130,34 @@ class OfflineBatchStorage {
         }
     }
 
+    /// A stored batch identified by its on-disk id — lets the retry drain remove
+    /// EXACTLY the batches it sent, instead of "the N oldest at removal time"
+    /// (which may differ from the N oldest at load time if a save/enforce/expiry
+    /// ran in between — the positional pair could delete an unsent batch).
+    struct StoredBatchRecord {
+        let id: String
+        let beacons: [Beacon]
+    }
+
+    /// Process-wide instance over the default directory. All production code MUST
+    /// use this one: the store's thread-safety comes from its per-instance serial
+    /// queue, so two instances over the same directory would race each other.
+    /// (The `init(directoryName:)` stays available for tests over isolated dirs.)
+    static let shared = OfflineBatchStorage()
+
     // MARK: - Properties
 
     private let fileManager = FileManager.default
+    /// Serializes every filesystem operation of this store.
     private let storageQueue = DispatchQueue(label: "com.bearound.sdk.batchStorage", qos: .utility)
 
-    /// Maximum number of batches to store (default from MaxQueuedPayloads.medium)
-    var maxBatchCount: Int = MaxQueuedPayloads.medium.value
+    /// Maximum number of batches to store (default from MaxQueuedPayloads.medium).
+    /// Backed by the queue: written from configure(), read inside enforcement.
+    private var _maxBatchCount: Int = MaxQueuedPayloads.medium.value
+    var maxBatchCount: Int {
+        get { storageQueue.sync { _maxBatchCount } }
+        set { storageQueue.sync { _maxBatchCount = newValue } }
+    }
 
     /// Storage directory URL
     private var storageDirectory: URL? {
@@ -140,14 +172,86 @@ class OfflineBatchStorage {
 
     init(directoryName: String = OfflineBatchStorage.defaultDirectoryName) {
         self.directoryName = directoryName
-        createStorageDirectoryIfNeeded()
-        cleanupExpiredBatches()
+        // Init runs before any concurrent access — call internals directly.
+        _createStorageDirectoryIfNeeded()
+        _cleanupExpiredBatches()
     }
 
-    // MARK: - Public Methods
+    // MARK: - Public Methods (queue-serialized wrappers)
 
     /// Returns the number of stored batches
     var batchCount: Int {
+        storageQueue.sync { _batchCount() }
+    }
+
+    /// Saves a batch of beacons to persistent storage
+    @discardableResult
+    func saveBatch(_ beacons: [Beacon]) -> Bool {
+        storageQueue.sync { _save(beacons) != nil }
+    }
+
+    /// Saves a batch and returns its persistent identifier (the on-disk filename), so the
+    /// caller can remove exactly this batch later (used by persist-before-send: persist
+    /// before the upload starts, remove THIS batch on success, leave it on failure).
+    func saveBatchReturningId(_ beacons: [Beacon]) -> String? {
+        storageQueue.sync { _save(beacons) }
+    }
+
+    /// Removes a specific batch by its identifier (filename). Call after the batch was
+    /// successfully delivered so it is not re-sent on the next drain.
+    @discardableResult
+    func removeBatch(id: String) -> Bool {
+        storageQueue.sync { _removeBatch(id: id) }
+    }
+
+    /// Removes several batches by id. Returns how many were actually removed.
+    @discardableResult
+    func removeBatches(ids: [String]) -> Int {
+        storageQueue.sync { ids.reduce(0) { $0 + (_removeBatch(id: $1) ? 1 : 0) } }
+    }
+
+    /// Loads the oldest batch from storage (FIFO)
+    func loadOldestBatch() -> [Beacon]? {
+        storageQueue.sync { _loadOldestRecords(1).first?.beacons }
+    }
+
+    /// Loads the N oldest batches from storage (FIFO)
+    func loadOldestBatches(_ count: Int) -> [[Beacon]] {
+        storageQueue.sync { _loadOldestRecords(count).map { $0.beacons } }
+    }
+
+    /// Loads the N oldest batches WITH their on-disk ids — the id-addressed pair
+    /// of `loadOldestBatches`/`removeOldestBatches` for exact removal.
+    func loadOldestBatchesWithIds(_ count: Int) -> [StoredBatchRecord] {
+        storageQueue.sync { _loadOldestRecords(count) }
+    }
+
+    /// Removes the oldest batch from storage. Legacy positional API — prefer
+    /// `removeBatches(ids:)` with the ids returned by `loadOldestBatchesWithIds`.
+    @discardableResult
+    func removeOldestBatch() -> Bool {
+        storageQueue.sync { _removeOldest(1) == 1 }
+    }
+
+    /// Removes the N oldest batches. Legacy positional API — see `removeOldestBatch`.
+    @discardableResult
+    func removeOldestBatches(_ count: Int) -> Int {
+        storageQueue.sync { _removeOldest(count) }
+    }
+
+    /// Loads all batches from storage (for migration or debugging)
+    func loadAllBatches() -> [[Beacon]] {
+        storageQueue.sync { _loadOldestRecords(Int.max).map { $0.beacons } }
+    }
+
+    /// Clears all stored batches
+    func clearAllBatches() {
+        storageQueue.sync { _clearAll() }
+    }
+
+    // MARK: - Internals (must already be on storageQueue)
+
+    private func _batchCount() -> Int {
         guard let directory = storageDirectory,
               let files = try? fileManager.contentsOfDirectory(atPath: directory.path) else {
             return 0
@@ -155,13 +259,9 @@ class OfflineBatchStorage {
         return files.filter { $0.hasSuffix(".json") }.count
     }
 
-    /// Saves a batch of beacons to persistent storage
-    /// - Parameter beacons: Array of beacons to store
-    /// - Returns: true if saved successfully
-    @discardableResult
-    func saveBatch(_ beacons: [Beacon]) -> Bool {
-        guard let directory = storageDirectory else { return false }
-        guard !beacons.isEmpty else { return false }
+    private func _save(_ beacons: [Beacon]) -> String? {
+        guard let directory = storageDirectory else { return nil }
+        guard !beacons.isEmpty else { return nil }
 
         let batchId = UUID().uuidString
         let timestamp = Date()
@@ -179,58 +279,17 @@ class OfflineBatchStorage {
             encoder.dateEncodingStrategy = .iso8601
             let data = try encoder.encode(batch)
             try data.write(to: fileURL, options: .atomic)
-            NSLog("[BeAroundSDK] Saved batch with %d beacons to %@", beacons.count, filename)
+            NSLog("[BeAroundSDK] Persisted batch with %d beacons to %@", beacons.count, filename)
 
-            // Enforce max batch count (remove oldest if exceeded)
-            enforceMaxBatchCount()
-
-            return true
-        } catch {
-            NSLog("[BeAroundSDK] Failed to save batch: %@", error.localizedDescription)
-            return false
-        }
-    }
-
-    /// Saves a batch and returns its persistent identifier (the on-disk filename), so the
-    /// caller can remove exactly this batch later (used by persist-before-send: persist
-    /// before the upload starts, remove THIS batch on success, leave it on failure).
-    /// - Parameter beacons: Array of beacons to store
-    /// - Returns: The batch identifier (filename) if saved, otherwise nil
-    func saveBatchReturningId(_ beacons: [Beacon]) -> String? {
-        guard let directory = storageDirectory else { return nil }
-        guard !beacons.isEmpty else { return nil }
-
-        let batchId = UUID().uuidString
-        let timestamp = Date()
-
-        let storedBeacons = beacons.map { StoredBeacon(from: $0) }
-        let batch = StoredBatch(id: batchId, timestamp: timestamp, beacons: storedBeacons)
-
-        let timestampInt = Int(timestamp.timeIntervalSince1970)
-        let filename = "\(timestampInt)_\(batchId).json"
-        let fileURL = directory.appendingPathComponent(filename)
-
-        do {
-            let encoder = JSONEncoder()
-            encoder.dateEncodingStrategy = .iso8601
-            let data = try encoder.encode(batch)
-            try data.write(to: fileURL, options: .atomic)
-            NSLog("[BeAroundSDK] Persisted batch (pre-send) with %d beacons to %@", beacons.count, filename)
-
-            enforceMaxBatchCount()
+            _enforceMaxBatchCount()
             return filename
         } catch {
-            NSLog("[BeAroundSDK] Failed to persist batch (pre-send): %@", error.localizedDescription)
+            NSLog("[BeAroundSDK] Failed to persist batch: %@", error.localizedDescription)
             return nil
         }
     }
 
-    /// Removes a specific batch by its identifier (filename). Call after the batch was
-    /// successfully delivered so it is not re-sent on the next drain.
-    /// - Parameter id: The batch identifier returned by `saveBatchReturningId`
-    /// - Returns: true if the batch was removed
-    @discardableResult
-    func removeBatch(id: String) -> Bool {
+    private func _removeBatch(id: String) -> Bool {
         guard let directory = storageDirectory else { return false }
         guard !id.isEmpty else { return false }
 
@@ -247,17 +306,7 @@ class OfflineBatchStorage {
         }
     }
 
-    /// Loads the oldest batch from storage (FIFO)
-    /// - Returns: Array of beacons or nil if no batches available
-    func loadOldestBatch() -> [Beacon]? {
-        let batches = loadOldestBatches(1)
-        return batches.first
-    }
-
-    /// Loads the N oldest batches from storage (FIFO)
-    /// - Parameter count: Maximum number of batches to load
-    /// - Returns: Array of beacon arrays, ordered oldest first
-    func loadOldestBatches(_ count: Int) -> [[Beacon]] {
+    private func _loadOldestRecords(_ count: Int) -> [StoredBatchRecord] {
         guard let directory = storageDirectory else { return [] }
 
         guard let files = try? fileManager.contentsOfDirectory(atPath: directory.path) else {
@@ -265,7 +314,7 @@ class OfflineBatchStorage {
         }
 
         let jsonFiles = files.filter { $0.hasSuffix(".json") }.sorted()
-        var batches: [[Beacon]] = []
+        var records: [StoredBatchRecord] = []
 
         for filename in jsonFiles.prefix(count) {
             let fileURL = directory.appendingPathComponent(filename)
@@ -275,29 +324,30 @@ class OfflineBatchStorage {
                 let decoder = JSONDecoder()
                 decoder.dateDecodingStrategy = .iso8601
                 let batch = try decoder.decode(StoredBatch.self, from: data)
-                batches.append(batch.beacons.map { $0.toBeacon() })
+
+                // Quarantine corruption instead of masking it (see StoredBeacon.toBeacon):
+                // drop unparseable beacons; a batch left with none is deleted outright.
+                let beacons = batch.beacons.compactMap { $0.toBeacon() }
+                let dropped = batch.beacons.count - beacons.count
+                if dropped > 0 {
+                    NSLog("[BeAroundSDK] Dropped %d corrupted beacon(s) from batch %@", dropped, filename)
+                    DiagnosticsStore.shared.recordError("Corrupted beacon(s) dropped from stored batch \(filename)")
+                }
+                guard !beacons.isEmpty else {
+                    try? fileManager.removeItem(at: fileURL)
+                    continue
+                }
+                records.append(StoredBatchRecord(id: filename, beacons: beacons))
             } catch {
                 NSLog("[BeAroundSDK] Failed to load batch %@: %@", filename, error.localizedDescription)
                 try? fileManager.removeItem(at: fileURL)
             }
         }
 
-        NSLog("[BeAroundSDK] Loaded %d oldest batches from storage", batches.count)
-        return batches
+        return records
     }
 
-    /// Removes the oldest batch from storage (call after successful sync)
-    /// - Returns: true if removed successfully
-    @discardableResult
-    func removeOldestBatch() -> Bool {
-        return removeOldestBatches(1) == 1
-    }
-
-    /// Removes the N oldest batches from storage
-    /// - Parameter count: Number of batches to remove
-    /// - Returns: Number of batches actually removed
-    @discardableResult
-    func removeOldestBatches(_ count: Int) -> Int {
+    private func _removeOldest(_ count: Int) -> Int {
         guard let directory = storageDirectory else { return 0 }
 
         guard let files = try? fileManager.contentsOfDirectory(atPath: directory.path) else {
@@ -323,41 +373,7 @@ class OfflineBatchStorage {
         return removedCount
     }
 
-    /// Loads all batches from storage (for migration or debugging)
-    /// - Returns: Array of beacon arrays, ordered oldest first
-    func loadAllBatches() -> [[Beacon]] {
-        guard let directory = storageDirectory else { return [] }
-
-        guard let files = try? fileManager.contentsOfDirectory(atPath: directory.path) else {
-            return []
-        }
-
-        let jsonFiles = files.filter { $0.hasSuffix(".json") }.sorted()
-        var allBatches: [[Beacon]] = []
-
-        for filename in jsonFiles {
-            let fileURL = directory.appendingPathComponent(filename)
-
-            do {
-                let data = try Data(contentsOf: fileURL)
-                let decoder = JSONDecoder()
-                decoder.dateDecodingStrategy = .iso8601
-                let batch = try decoder.decode(StoredBatch.self, from: data)
-                let beacons = batch.beacons.map { $0.toBeacon() }
-                allBatches.append(beacons)
-            } catch {
-                NSLog("[BeAroundSDK] Failed to load batch %@: %@", filename, error.localizedDescription)
-                // Remove corrupted file
-                try? fileManager.removeItem(at: fileURL)
-            }
-        }
-
-        NSLog("[BeAroundSDK] Loaded %d batches from storage", allBatches.count)
-        return allBatches
-    }
-
-    /// Clears all stored batches
-    func clearAllBatches() {
+    private func _clearAll() {
         guard let directory = storageDirectory else { return }
 
         guard let files = try? fileManager.contentsOfDirectory(atPath: directory.path) else {
@@ -372,9 +388,7 @@ class OfflineBatchStorage {
         NSLog("[BeAroundSDK] Cleared all stored batches")
     }
 
-    // MARK: - Private Methods
-
-    private func createStorageDirectoryIfNeeded() {
+    private func _createStorageDirectoryIfNeeded() {
         guard let directory = storageDirectory else { return }
 
         if !fileManager.fileExists(atPath: directory.path) {
@@ -387,7 +401,7 @@ class OfflineBatchStorage {
         }
     }
 
-    private func cleanupExpiredBatches() {
+    private func _cleanupExpiredBatches() {
         guard let directory = storageDirectory else { return }
 
         guard let files = try? fileManager.contentsOfDirectory(atPath: directory.path) else {
@@ -420,7 +434,7 @@ class OfflineBatchStorage {
         }
     }
 
-    private func enforceMaxBatchCount() {
+    private func _enforceMaxBatchCount() {
         guard let directory = storageDirectory else { return }
 
         guard let files = try? fileManager.contentsOfDirectory(atPath: directory.path) else {
@@ -429,7 +443,7 @@ class OfflineBatchStorage {
 
         var jsonFiles = files.filter { $0.hasSuffix(".json") }.sorted()
 
-        while jsonFiles.count > maxBatchCount {
+        while jsonFiles.count > _maxBatchCount {
             // Remove oldest file (first in sorted list)
             if let oldestFile = jsonFiles.first {
                 let fileURL = directory.appendingPathComponent(oldestFile)

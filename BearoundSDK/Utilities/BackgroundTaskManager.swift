@@ -126,6 +126,21 @@ public class BackgroundTaskManager {
         NSLog("[BeAroundSDK] Cancelled pending background tasks")
     }
 
+    /// Wraps `setTaskCompleted` in a complete-once gate: the expiration handler
+    /// and the async completion can BOTH fire (expiration first, sync completion
+    /// arriving late) — completing the same BGTask twice is an API violation.
+    private static func makeCompleteOnce(_ complete: @escaping (Bool) -> Void) -> (Bool) -> Void {
+        let lock = NSLock()
+        var done = false
+        return { success in
+            lock.lock()
+            let first = !done
+            done = true
+            lock.unlock()
+            if first { complete(success) }
+        }
+    }
+
     /// Handles the sync task when executed by the system (short execution ~30s)
     /// Refreshes BLE scan for 3s to collect Service Data, then syncs
     private func handleSyncTask(_ task: BGAppRefreshTask) {
@@ -134,16 +149,18 @@ public class BackgroundTaskManager {
         // Schedule the next sync before processing
         scheduleSync()
 
+        let completeOnce = Self.makeCompleteOnce { task.setTaskCompleted(success: $0) }
+
         // Set expiration handler
         task.expirationHandler = {
             NSLog("[BeAroundSDK] BGAppRefreshTask expired")
-            task.setTaskCompleted(success: false)
+            completeOnce(false)
         }
 
         // Refresh BLE scan (3s collection) then sync
         BeAroundSDK.shared.performBackgroundBLERefreshAndSync(bleScanDuration: 3.0, trigger: "bg_task_refresh") { success in
             NSLog("[BeAroundSDK] BGAppRefreshTask completed (success=%d)", success ? 1 : 0)
-            task.setTaskCompleted(success: success)
+            completeOnce(success)
         }
     }
 
@@ -155,21 +172,24 @@ public class BackgroundTaskManager {
         // Schedule the next processing task before starting
         scheduleProcessingTask()
 
+        let completeOnce = Self.makeCompleteOnce { task.setTaskCompleted(success: $0) }
+
         // Set expiration handler
         task.expirationHandler = {
             NSLog("[BeAroundSDK] BGProcessingTask expired")
-            task.setTaskCompleted(success: false)
+            completeOnce(false)
         }
 
         // Refresh BLE scan (5s collection — more time available) then sync
         BeAroundSDK.shared.performBackgroundBLERefreshAndSync(bleScanDuration: 5.0, trigger: "bg_task_processing") { success in
             NSLog("[BeAroundSDK] BGProcessingTask completed (success=%d)", success ? 1 : 0)
-            task.setTaskCompleted(success: success)
+            completeOnce(success)
         }
     }
 }
 
 // MARK: - Fallback for iOS < 13
+@available(*, deprecated, message: "No-op: BGTaskScheduler requires iOS 13+, which is already the SDK floor. Will be removed in a future major.")
 public class BackgroundTaskManagerLegacy {
     public static let shared = BackgroundTaskManagerLegacy()
 

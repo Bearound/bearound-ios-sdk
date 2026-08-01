@@ -126,8 +126,18 @@ class BluetoothManager: NSObject {
     /// Cleanup interval for expired beacons
     private let cleanupInterval: TimeInterval = 5.0
 
-    /// Tracked beacons with last-seen timestamps
+    /// Tracked beacons with last-seen timestamps.
+    /// Mutated exclusively on `bleQueue` (didDiscover / cleanup timer). External
+    /// readers must use `trackedBeaconsSnapshot()` — copying the dictionary from
+    /// another queue while the cleanup timer mutates it is a CoW data race.
     private(set) var trackedBeacons: [String: TrackedBLEBeacon] = [:]
+
+    /// Thread-safe immutable snapshot of `trackedBeacons` for readers outside
+    /// `bleQueue` (SDK merge/enrichment on beaconQueue, CL callbacks on main,
+    /// public diagnostics). Safe to call from any queue EXCEPT bleQueue itself.
+    func trackedBeaconsSnapshot() -> [String: TrackedBLEBeacon] {
+        bleQueue.sync { trackedBeacons }
+    }
 
     /// Last time ANY beacon ad was received, independent of `trackedBeacons` cleanup.
     /// Used by zone-presence and active-grace evaluators so they survive the cleanup
@@ -188,6 +198,15 @@ class BluetoothManager: NSObject {
     /// — acceptable because the Location eye (region monitoring) emits exit on its own
     /// channel sooner when GPS confirms departure.
     private let zoneExitGracePeriod: TimeInterval = 300.0
+
+    /// After returning to foreground, exit evaluation is suppressed until this
+    /// deadline. While backgrounded the [0xBEAD] filter is blind to fw ≤ v5
+    /// beacons, so `lastBeaconSeenAt` can be arbitrarily old on foreground entry —
+    /// without this window the first zone-presence tick would declare an EXIT
+    /// before the freshly restarted nil-filter scan has a chance to re-see the
+    /// beacon that is physically still there. Owned by bleQueue.
+    private var foregroundRecoveryDeadline: Date?
+    private let foregroundRecoveryGrace: TimeInterval = 8.0
 
     /// Timer that checks tracked beacons and flips the zone state when grace expires.
     private var zonePresenceTimer: DispatchSourceTimer?
@@ -258,14 +277,15 @@ class BluetoothManager: NSObject {
         centralManager.state == .poweredOn
     }
 
-    /// Diagnostic info for debugging BLE issues
+    /// Diagnostic info for debugging BLE issues.
+    /// Must NOT be called from `bleQueue` (uses `trackedBeaconsSnapshot()`).
     var diagnosticInfo: String {
         let state = centralManager.state.rawValue // 0=unknown,1=resetting,2=unsupported,3=unauthorized,4=poweredOff,5=poweredOn
         var btAuth = -1
         if #available(iOS 13.1, *) {
             btAuth = CBCentralManager.authorization.rawValue // 0=notDetermined,1=restricted,2=denied,3=allowedAlways
         }
-        return "CBState=\(state) btAuth=\(btAuth) scanning=\(isScanning) pending=\(pendingAutoStart) tracked=\(trackedBeacons.count)"
+        return "CBState=\(state) btAuth=\(btAuth) scanning=\(isScanning) pending=\(pendingAutoStart) tracked=\(trackedBeaconsSnapshot().count)"
     }
 
     override init() {
@@ -326,6 +346,12 @@ class BluetoothManager: NSObject {
 
     @objc private func appWillEnterForeground() {
         isInBackground = false
+        // Give the unfiltered scan a beat to re-see ≤ v5 beacons before the zone
+        // presence timer is allowed to declare an exit (see foregroundRecoveryDeadline).
+        bleQueue.async { [weak self] in
+            guard let self else { return }
+            self.foregroundRecoveryDeadline = Date().addingTimeInterval(self.foregroundRecoveryGrace)
+        }
         // No demotion here — the regular activeToIdleGrace will demote us back to IDLE
         // when beacons stop being seen. Foreground arrival itself doesn't change scan mode.
         if isScanning {
@@ -417,7 +443,12 @@ class BluetoothManager: NSObject {
     func stopScanning() {
         // Always cancel any pending auto-start so a deferred BT power-on doesn't
         // sneak a scan back in after we asked to stop (e.g. after region exit).
+        // Same for the power-recovery resume flag: if BT powered off mid-scan we
+        // set isScanning=false + shouldResumeAfterPowerRecovery=true, so a stop
+        // request in that window would hit the guard below and leave the flag
+        // armed — resurrecting the scan on power-on after the host said stop.
         pendingAutoStart = false
+        shouldResumeAfterPowerRecovery = false
 
         guard isScanning else { return }
 
@@ -427,9 +458,15 @@ class BluetoothManager: NSObject {
         stopZonePresenceTimer()
         stopDutyCycleTimer()
         nextIdleScanAt = nil
-        lastSeenBeacons.removeAll()
-        trackedBeacons.removeAll()
-        lastBeaconSeenAt = nil
+        // Collection state is owned by bleQueue (didDiscover / cleanup timer both
+        // run there) — clear it on that queue instead of racing a mid-flight tick.
+        bleQueue.async { [weak self] in
+            guard let self else { return }
+            self.lastSeenBeacons.removeAll()
+            self.trackedBeacons.removeAll()
+            self.lastBeaconSeenAt = nil
+            self.foregroundRecoveryDeadline = nil
+        }
 
         // Scanner OFF is a lifecycle fact, not a presence fact. Drop the internal
         // zone state (so a later start re-detects cleanly) but do NOT fabricate a
@@ -757,6 +794,18 @@ class BluetoothManager: NSObject {
                   elapsed, isInBackground ? 1 : 0, locationEyeSaysInside ? 1 : 0)
             onBluetoothVisibilityStale?(elapsed)
             return
+        }
+
+        // Just returned to foreground: lastBeaconSeenAt is stale by construction
+        // (background filter was blind to ≤ v5 beacons). Hold the exit until the
+        // unfiltered scan has had `foregroundRecoveryGrace` to re-see them.
+        if let deadline = foregroundRecoveryDeadline {
+            if Date() < deadline {
+                NSLog("[BluetoothManager] BLE exit deferred — foreground recovery window (%.0fs left)",
+                      deadline.timeIntervalSinceNow)
+                return
+            }
+            foregroundRecoveryDeadline = nil
         }
 
         isInBluetoothZone = false

@@ -67,30 +67,6 @@ final class DeviceInfoCollector: @unchecked Sendable {
 		permissionLock.unlock()
 	}
 
-	private func updateNotificationPermissionCacheSync() {
-		UNUserNotificationCenter.current().getNotificationSettings { [weak self] settings in
-			guard let self else { return }
-
-			let status =
-				switch settings.authorizationStatus {
-				case .authorized:
-					"authorized"
-				case .denied:
-					"denied"
-				case .notDetermined:
-					"not_determined"
-				case .provisional:
-					"provisional"
-				case .ephemeral:
-					"ephemeral"
-				@unknown default:
-					"unknown"
-				}
-
-			self.updateCachedPermission(status)
-		}
-	}
-
 	func collectDeviceInfo(
 		locationPermission: CLAuthorizationStatus,
 		bluetoothState: String,
@@ -204,33 +180,10 @@ final class DeviceInfoCollector: @unchecked Sendable {
 
 	private func networkType() -> String {
 		if #available(iOS 12.0, *) {
-			let monitor = NWPathMonitor()
-			let semaphore = DispatchSemaphore(value: 0)
-			var result = "none"
-			
-			monitor.pathUpdateHandler = { path in
-				if path.status == .satisfied {
-					if path.usesInterfaceType(.cellular) {
-						result = "cellular"
-					} else if path.usesInterfaceType(.wifi) {
-						result = "wifi"
-					} else if path.usesInterfaceType(.wiredEthernet) {
-						result = "wifi"
-					} else {
-						result = "wifi"
-					}
-				} else {
-					result = "none"
-				}
-				semaphore.signal()
-			}
-			
-			let queue = DispatchQueue(label: "com.bearound.network.monitor")
-			monitor.start(queue: queue)
-			_ = semaphore.wait(timeout: .now() + 0.5)
-			monitor.cancel()
-			
-			return result
+			// Long-lived monitor with an instant snapshot — the old code spun up
+			// a fresh NWPathMonitor and blocked on a semaphore (≤0.5s) on every
+			// read, and this method is called up to 3× per collection.
+			return NetworkSnapshotProvider.shared.current
 		} else {
 			// Fallback for iOS < 12.0
 			var zeroAddress = sockaddr_in()

@@ -82,6 +82,7 @@ final class BackgroundSessionManager: NSObject {
     func upload(
         request: URLRequest,
         bodyData: Data,
+        persistedBatchIds: [String] = [],
         completion: @escaping (Result<Void, Error>) -> Void
     ) {
         let fileURL = FileManager.default.temporaryDirectory
@@ -95,6 +96,13 @@ final class BackgroundSessionManager: NSObject {
         }
 
         let task = session.uploadTask(with: request, fromFile: fileURL)
+        // taskDescription survives process death with the task (the background
+        // daemon persists it). It carries the persisted-batch id(s) this upload
+        // represents, so didCompleteWithError can reconcile OfflineBatchStorage
+        // even when the in-memory `completions` map died with the old process.
+        if !persistedBatchIds.isEmpty {
+            task.taskDescription = persistedBatchIds.joined(separator: ",")
+        }
         lock.lock()
         completions[task.taskIdentifier] = completion
         responseData[task.taskIdentifier] = Data()
@@ -124,7 +132,22 @@ extension BackgroundSessionManager: URLSessionTaskDelegate {
 
         if let fileURL { try? FileManager.default.removeItem(at: fileURL) }
 
-        guard let completion else { return }
+        guard let completion else {
+            // Orphaned task: the process that created it died and this is the
+            // background-relaunch delivery. Nobody is waiting on the completion,
+            // but the persisted batch still needs reconciling — on SUCCESS it
+            // must be removed, or the retry drain re-sends it (duplicate event).
+            // On failure we intentionally do nothing: the batch stays queued.
+            let isSuccess = error == nil
+                && (task.response as? HTTPURLResponse).map { (200..<300).contains($0.statusCode) } == true
+            if isSuccess, let ids = task.taskDescription?.split(separator: ",").map(String.init), !ids.isEmpty {
+                let removed = OfflineBatchStorage.shared.removeBatches(ids: ids)
+                NSLog("[BeAroundSDK] Orphaned upload task %d succeeded after relaunch — reconciled %d persisted batch(es)", taskId, removed)
+            } else {
+                NSLog("[BeAroundSDK] Orphaned upload task %d completed (success=%d, no batch ids) — nothing to reconcile", taskId, isSuccess ? 1 : 0)
+            }
+            return
+        }
 
         if let error {
             NSLog("[BeAroundSDK] Upload task %d failed: %@", taskId, error.localizedDescription)
@@ -214,6 +237,10 @@ class APIClient {
         sessionManager.ensureSessionAlive()
     }
 
+    /// `persistedBatchIds`: OfflineBatchStorage id(s) backing this payload. They ride on the
+    /// background task's `taskDescription` so a task that outlives the process can still
+    /// reconcile (remove) its batches on success after relaunch. Empty for payloads with no
+    /// durable copy (e.g. register).
     func sendBeacons(
         _ beacons: [Beacon],
         sdkInfo: SDKInfo,
@@ -221,6 +248,7 @@ class APIClient {
         userProperties: UserProperties?,
         syncTrigger: String = "unknown",
         delivery: DeliveryPath = .background,
+        persistedBatchIds: [String] = [],
         completion: @escaping (Result<Void, Error>) -> Void
     ) {
         // Empty-beacons payloads are valid: syncTrigger="register" sends beacons:[] intentionally.
@@ -311,10 +339,10 @@ class APIClient {
         switch delivery {
         case .background:
             NSLog("[BeAroundSDK] Sending %d beacon(s) to %@ trigger=%@ (background upload)", beacons.count, url.absoluteString, syncTrigger)
-            sessionManager.upload(request: request, bodyData: bodyData, completion: completion)
+            sessionManager.upload(request: request, bodyData: bodyData, persistedBatchIds: persistedBatchIds, completion: completion)
         case .immediateFirst:
             NSLog("[BeAroundSDK] Sending %d beacon(s) to %@ trigger=%@ (immediate upload)", beacons.count, url.absoluteString, syncTrigger)
-            sendImmediate(request: request, bodyData: bodyData, completion: completion)
+            sendImmediate(request: request, bodyData: bodyData, persistedBatchIds: persistedBatchIds, completion: completion)
         }
     }
 
@@ -323,6 +351,7 @@ class APIClient {
     private func sendImmediate(
         request: URLRequest,
         bodyData: Data,
+        persistedBatchIds: [String],
         completion: @escaping (Result<Void, Error>) -> Void
     ) {
         var immediateRequest = request
@@ -334,7 +363,7 @@ class APIClient {
                 // never reached the backend — re-queue on the durable background session.
                 NSLog("[BeAroundSDK] Immediate upload transport failure (%@) — falling back to background session", error.localizedDescription)
                 DetectionLogStore.append(type: "Sync", detail: "envio imediato falhou (\(error.localizedDescription)) — fallback para background session")
-                sessionManager.upload(request: request, bodyData: bodyData, completion: completion)
+                sessionManager.upload(request: request, bodyData: bodyData, persistedBatchIds: persistedBatchIds, completion: completion)
                 return
             }
 

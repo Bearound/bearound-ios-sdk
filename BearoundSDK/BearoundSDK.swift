@@ -66,6 +66,27 @@ public class BeAroundSDK {
         bluetoothManager.isScanning || beaconManager.isScanning
     }
 
+    /// P5 — arms the Location eye when authorization arrives AFTER startScanning().
+    /// Uses the persisted scanning intent (not the derived isScanning) so the case
+    /// "host asked to scan but every eye was gated off" also recovers.
+    private func startLocationEyeIfAuthorizedAndWanted() {
+        guard configuration != nil,
+              SDKConfigStorage.loadIsScanning(),
+              !beaconManager.isScanning else { return }
+
+        let status = Self.authorizationStatus()
+        guard status == .authorizedWhenInUse || status == .authorizedAlways else { return }
+        if #available(iOS 14.0, *),
+           Self.authQueryManager.accuracyAuthorization == .reducedAccuracy {
+            NSLog("[BeAroundSDK] Precise Location OFF — Location eye stays off")
+            return
+        }
+
+        NSLog("[BeAroundSDK] Location authorization granted post-start — arming the Location eye")
+        beaconManager.startScanning()
+        updateBleOnlyContinuousScanFlag()
+    }
+
     public var currentScanPrecision: ScanPrecision? {
         configuration?.scanPrecision
     }
@@ -183,9 +204,22 @@ public class BeAroundSDK {
     private let bluetoothManager = BluetoothManager()
     private var apiClient: APIClient?
 
+    /// Telemetry metadata by "major.minor" key. Written from bleQueue
+    /// (didDiscoverBeacon) and read from main (CL enrichment callback) — every
+    /// access must go through `metadataCacheLock`.
     private var metadataCache: [String: BeaconMetadata] = [:]
+    private let metadataCacheLock = NSLock()
+
+    private func cachedMetadata(for key: String) -> BeaconMetadata? {
+        metadataCacheLock.lock(); defer { metadataCacheLock.unlock() }
+        return metadataCache[key]
+    }
+
+    private func cacheMetadata(_ metadata: BeaconMetadata, for key: String) {
+        metadataCacheLock.lock(); defer { metadataCacheLock.unlock() }
+        metadataCache[key] = metadata
+    }
     private var syncTimer: DispatchSourceTimer?
-    private var dutyCycleTimer: DispatchSourceTimer?
     private var collectedBeacons: [String: Beacon] = [:]
     /// Sampling model with volume containment: the SAME beacon re-syncs at most once
     /// per this interval (Android-parity 60 s). Keeps the per-sample ingest contract
@@ -196,7 +230,7 @@ public class BeAroundSDK {
     private let beaconQueue = DispatchQueue(label: "com.bearound.sdk.beaconQueue")
     private var isSyncing = false
 
-    private let offlineBatchStorage = OfflineBatchStorage()
+    private let offlineBatchStorage = OfflineBatchStorage.shared
 
     private var consecutiveFailures = 0
     private var lastFailureTime: Date?
@@ -215,14 +249,16 @@ public class BeAroundSDK {
 
     /// Timestamp of the last debounced immediate sync (Fix 2/6). Guards edge-triggered syncs
     /// (e.g. a flapping Bluetooth zone) from spamming the ingester.
-    private var lastDebouncedSyncTime: Date?
-    private let debouncedSyncQueue = DispatchQueue(label: "com.bearound.sdk.debouncedSync")
 
     // MARK: - Initialization
 
     private init() {
         let appState = UIApplication.shared.applicationState
-        wasLaunchedInBackground = appState != .active
+        // Only a REAL background launch counts. A normal foreground launch passes
+        // through `.inactive` during didFinishLaunching — the old `!= .active`
+        // check classified it as background, auto-configured from storage, opened
+        // a relaunch assertion and started scanning before the host asked.
+        wasLaunchedInBackground = appState == .background
 
         if wasLaunchedInBackground {
             isInBackground = true
@@ -267,6 +303,9 @@ public class BeAroundSDK {
 
         guard let savedConfig = SDKConfigStorage.load() else {
             NSLog("[BeAroundSDK] No saved configuration for background relaunch")
+            // No work to do — release the relaunch assertion instead of holding it
+            // until the system expires it.
+            endRelaunchWindowTask()
             return
         }
 
@@ -290,6 +329,9 @@ public class BeAroundSDK {
             // Fix 1 — re-instantiate the background session with the same identifier so any
             // pending background-upload delegate callbacks from before termination are delivered.
             apiClient?.ensureBackgroundSessionAlive()
+            // Scanning stays off — no cold-start ranging will run, so nothing else
+            // would ever close this assertion. Release it now.
+            endRelaunchWindowTask()
             return
         }
 
@@ -377,10 +419,13 @@ public class BeAroundSDK {
         beaconManager.onBeaconsUpdated = { [weak self] beacons in
             guard let self else { return }
 
+            // P1 — snapshot once per callback instead of racing the bleQueue's
+            // cleanup timer with per-key dictionary reads from this (main) thread.
+            let trackedSnapshot = self.bluetoothManager.trackedBeaconsSnapshot()
             let enrichedBeacons = beacons.map { beacon -> Beacon in
                 let key = "\(beacon.major).\(beacon.minor)"
-                let bleTracked = self.bluetoothManager.trackedBeacons[key]
-                let metadata = bleTracked?.metadata ?? self.metadataCache[key]
+                let bleTracked = trackedSnapshot[key]
+                let metadata = bleTracked?.metadata ?? self.cachedMetadata(for: key)
 
                 var sources: Set<BeaconDiscoverySource> = [.coreLocation]
                 if bleTracked != nil {
@@ -568,7 +613,13 @@ public class BeAroundSDK {
         // E.g. the user grants "Always" later — region monitoring becomes available, so the BLE
         // eye may resume the idle duty cycle. Or it gets revoked — the eye must stay active.
         beaconManager.onAuthorizationChanged = { [weak self] in
-            self?.updateBleOnlyContinuousScanFlag()
+            guard let self else { return }
+            self.updateBleOnlyContinuousScanFlag()
+            // Location granted AFTER startScanning(): the Location eye was gated off
+            // at start (the SDK only calls beaconManager.startScanning when already
+            // authorized) and nothing re-armed it — the eye stayed dead until the
+            // host called startScanning() again. Arm it here.
+            self.startLocationEyeIfAuthorizedAndWanted()
         }
 
         bluetoothManager.delegate = self
@@ -588,7 +639,7 @@ public class BeAroundSDK {
             // only "user is at a beacon" signal when the app was relaunched via Bluetooth state
             // restoration) must trigger an ingest, not just a delegate callback. Debounced so a
             // flapping zone can't spam the ingester.
-            self.syncBeaconsDebounced(trigger: "bluetooth_zone_enter")
+            self.requestSync(reason: "bluetooth_zone_enter")
         }
 
         bluetoothManager.onBluetoothZoneExit = { [weak self] in
@@ -682,7 +733,7 @@ public class BeAroundSDK {
                 // Drive sync from detection: timer is suspended in deep background, so the
                 // BT-eye wake is the only chance to upload. Debounced.
                 if !trackedBeacons.isEmpty {
-                    self.syncBeaconsDebounced(trigger: "ble_detection")
+                    self.requestSync(reason: "ble_detection")
                 }
 
                 DispatchQueue.main.async {
@@ -1052,7 +1103,7 @@ public class BeAroundSDK {
             case .success:
                 NSLog("[BeAroundSDK] Device register succeeded — persisting lastSentAt + fingerprint")
                 RegisterStore.markRegistered(fingerprint: fingerprint)
-                PushTokenStore.markSent()
+                PushTokenStore.markSent(userDevice.pushToken)
             case .failure(let error):
                 NSLog("[BeAroundSDK] Device register failed: %@ — will retry on next startScanning()", error.localizedDescription)
                 DiagnosticsStore.shared.recordError("register: \(error.localizedDescription)")
@@ -1136,55 +1187,9 @@ public class BeAroundSDK {
         NSLog("[BeAroundSDK] Precision %@: continuous scan, sync every %.0fs", precision.rawValue, cycleInterval)
     }
 
-    /// Runs N duty cycles of scan+pause for BLE and CL
-    private func startDutyCycles(scanDuration: TimeInterval, pauseDuration: TimeInterval, cycleCount: Int) {
-        stopDutyCycleTimer()
-
-        var currentCycle = 0
-
-        func runCycle() {
-            guard currentCycle < cycleCount else { return }
-
-            // START scanning — BLE only. CL ranging is not used in steady-state
-            // (see doctrine note in startSyncTimer above).
-            self.bluetoothManager.resumeScanning()
-
-            NSLog("[BeAroundSDK] Duty cycle %d/%d START (scan %.0fs)", currentCycle + 1, cycleCount, scanDuration)
-
-            // After scanDuration, PAUSE
-            DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + scanDuration) { [weak self] in
-                guard let self else { return }
-
-                self.bluetoothManager.pauseScanning()
-                if self.beaconManager.isScanning {
-                    self.beaconManager.pauseRanging()
-                }
-
-                NSLog("[BeAroundSDK] Duty cycle %d/%d PAUSE (%.0fs)", currentCycle + 1, cycleCount, pauseDuration)
-
-                currentCycle += 1
-
-                // If more cycles remain, schedule next one after pause
-                if currentCycle < cycleCount {
-                    DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + pauseDuration) {
-                        runCycle()
-                    }
-                }
-            }
-        }
-
-        runCycle()
-    }
-
     private func stopSyncTimer() {
         syncTimer?.cancel()
         syncTimer = nil
-        stopDutyCycleTimer()
-    }
-
-    private func stopDutyCycleTimer() {
-        dutyCycleTimer?.cancel()
-        dutyCycleTimer = nil
     }
 
     // MARK: - Beacon Cleanup & Merge
@@ -1219,7 +1224,7 @@ public class BeAroundSDK {
     /// Merge BLE-tracked beacons into collectedBeacons for sync
     /// Adds BLE-only beacons and enriches existing beacons with Service UUID source
     private func mergeBLEBeacons() {
-        let bleTracked = bluetoothManager.trackedBeacons
+        let bleTracked = bluetoothManager.trackedBeaconsSnapshot()
         guard !bleTracked.isEmpty else { return }
 
         let targetUUID = BeaconConstants.uuid
@@ -1303,7 +1308,18 @@ public class BeAroundSDK {
     }
     /// Foreground fast-path floor: a dirty sample may trigger an upload this soon after
     /// the previous one (HIGH). The 15 s precision timer remains as the fallback tick.
-    private let foregroundMinimumSyncInterval: TimeInterval = 5.0
+    /// P11 — the fast-path floor scales with the configured precision: MEDIUM/LOW
+    /// hosts chose economy, so dirty samples must not drive HIGH-like cadence.
+    /// FOREGROUND ONLY: the background path (1s batch window + detection-driven
+    /// flush) is the delivery fix validated in the field and stays untouched.
+    private var foregroundMinimumSyncInterval: TimeInterval {
+        switch configuration?.scanPrecision {
+        case .high: return 5.0
+        case .medium: return 20.0
+        case .low: return 60.0
+        case .none: return 5.0
+        }
+    }
     /// Background: real callbacks open a short batch window, collect everything that
     /// arrives, then upload once — work fast and return, per Apple's bg guidance.
     private let backgroundBatchWindow: TimeInterval = 1.0
@@ -1413,27 +1429,12 @@ public class BeAroundSDK {
                     }
                     NSLog("[BeAroundSDK] First-valid-beacon probe (%.1fs): valid beacon present — syncing", delay)
                     // Debounced so the two probes (and a concurrent t+25s sync) don't double-fire.
-                    self.syncBeaconsDebounced(trigger: "first_valid_beacon")
+                    self.requestSync(reason: "first_valid_beacon")
                 }
             }
         }
     }
 
-    /// Fires an immediate sync but at most once per `minInterval` seconds. Used by
-    /// edge-triggered callers (Bluetooth-zone-enter, first-valid-beacon) so a flapping
-    /// signal cannot spam the ingester. Thread-safe via `debouncedSyncQueue`.
-    /// - Parameters:
-    ///   - trigger: The `syncTrigger` to tag the sync with.
-    ///   - minInterval: Minimum seconds between two debounced syncs (default 10s).
-    private func syncBeaconsDebounced(trigger: String, minInterval: TimeInterval = 10) {
-        // Facade kept for call-site compatibility — throttling now lives in the sync
-        // coordinator (fg fast-path floor / bg batch window), which also queues a
-        // request that lands mid-upload instead of dropping it.
-        requestSync(reason: trigger)
-        if false {
-            _ = minInterval
-        }
-    }
 
     private func syncBeacons() {
         beaconQueue.async { [weak self] in
@@ -1478,7 +1479,13 @@ public class BeAroundSDK {
                 NSLog("[BeAroundSDK] No new beacons to sync")
                 // No new beacons — drain retry queue if pending batches exist
                 if self.shouldRetryFailedBatches() {
+                    // The drain resolves the settled-waiters at ITS terminals.
                     self.drainRetryQueue()
+                } else {
+                    // P18 — nothing to send and nothing to drain: release any parked
+                    // BGTask/push waiters NOW instead of letting them burn their
+                    // full timeout window.
+                    self.notifySyncSettled(success: true)
                 }
                 self.syncDidFinishCoordination()
                 return
@@ -1512,6 +1519,19 @@ public class BeAroundSDK {
             // net that guarantees eventual delivery even if the completion arrives after the
             // app has been relaunched. `persistedBatchId` is the on-disk filename of the batch.
             let persistedBatchId = self.offlineBatchStorage.saveBatchReturningId(beaconsToSend)
+            // P20 — persist-before-send failed (disk full / data protection / no App
+            // Support dir): the upload still goes out — blocking it would guarantee
+            // the loss the persistence exists to prevent — but the durability gap is
+            // real (a crash mid-upload loses this batch), so make it VISIBLE.
+            if persistedBatchId == nil {
+                NSLog("[BeAroundSDK] WARNING: persist-before-send failed — batch flies without a durable copy")
+                DiagnosticsStore.shared.recordError("persist-before-send failed (\(beaconCount) beacons unprotected)")
+                ErrorReporter.shared.report(
+                    NSError(domain: "BeAroundSDK", code: BearoundErrorCode.storageFailure.rawValue,
+                            userInfo: [NSLocalizedDescriptionKey: "persist-before-send returned nil"]),
+                    context: "syncBeacons.persist"
+                )
+            }
 
             // Notify delegate that sync is starting
             DispatchQueue.main.async {
@@ -1537,16 +1557,18 @@ public class BeAroundSDK {
                 userDevice: userDevice,
                 userProperties: userProperties,
                 syncTrigger: trigger,
-                delivery: .immediateFirst
+                delivery: .immediateFirst,
+                persistedBatchIds: persistedBatchId.map { [$0] } ?? []
             ) { [weak self] result in
                 guard let self else { return }
 
                 switch result {
                 case .success:
                     NSLog("[BeAroundSDK] Sync SUCCESS")
-                    self.endBackgroundTask()
 
                     // Fix 3 — batch delivered: drop the persisted copy so it is never re-sent.
+                    // Reconciliation is valid even for a STALE completion (the upload really
+                    // finished) — everything below it that touches current sync state is not.
                     if let persistedBatchId {
                         self.offlineBatchStorage.removeBatch(id: persistedBatchId)
                     }
@@ -1555,8 +1577,9 @@ public class BeAroundSDK {
                     // notification). The host app reacts to didCompleteSync if it wants one.
                     DetectionLogStore.append(type: "Sync OK", detail: "\(beaconCount) beacon(s) enviados ao ingester")
 
-                    // Push token rode along in this payload and was accepted — record the heartbeat baseline.
-                    PushTokenStore.markSent()
+                    // Push token rode along in this payload and was accepted — record the
+                    // heartbeat baseline for EXACTLY the token that was sent.
+                    PushTokenStore.markSent(userDevice.pushToken)
                     DiagnosticsStore.shared.recordSync(success: true, beaconCount: beaconCount)
 
                     // Notify delegate of successful sync
@@ -1569,6 +1592,14 @@ public class BeAroundSDK {
 
                     // Mark synced + reset isSyncing in a SINGLE beaconQueue block to prevent race conditions
                     beaconQueue.async {
+                        // P2 — stale-completion guard: if the watchdog already released
+                        // THIS generation and a newer sync started, this late completion
+                        // must not touch the new sync's state (isSyncing/assertion/waiters).
+                        guard self.syncGeneration == watchdogGeneration else {
+                            NSLog("[BeAroundSDK] Stale sync completion (gen %d, current %d) — state untouched", watchdogGeneration, self.syncGeneration)
+                            return
+                        }
+                        self.endBackgroundTask()
                         self.isSyncing = false
                         self.notifySyncSettled(success: true)
                         self.syncDidFinishCoordination()
@@ -1604,7 +1635,6 @@ public class BeAroundSDK {
 
                 case .failure(let error):
                     NSLog("[BeAroundSDK] Sync FAILED: %@", error.localizedDescription)
-                    self.endBackgroundTask()
 
                     // Record to the internal detection log (diagnostic only — no user-facing
                     // notification). The host app reacts to didCompleteSync if it wants one.
@@ -1620,6 +1650,12 @@ public class BeAroundSDK {
                     }
 
                     beaconQueue.async {
+                        // P2 — stale-completion guard (see success path).
+                        guard self.syncGeneration == watchdogGeneration else {
+                            NSLog("[BeAroundSDK] Stale sync failure completion (gen %d, current %d) — state untouched", watchdogGeneration, self.syncGeneration)
+                            return
+                        }
+                        self.endBackgroundTask()
                         self.isSyncing = false
                         self.notifySyncSettled(success: false)
                         self.syncDidFinishCoordination()
@@ -1670,21 +1706,30 @@ public class BeAroundSDK {
                 NSLog("[BeAroundSDK] Retry drain skipped — sync in progress")
                 return
             }
-            guard let apiClient = self.apiClient, let sdkInfo = self.sdkInfo else { return }
+            guard let apiClient = self.apiClient, let sdkInfo = self.sdkInfo else {
+                self.notifySyncSettled(success: false)
+                return
+            }
 
             let totalPending = self.offlineBatchStorage.batchCount
             guard totalPending > 0 else {
                 NSLog("[BeAroundSDK] Retry queue empty, nothing to drain")
+                // P18 — release parked BGTask/push waiters instead of timing out.
+                self.notifySyncSettled(success: true)
                 return
             }
 
-            let chunkBatches = self.offlineBatchStorage.loadOldestBatches(Self.retryChunkSize)
-            let chunkCount = chunkBatches.count
-            let beaconsToSend = chunkBatches.flatMap { $0 }.filter { $0.rssi != 0 || $0.discoverySources.contains(.coreLocation) }
+            // P7 — id-addressed drain: remove EXACTLY the batches this chunk sent,
+            // not "the N oldest at removal time" (a save/expiry between load and
+            // remove used to shift the window onto unsent batches).
+            let chunkRecords = self.offlineBatchStorage.loadOldestBatchesWithIds(Self.retryChunkSize)
+            let chunkIds = chunkRecords.map { $0.id }
+            let chunkCount = chunkRecords.count
+            let beaconsToSend = chunkRecords.flatMap { $0.beacons }.filter { $0.rssi != 0 || $0.discoverySources.contains(.coreLocation) }
 
             guard !beaconsToSend.isEmpty else {
                 // All beacons in this chunk had rssi=0, skip and try next
-                self.offlineBatchStorage.removeOldestBatches(chunkCount)
+                self.offlineBatchStorage.removeBatches(ids: chunkIds)
                 NSLog("[BeAroundSDK] Skipped %d empty retry batches", chunkCount)
                 self.drainRetryQueue()
                 return
@@ -1692,6 +1737,19 @@ public class BeAroundSDK {
 
             self.isSyncing = true
             let beaconCount = beaconsToSend.count
+
+            // Same stuck-sync watchdog as syncBeacons — without it, a drain upload
+            // whose completion never arrives freezes the pipeline through this door.
+            self.syncGeneration += 1
+            let drainGeneration = self.syncGeneration
+            self.beaconQueue.asyncAfter(deadline: .now() + self.syncWatchdogTimeout) { [weak self] in
+                guard let self, self.isSyncing, self.syncGeneration == drainGeneration else { return }
+                NSLog("[BeAroundSDK] Drain watchdog: releasing isSyncing after %.0fs (upload still pending — batches remain persisted)", self.syncWatchdogTimeout)
+                self.isSyncing = false
+                self.endBackgroundTask()
+                self.notifySyncSettled(success: false)
+                self.syncDidFinishCoordination()
+            }
 
             NSLog("[BeAroundSDK] Retry drain: sending chunk of %d batches (%d beacons), %d total pending",
                   chunkCount, beaconCount, totalPending)
@@ -1718,20 +1776,24 @@ public class BeAroundSDK {
                 userDevice: userDevice,
                 userProperties: self.userProperties,
                 syncTrigger: "retry_drain",
-                delivery: .immediateFirst
+                delivery: .immediateFirst,
+                persistedBatchIds: chunkIds
             ) { [weak self] result in
                 guard let self else { return }
 
                 switch result {
                 case .success:
                     NSLog("[BeAroundSDK] Retry chunk SUCCESS (%d batches, %d beacons)", chunkCount, beaconCount)
-                    self.endBackgroundTask()
+
+                    // Reconciliation is valid even for a stale completion: these
+                    // exact batches were delivered, so remove exactly them (by id).
+                    self.offlineBatchStorage.removeBatches(ids: chunkIds)
 
                     // Record to the internal detection log (diagnostic only — no user-facing notification).
                     DetectionLogStore.append(type: "Sync OK", detail: "\(beaconCount) beacon(s) enviados ao ingester")
 
-                    // Push token rode along in this payload and was accepted — record the heartbeat baseline.
-                    PushTokenStore.markSent()
+                    // Record the heartbeat baseline for EXACTLY the token that was sent.
+                    PushTokenStore.markSent(userDevice.pushToken)
                     DiagnosticsStore.shared.recordSync(success: true, beaconCount: beaconCount)
 
                     DispatchQueue.main.async {
@@ -1739,11 +1801,16 @@ public class BeAroundSDK {
                     }
 
                     self.beaconQueue.async {
+                        // P2 — stale-completion guard (drain generation).
+                        guard self.syncGeneration == drainGeneration else {
+                            NSLog("[BeAroundSDK] Stale drain completion (gen %d, current %d) — state untouched", drainGeneration, self.syncGeneration)
+                            return
+                        }
+                        self.endBackgroundTask()
                         self.isSyncing = false
                         self.syncDidFinishCoordination()
                         self.consecutiveFailures = 0
                         self.lastFailureTime = nil
-                        self.offlineBatchStorage.removeOldestBatches(chunkCount)
 
                         // Continue draining if more batches remain
                         if self.offlineBatchStorage.batchCount > 0 {
@@ -1751,12 +1818,13 @@ public class BeAroundSDK {
                             self.drainRetryQueue()
                         } else {
                             NSLog("[BeAroundSDK] All retry batches drained successfully")
+                            // P18 — the whole backlog is delivered: release parked waiters.
+                            self.notifySyncSettled(success: true)
                         }
                     }
 
                 case .failure(let error):
                     NSLog("[BeAroundSDK] Retry chunk FAILED: %@ — drain stopped", error.localizedDescription)
-                    self.endBackgroundTask()
 
                     // Record to the internal detection log (diagnostic only — no user-facing notification).
                     DetectionLogStore.append(type: "Sync falhou", detail: "\(beaconCount) beacon(s) · \(error.localizedDescription)")
@@ -1771,7 +1839,15 @@ public class BeAroundSDK {
                     }
 
                     self.beaconQueue.async {
+                        // P2 — stale-completion guard (drain generation).
+                        guard self.syncGeneration == drainGeneration else {
+                            NSLog("[BeAroundSDK] Stale drain failure completion (gen %d, current %d) — state untouched", drainGeneration, self.syncGeneration)
+                            return
+                        }
+                        self.endBackgroundTask()
                         self.isSyncing = false
+                        // P18 — the drain terminal must resolve parked waiters too.
+                        self.notifySyncSettled(success: false)
                         self.syncDidFinishCoordination()
                         self.consecutiveFailures += 1
                         self.lastFailureTime = Date()
@@ -2051,7 +2127,7 @@ extension BeAroundSDK: BluetoothManagerDelegate {
 
         // Always cache metadata
         if let metadata {
-            metadataCache[key] = metadata
+            cacheMetadata(metadata, for: key)
         }
 
         // Always add to collectedBeacons. We do NOT skip when the beacon is

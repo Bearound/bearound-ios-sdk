@@ -258,6 +258,20 @@ class BeaconManager: NSObject {
             name: UIApplication.didEnterBackgroundNotification,
             object: nil
         )
+
+        // Cold-start corrector: during didFinishLaunching the app state is
+        // `.inactive`, so init records isInForeground=false — and on a launch
+        // straight into foreground, willEnterForeground never fires (the app was
+        // never backgrounded). Without this observer the flag stays false for the
+        // whole session, silently applying background timeouts/ranging rules in
+        // foreground. didBecomeActive fires on every activation, including the
+        // very first one.
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(appDidBecomeActive),
+            name: UIApplication.didBecomeActiveNotification,
+            object: nil
+        )
     }
 
     // MARK: - App State Handlers
@@ -277,6 +291,12 @@ class BeaconManager: NSObject {
         // start CL ranging here — it would burn battery for no added value.
         // Region monitoring is still active (kernel-level), so iOS will fire
         // didExitRegion / didEnterRegion as needed.
+    }
+
+    @objc private func appDidBecomeActive() {
+        guard !isInForeground else { return }
+        NSLog("[BeAroundSDK] didBecomeActive with isInForeground=false — correcting (cold start into foreground)")
+        appDidEnterForeground()
     }
 
     @objc private func appDidEnterBackground() {
@@ -1054,6 +1074,18 @@ extension BeaconManager: CLLocationManagerDelegate {
 
     func locationManager(_: CLLocationManager, didFailWithError error: Error) {
         NSLog("[BeAroundSDK] Location manager error: %@", error.localizedDescription)
+        onError?(error)
+    }
+
+    /// Region monitoring failed to arm (e.g. the iOS 20-region cap, kCLErrorDomain
+    /// code 5, or monitoring unavailable). Without this callback the Location eye
+    /// dies silently: startMonitoring() returns as if it succeeded and the SDK
+    /// never gets region entry wake-ups. Surface it loudly so diagnostics and the
+    /// host app can see the eye is down.
+    func locationManager(_: CLLocationManager, monitoringDidFailFor region: CLRegion?, withError error: Error) {
+        let regionId = region?.identifier ?? "nil"
+        NSLog("[BeAroundSDK] REGION MONITORING FAILED for %@: %@", regionId, error.localizedDescription)
+        DiagnosticsStore.shared.recordError("monitoringDidFail(\(regionId)): \(error.localizedDescription)")
         onError?(error)
     }
 }

@@ -79,11 +79,6 @@ public class SDKConfigStorage {
         )
     }
 
-    /// Checks if a configuration is saved
-    static func isConfigured() -> Bool {
-        defaults?.bool(forKey: keyIsConfigured) ?? false
-    }
-
     /// Clears the saved configuration
     static func clear() {
         guard let defaults = defaults else { return }
