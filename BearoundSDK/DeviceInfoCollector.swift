@@ -163,7 +163,9 @@ final class DeviceInfoCollector: @unchecked Sendable {
 			thermalState: thermalState(),
 			systemUptimeMs: systemUptimeMs(),
 			wifis: wifiCollector.current(),
-			location: DeviceLocation(locationReader.location)
+			location: DeviceLocation(locationReader.location),
+			advertisingId: AdvertisingIdCollector.current(),
+			trackingAuthorization: AdvertisingIdCollector.authorizationStatus()
 		)
 	}
 

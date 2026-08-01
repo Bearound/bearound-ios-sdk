@@ -148,7 +148,44 @@ Android.
 > that for terminated-app wake-up the singleton must be touched inside
 > `application(_:didFinishLaunchingWithOptions:)` (see Quick Start).
 
-The SDK does **not** use App Tracking Transparency and does **not** collect the IDFA — do not add `NSUserTrackingUsageDescription` on the SDK's behalf, and do not declare IDFA collection in your privacy label because of this SDK.
+#### Advertising identifier (IDFA — optional)
+
+The SDK can report the **IDFA**, the identifier that lets the same person be recognised
+across apps for advertising. It is what makes audiences built from beacon visits usable in
+ad platforms.
+
+**Opt-in, and the SDK never prompts on its own.** Two steps:
+
+**1. Add the usage description** to your `Info.plist` — without this key iOS does not show
+the dialog at all, and the status stays `notDetermined` forever:
+
+```xml
+<key>NSUserTrackingUsageDescription</key>
+<string>We use this identifier to measure visits and show you more relevant offers.</string>
+```
+
+**2. Ask for authorisation** at a moment that makes sense in your onboarding — ideally right
+after explaining why, and with the app in the foreground (iOS ignores it otherwise):
+
+```swift
+BeAroundSDK.shared.requestTrackingAuthorization { status in
+    // "authorized" | "denied" | "restricted" | "notDetermined" | "unavailable" (iOS < 14)
+    print("ATT: \(status)")
+}
+```
+
+Safe to call on every launch: iOS shows the dialog only once per install, and later calls
+return the stored decision with no UI. To read the state without prompting, use
+`BeAroundSDK.trackingAuthorizationStatus()`.
+
+The payload carries `device.permissions.advertisingId` only while authorised, plus
+`trackingAuthorization` always — so a refusal is distinguishable from a prompt that was never
+shown.
+
+> **App Store**: prompting for tracking obliges you to declare it in your **privacy label**
+> (App Privacy → Tracking) — the requirement follows the prompt, not this SDK. If you skip
+> both steps nothing changes: no dialog, no IDFA in the payload, and every other feature
+> behaves exactly as before.
 
 For background mode support, add:
 
@@ -549,6 +586,7 @@ The SDK automatically collects comprehensive device information (see the [API Pa
 
 #### Device Information
 - Stable device ID (Keychain UUID — **not** IDFA/IDFV)
+- Advertising identifier (IDFA) — only when the host opts in and the user authorises tracking
 - APNs push token + APNs environment (`sandbox`/`production`), when pending sync
 - Manufacturer (Apple) and device model code (e.g. `iPhone17,2`)
 - OS and OS version
@@ -563,7 +601,7 @@ The SDK automatically collects comprehensive device information (see the [API Pa
 - App state (foreground/background), app uptime, cold start detection
 - Device name, system language, thermal state, system uptime
 
-The SDK does **not** collect GPS coordinates (removed in v3.0) and does **not** collect the IDFA / advertising identifier.
+The SDK does **not** collect GPS coordinates (removed in v3.0). The IDFA is collected **only** when the host app opts in and the user authorises tracking — see [Advertising identifier](#advertising-identifier-idfa--optional).
 
 ### Beacon Data Model
 
@@ -850,7 +888,7 @@ The SDK logs important events with tag `[BeAroundSDK]`:
 - All beacon data is transmitted to the Bearound ingest endpoint — **`https://ingest.bearound.io`**, hardcoded in the SDK (not configurable) — with business token authentication
 - Authorization header sent as `Authorization: {businessToken}` (no Bearer prefix)
 - No local data storage by default
-- Does **not** collect IDFA / advertising identifier — identity is a per-app stable device id (Keychain UUID)
+- Identity is a per-app stable device id (Keychain UUID), never the IDFA. The IDFA is reported only as an **opt-in** extra, after the user authorises tracking
 - Comprehensive device telemetry for analytics
 
 ### Testing
@@ -1035,7 +1073,7 @@ The SDK sends `POST https://ingest.bearound.io/ingest` (header `Authorization: {
 
 Field notes (verified against `APIClient.swift` / `DeviceInfoCollector.swift`):
 
-- **`device.deviceId`** — stable per-app Keychain UUID; **not** IDFA/IDFV. There is **no `location` block and no advertising ID** in the payload — the SDK does not collect them.
+- **`device.deviceId`** — stable per-app Keychain UUID; **not** IDFA/IDFV. The `location` block and `device.permissions.advertisingId` appear only when the host opts into Wi-Fi observations and tracking authorisation, respectively.
 - **`device.pushToken` / `device.apnsEnvironment`** — APNs token (hex) and target environment (`sandbox`/`production`). `pushToken` is present only while it still needs syncing: sent once, re-sent on token rotation or after the 7-day heartbeat.
 - **`device.permissions`** — location: `not_determined` / `restricted` / `denied` / `authorized_always` / `authorized_when_in_use`; bluetooth: `powered_on` / `powered_off`; `locationAccuracy` (`full`/`reduced`) present only when location is authorized.
 - **`syncTrigger`** — what caused this upload. Values include `register` (device registration, `beacons: []`), `precision_high_timer` / `precision_medium_timer` / `precision_low_timer`, `bluetooth_zone_enter`, `ble_detection`, `first_valid_beacon`, `display_on`, `background_ranging_complete`, `background_fetch`, `bg_task_refresh`, `bg_task_processing`, `silent_push`, `retry_drain`, `stop_scanning`.

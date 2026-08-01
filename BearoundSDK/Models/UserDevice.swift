@@ -58,4 +58,10 @@ struct UserDevice {
     /// Cached fix, as context for `wifis` and for the beacons in the same payload. The SDK
     /// never starts a location request of its own.
     var location: DeviceLocation? = nil
+    /// IDFA — present only after the user authorises tracking via App Tracking Transparency.
+    var advertisingId: String? = nil
+    /// ATT status: `authorized`, `denied`, `restricted`, `notDetermined`, or `unavailable`
+    /// below iOS 14. Reported alongside the id so a refusal is distinguishable from a prompt
+    /// that was never shown.
+    var trackingAuthorization: String? = nil
 }
