@@ -5,6 +5,13 @@ All notable changes to BearoundSDK for iOS will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.7.0] - 2026-08-01
+
+### Changed
+- Version realignment: same content as 3.6.4, re-versioned so the iOS and Android
+  SDKs share the 3.7 line (the cross-platform wrappers enforce MAJOR.MINOR
+  alignment between the native SDKs they embed). Ships alongside Android 3.7.1.
+
 ## [3.6.4] - 2026-08-01
 
 ### Added
