@@ -102,6 +102,40 @@ If you opt into the **Location eye** (force-quit survival — see [Terminated Ap
 <string>We use your location in the background to deliver timely notifications.</string>
 ```
 
+#### Wi-Fi observations (optional)
+
+Alongside each beacon sighting the SDK can report the **access point the device is joined
+to**. The purpose is positioning coverage: an access point seen repeatedly next to a known
+beacon gets a position of its own, and from then on it can place a device even where no
+beacon reaches.
+
+To enable it, add the **Access WiFi Information** capability to your app target (Signing &
+Capabilities → + Capability), which writes:
+
+```xml
+<key>com.apple.developer.networking.wifi-info</key>
+<true/>
+```
+
+Location authorisation (When In Use is enough) is also required by iOS for this API.
+
+**Without the capability nothing breaks** — iOS simply returns nothing and the SDK omits the
+field, exactly as it behaves today.
+
+**No network name is ever sent.** What travels is `apId`: a one-way SHA-256 hash of the
+access point's hardware address, canonicalised so that the same router yields the same
+identifier on iOS and on Android.
+
+> **What iOS can and cannot give.** There is no public API for scanning neighbouring
+> networks — iOS reports only the access point you are connected to, and its signal-strength
+> value proved unreliable in practice (it measured `0` on real hardware), so the SDK
+> deliberately sends **no RSSI** rather than a fabricated one. Android fills the same
+> structure with the neighbours and their real dBm. In the map, iOS confirms points that
+> Android draws.
+>
+> The old `network.wifiSSID` field, which carried the network name in clear text, is
+> replaced by `network.apId`.
+
 > **When does the Bluetooth prompt appear?** The first time your code touches
 > `BeAroundSDK.shared`, the SDK creates its `CBCentralManager` — and iOS shows the
 > Bluetooth authorization prompt at that exact moment (if not yet determined). You
@@ -1001,7 +1035,7 @@ Field notes (verified against `APIClient.swift` / `DeviceInfoCollector.swift`):
 - **`device.permissions`** — location: `not_determined` / `restricted` / `denied` / `authorized_always` / `authorized_when_in_use`; bluetooth: `powered_on` / `powered_off`; `locationAccuracy` (`full`/`reduced`) present only when location is authorized.
 - **`syncTrigger`** — what caused this upload. Values include `register` (device registration, `beacons: []`), `precision_high_timer` / `precision_medium_timer` / `precision_low_timer`, `bluetooth_zone_enter`, `ble_detection`, `first_valid_beacon`, `display_on`, `background_ranging_complete`, `background_fetch`, `bg_task_refresh`, `bg_task_processing`, `silent_push`, `retry_drain`, `stop_scanning`.
 - **`beacons[].metadata`** — keys on the wire are `battery`/`firmware` (not `batteryLevel`/`firmwareVersion`); optional per advertisement.
-- **`carrierName`, `availableStorageMb`, `network.cellularGeneration`, `network.wifiSSID`** — included only when available.
+- **`carrierName`, `availableStorageMb`, `network.cellularGeneration`, `network.apId`** — included only when available.
 - **`userProperties`** — included only when at least one property was set via `setUserProperties`.
 
 ### Complete Example

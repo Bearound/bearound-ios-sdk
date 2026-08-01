@@ -353,6 +353,17 @@ class APIClient {
             payload["userProperties"] = userProperties.toDictionary()
         }
 
+        // Wi-Fi observations and location ride at the TOP of the envelope, beside
+        // `beacons`, because they describe the sighting — not the device. Both are omitted
+        // entirely when unavailable, so a host without the capability sends exactly the
+        // payload it sends today.
+        if !userDevice.wifis.isEmpty {
+            payload["wifis"] = userDevice.wifis.map { $0.toDictionary() }
+        }
+        if let location = userDevice.location {
+            payload["location"] = location.toDictionary()
+        }
+
         let bodyData: Data
         do {
             bodyData = try JSONSerialization.data(withJSONObject: payload)
@@ -456,8 +467,9 @@ class APIClient {
         if let cellularGeneration = device.cellularGeneration {
             network["cellularGeneration"] = cellularGeneration
         }
-        if let wifiSSID = device.wifiSSID {
-            network["wifiSSID"] = wifiSSID
+        // Carries the hashed access point, never the network name.
+        if let apId = device.apId {
+            network["apId"] = apId
         }
 
         var permissions: [String: Any] = [

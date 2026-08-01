@@ -34,7 +34,9 @@ struct UserDevice {
     let coldStart: Bool
     let lowPowerMode: Bool?
     let locationAccuracy: String?
-    let wifiSSID: String?
+    /// Hash of the connected access point's BSSID — replaces the raw `wifiSSID`, which
+    /// leaked the network name (and therefore the household) in clear text.
+    let apId: String?
     let connectionMetered: Bool?
     let connectionExpensive: Bool?
     let os: String?
@@ -44,4 +46,11 @@ struct UserDevice {
     let systemLanguage: String
     let thermalState: String
     let systemUptimeMs: Int
+    /// Access points visible at collection time. On iOS this is at most one — the access
+    /// point the device is joined to — and empty when the host app lacks the Access WiFi
+    /// Information capability or location authorisation.
+    var wifis: [WifiObservation] = []
+    /// Cached fix, as context for `wifis` and for the beacons in the same payload. The SDK
+    /// never starts a location request of its own.
+    var location: DeviceLocation? = nil
 }
