@@ -808,10 +808,10 @@ public class BeAroundSDK {
     ///   - periodicReconciliationEnabled: enables the periodic background reconciliation
     ///     (`BGAppRefreshTask`). Best effort — iOS decides when (if) the task runs.
     ///   - periodicReconciliationInterval: EARLIEST allowed start of the next attempt
-    ///     (default 20 min; floor 60s; invalid values fall back to the default). Not a
-    ///     guaranteed cadence.
+    ///     (default 20 min; accepted range [10 min, 24 h], clamped with a log; invalid
+    ///     values fall back to the default). Not a guaranteed cadence.
     ///   - periodicScanDuration: ceiling of the temporary BLE window inside the task,
-    ///     clamped to [3s, 30s].
+    ///     clamped to [3s, 15s] so the ~30s BGTask budget also fits the sync.
     public func configure(
         businessToken: String,
         scanPrecision: ScanPrecision = .high,

@@ -146,10 +146,12 @@ The reconciliation cadence is configurable at `configure(...)` time:
 BeAroundSDK.shared.configure(
     businessToken: "your-business-token-here",
     periodicReconciliationEnabled: true,      // default: true
-    periodicReconciliationInterval: 10 * 60,  // default: 20 min (floor: 60s)
-    periodicScanDuration: 12                  // default: 12s (clamped to 3–30s)
+    periodicReconciliationInterval: 10 * 60,  // default: 20 min (accepted range: 10 min – 24 h)
+    periodicScanDuration: 12                  // default: 12s (clamped to 3–15s)
 )
 ```
+
+Out-of-range values are clamped with a diagnostic log rather than honored — these bounds are product guard rails, not bureaucracy: an interval below 10 minutes turns into scan+radio+upload many times per hour on devices where iOS grants a generous budget (the end user's battery pays for it), and a scan window past 15s eats the task's ~30s total budget, making every run expire — which teaches iOS to stop granting executions at all.
 
 To disable the layer entirely (pending future requests are cancelled):
 

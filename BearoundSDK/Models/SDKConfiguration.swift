@@ -9,27 +9,50 @@ import Foundation
 
 /// Defaults and safety bounds for the periodic background reconciliation
 /// (`BGAppRefreshTask`). Public so hosts can reference the same constants.
+///
+/// The bounds are PRODUCT guard rails, not just input validation — they protect the
+/// host app (and its users' batteries) from configurations that look reasonable but
+/// degrade the feature or the device:
+///
+/// - **Interval floor (10 min)**: below this iOS won't grant executions anyway, and on
+///   devices with a generous budget (charging, heavily-used app) an aggressive floor
+///   turns into scan+radio+upload many times per hour — battery drain the END USER
+///   feels and the client gets blamed for. Sub-10-min "reconciliation" adds no product
+///   value: region wake-ups and push already cover the real-time path.
+/// - **Interval ceiling (24 h)**: past this the layer is effectively off — better to
+///   disable it explicitly than to believe it still runs.
+/// - **Scan ceiling (15 s)**: a BGAppRefreshTask gets ~30 s of TOTAL runtime. A scan
+///   window that eats the whole budget leaves nothing for the sync — the task then
+///   expires on EVERY run, and the system responds to chronic expiration by granting
+///   fewer and fewer executions. Half the budget is the safe maximum.
 public enum PeriodicReconciliationDefaults {
     /// Default minimum interval requested between eligible executions.
     public static let interval: TimeInterval = 20 * 60
     /// Default ceiling for the temporary BLE collection window inside the task.
     public static let scanDuration: TimeInterval = 12
-    /// Internal floor — protects against accidental sub-minute reschedule loops.
-    public static let minimumAcceptedInterval: TimeInterval = 60
+    /// Interval floor. See the type doc for why 10 minutes.
+    public static let minimumAcceptedInterval: TimeInterval = 10 * 60
+    /// Interval ceiling. See the type doc for why 24 hours.
+    public static let maximumAcceptedInterval: TimeInterval = 24 * 60 * 60
     public static let minimumScanDuration: TimeInterval = 3
-    public static let maximumScanDuration: TimeInterval = 30
+    /// Scan-window ceiling. See the type doc for why 15 seconds.
+    public static let maximumScanDuration: TimeInterval = 15
 
     /// Sanitizes a host-provided interval: non-finite / NaN / zero / negative values
-    /// fall back to the default; anything below the floor is clamped up. Long
-    /// intervals are accepted as-is — the value is only the FLOOR iOS honors.
+    /// fall back to the default; out-of-range values are clamped into
+    /// `[minimumAcceptedInterval, maximumAcceptedInterval]` with a diagnostic log.
     static func sanitizedInterval(_ value: TimeInterval) -> TimeInterval {
         guard value.isFinite, value > 0 else {
             NSLog("[BeAroundSDK] Invalid periodicReconciliationInterval (%f) — using default %.0fs", value, interval)
             return interval
         }
         if value < minimumAcceptedInterval {
-            NSLog("[BeAroundSDK] periodicReconciliationInterval %.0fs below the %.0fs floor — clamped", value, minimumAcceptedInterval)
+            NSLog("[BeAroundSDK] periodicReconciliationInterval %.0fs below the %.0fs floor — clamped (sub-10-min BGTask cadence drains batteries without adding product value)", value, minimumAcceptedInterval)
             return minimumAcceptedInterval
+        }
+        if value > maximumAcceptedInterval {
+            NSLog("[BeAroundSDK] periodicReconciliationInterval %.0fs above the %.0fs ceiling — clamped (disable the feature explicitly instead of an effectively-never interval)", value, maximumAcceptedInterval)
+            return maximumAcceptedInterval
         }
         return value
     }
@@ -39,6 +62,9 @@ public enum PeriodicReconciliationDefaults {
         guard value.isFinite, value > 0 else {
             NSLog("[BeAroundSDK] Invalid periodicScanDuration (%f) — using default %.0fs", value, scanDuration)
             return scanDuration
+        }
+        if value > maximumScanDuration {
+            NSLog("[BeAroundSDK] periodicScanDuration %.0fs above the %.0fs ceiling — clamped (the ~30s BGTask budget must also fit the sync; an oversized window makes every run expire and iOS stops granting executions)", value, maximumScanDuration)
         }
         return min(max(value, minimumScanDuration), maximumScanDuration)
     }
@@ -78,12 +104,14 @@ public struct SDKConfiguration {
 
     /// Minimum interval requested before the next eligible execution. iOS may run
     /// the task much later than this — it is a floor, never a guaranteed cadence.
-    /// Invalid values (NaN/∞/≤0) fall back to the 20-min default; values under 60s
-    /// are clamped to 60s. Larger-than-default intervals are accepted as-is.
+    /// Invalid values (NaN/∞/≤0) fall back to the 20-min default; the accepted
+    /// range is [10 min, 24 h] (out-of-range values are clamped with a log — see
+    /// `PeriodicReconciliationDefaults` for the product rationale).
     public let periodicReconciliationInterval: TimeInterval
 
     /// Ceiling for the temporary BLE collection window inside the periodic task,
-    /// clamped to [3s, 30s]. Only used when the task needs to (re)arm the scan.
+    /// clamped to [3s, 15s] — the ~30s BGTask budget must also fit the sync.
+    /// Only used when the task needs to (re)arm the scan.
     public let periodicScanDuration: TimeInterval
 
     public init(

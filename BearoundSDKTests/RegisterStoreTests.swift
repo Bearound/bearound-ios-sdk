@@ -14,7 +14,9 @@ import Testing
 
 @testable import BearoundSDK
 
-@Suite("RegisterStore Tests")
+// .serialized: every test clears and mutates the SAME UserDefaults-backed store —
+// Swift Testing's default parallel execution makes them clobber each other.
+@Suite("RegisterStore Tests", .serialized)
 struct RegisterStoreTests {
 
     // MARK: - Helpers

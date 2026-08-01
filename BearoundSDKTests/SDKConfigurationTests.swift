@@ -101,28 +101,38 @@ struct PeriodicReconciliationConfigurationTests {
         #expect(config.periodicScanDuration == 12)
     }
 
-    @Test("Interval shorter than 20 minutes is accepted as-is")
+    @Test("Interval shorter than 20 minutes is accepted as-is (within range)")
     func shorterInterval() {
         let config = SDKConfiguration(businessToken: "t", periodicReconciliationInterval: 10 * 60)
         #expect(config.periodicReconciliationInterval == 10 * 60)
     }
 
-    @Test("Interval longer than 20 minutes is accepted as-is")
+    @Test("Interval longer than 20 minutes is accepted as-is (within range)")
     func longerInterval() {
         let config = SDKConfiguration(businessToken: "t", periodicReconciliationInterval: 6 * 60 * 60)
         #expect(config.periodicReconciliationInterval == 6 * 60 * 60)
     }
 
-    @Test("Interval exactly at the 60s floor is accepted")
+    @Test("Interval exactly at the 10-min floor is accepted")
     func intervalAtFloor() {
-        let config = SDKConfiguration(businessToken: "t", periodicReconciliationInterval: 60)
-        #expect(config.periodicReconciliationInterval == 60)
+        let config = SDKConfiguration(businessToken: "t", periodicReconciliationInterval: 600)
+        #expect(config.periodicReconciliationInterval == 600)
     }
 
-    @Test("Interval below the floor clamps to 60s")
+    @Test("Aggressive intervals clamp to the 10-min floor (battery guard rail)")
     func intervalBelowFloor() {
-        let config = SDKConfiguration(businessToken: "t", periodicReconciliationInterval: 5)
-        #expect(config.periodicReconciliationInterval == 60)
+        // 120s of BGTask cadence = scan+radio+upload many times per hour on devices
+        // with a generous budget — the end user's battery pays for it.
+        for aggressive in [5.0, 60.0, 120.0, 599.0] {
+            let config = SDKConfiguration(businessToken: "t", periodicReconciliationInterval: aggressive)
+            #expect(config.periodicReconciliationInterval == 600)
+        }
+    }
+
+    @Test("Effectively-never intervals clamp to the 24h ceiling")
+    func intervalAboveCeiling() {
+        let config = SDKConfiguration(businessToken: "t", periodicReconciliationInterval: 7 * 24 * 60 * 60)
+        #expect(config.periodicReconciliationInterval == 24 * 60 * 60)
     }
 
     @Test("Zero, negative, infinite and NaN intervals fall back to the default")
@@ -139,10 +149,14 @@ struct PeriodicReconciliationConfigurationTests {
         #expect(config.periodicScanDuration == 3)
     }
 
-    @Test("Scan duration above the maximum clamps to 30s")
+    @Test("Oversized scan windows clamp to 15s (BGTask-budget guard rail)")
     func scanDurationAboveMaximum() {
-        let config = SDKConfiguration(businessToken: "t", periodicScanDuration: 120)
-        #expect(config.periodicScanDuration == 30)
+        // The task gets ~30s TOTAL; a window that eats it all leaves nothing for the
+        // sync — every run would expire and iOS would stop granting executions.
+        for oversized in [16.0, 30.0, 60.0, 500.0] {
+            let config = SDKConfiguration(businessToken: "t", periodicScanDuration: oversized)
+            #expect(config.periodicScanDuration == 15)
+        }
     }
 
     @Test("Invalid scan durations fall back to the default")
