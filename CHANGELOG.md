@@ -5,6 +5,45 @@ All notable changes to BearoundSDK for iOS will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.6.4] - 2026-08-01
+
+### Added
+- **Configurable periodic background reconciliation** (`BGAppRefreshTask`): new
+  `configure()` parameters `periodicReconciliationEnabled` (default true),
+  `periodicReconciliationInterval` (default 20 min; accepted range 10 min–24 h)
+  and `periodicScanDuration` (default 12s; clamped 3–15s so the ~30s task budget
+  also fits the sync). Out-of-range values are clamped with a highlighted
+  `os_log` warning — never silently, never a crash. Best effort by design: the
+  interval is only a floor; iOS decides when (if) the task runs.
+- Reconciliation policy inside the task: honors the host's intent (after
+  `stopScanning()` it only drains pending data), skips new scan windows in Low
+  Power Mode and serious/critical thermal state, and short-circuits when data is
+  already collected.
+
+### Fixed
+- **Hardening (25 audit findings across two rounds).** Highlights:
+  - Background upload tasks carry their persisted batch ids (`taskDescription`)
+    so uploads that outlive the process are reconciled on relaunch — no more
+    duplicate re-sends after a background delivery.
+  - Background URLSession event handler is stored before SDK restoration (and a
+    new flag covers events finishing before the handler arrives) — the system
+    completion assertion can no longer leak.
+  - The background session is created in `init` instead of `lazy` (two racing
+    threads could create two sessions with the same identifier).
+  - Retry drain classifies permanent HTTP rejections (400/401/403/404/413/422):
+    a poison batch is isolated in single-batch mode and quarantined instead of
+    blocking the whole queue for 7 days.
+  - `collectedBeacons` is bounded again — synced beacons now expire 30s after
+    delivery (the previously-referenced delayed cleanup no longer existed).
+  - CoreLocation health timers hop to the main thread before driving the
+    manager; `metadataCache`/`trackedBeacons` cross-queue access is confined;
+    `stopScanning` clears the power-recovery resume flag.
+  - Crash telemetry writes an envelope to disk and uploads on next launch (the
+    in-handler synchronous POST never completed); push token heartbeat fixed
+    (`markSent` now records the exact token sent); `coldStart` is true only for
+    the process's first payload; region-monitoring failures are surfaced via
+    `monitoringDidFailFor`; foreground state is corrected on cold start.
+
 ## [3.6.3] - 2026-07-31
 
 Field-validated on an iPhone 17 Pro Max (iOS 27 beta) against the live ingest: foreground launch→backend in 14s, continuous seconds-level delivery for 3+ minutes in background, and a terminated wake (silent push) whose scan delivered in the same second — against the device-matrix baseline of 3-5 minutes (worst case: 20 minutes collecting without sending).
