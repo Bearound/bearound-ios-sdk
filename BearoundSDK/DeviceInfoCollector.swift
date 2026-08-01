@@ -16,7 +16,34 @@ import UserNotifications
 
 final class DeviceInfoCollector: @unchecked Sendable {
 	private let appStartTime: Date
+
+	/// Whether this collector participates in cold-start tracking. The SDK's sync
+	/// collector passes true (and the FIRST payload of the process reports
+	/// coldStart=true, consumed via [consumeColdStart]); the ErrorReporter's collector
+	/// passes false and never consumes nor reports it.
 	private let isColdStart: Bool
+
+	/// Process-wide cold-start flag, spent by the first sync payload. The old design
+	/// stamped the constructor flag on EVERY payload — coldStart was true for the whole
+	/// process lifetime, carrying no signal.
+	private static let coldStartLock = NSLock()
+	private static var coldStartPending = true
+	private static func consumeColdStart() -> Bool {
+		coldStartLock.lock(); defer { coldStartLock.unlock() }
+		let value = coldStartPending
+		coldStartPending = false
+		return value
+	}
+
+	// Static device facts captured ONCE here instead of via UIDevice/UIScreen on every
+	// collect — collectDeviceInfo runs on the beaconQueue and UIKit properties are
+	// main-thread APIs by contract. Battery monitoring is also enabled once here (it
+	// was a per-call SETTER off-main, the riskiest of the bunch); the remaining
+	// per-sync reads are plain getters.
+	private let staticOSVersion: String
+	private let staticDeviceName: String
+	private let staticScreenWidth: Int
+	private let staticScreenHeight: Int
 
 	private var cachedNotificationPermission: String = "not_determined"
 
@@ -27,6 +54,14 @@ final class DeviceInfoCollector: @unchecked Sendable {
 	init(isColdStart: Bool = true) {
 		appStartTime = Date()
 		self.isColdStart = isColdStart
+
+		let device = UIDevice.current
+		device.isBatteryMonitoringEnabled = true
+		staticOSVersion = device.systemVersion
+		staticDeviceName = device.name
+		let screen = UIScreen.main
+		staticScreenWidth = Int(screen.bounds.width * screen.scale)
+		staticScreenHeight = Int(screen.bounds.height * screen.scale)
 
 		Task {
 			await updateNotificationPermissionCache()
@@ -67,38 +102,11 @@ final class DeviceInfoCollector: @unchecked Sendable {
 		permissionLock.unlock()
 	}
 
-	private func updateNotificationPermissionCacheSync() {
-		UNUserNotificationCenter.current().getNotificationSettings { [weak self] settings in
-			guard let self else { return }
-
-			let status =
-				switch settings.authorizationStatus {
-				case .authorized:
-					"authorized"
-				case .denied:
-					"denied"
-				case .notDetermined:
-					"not_determined"
-				case .provisional:
-					"provisional"
-				case .ephemeral:
-					"ephemeral"
-				@unknown default:
-					"unknown"
-				}
-
-			self.updateCachedPermission(status)
-		}
-	}
-
 	func collectDeviceInfo(
 		locationPermission: CLAuthorizationStatus,
 		bluetoothState: String,
 		appInForeground: Bool
 	) -> UserDevice {
-		let device = UIDevice.current
-		let screen = UIScreen.main
-
 		permissionLock.lock()
 		let notificationPermission = cachedNotificationPermission
 		let isCacheReady = permissionCacheReady
@@ -114,7 +122,7 @@ final class DeviceInfoCollector: @unchecked Sendable {
 			apnsEnvironment: APNSEnvironment.current(),
 			manufacturer: "Apple",
 			model: deviceModel(),
-			osVersion: device.systemVersion,
+			osVersion: staticOSVersion,
 			timestamp: Int(Date().timeIntervalSince1970 * 1000),
 			timezone: TimeZone.current.identifier,
 			batteryLevel: batteryLevel(),
@@ -126,11 +134,11 @@ final class DeviceInfoCollector: @unchecked Sendable {
 			cellularGeneration: cellularGeneration(),
 			ramTotalMb: ramTotalMb(),
 			ramAvailableMb: ramAvailableMb(),
-			screenWidth: Int(screen.bounds.width * screen.scale),
-			screenHeight: Int(screen.bounds.height * screen.scale),
+			screenWidth: staticScreenWidth,
+			screenHeight: staticScreenHeight,
 			appInForeground: appInForeground,
 			appUptimeMs: appUptimeMs(),
-			coldStart: isColdStart,
+			coldStart: isColdStart ? Self.consumeColdStart() : false,
 			lowPowerMode: isLowPowerModeEnabled(),
 			locationAccuracy: locationAccuracyString(locationPermission),
 			wifiSSID: wifiSSID(),
@@ -157,14 +165,13 @@ final class DeviceInfoCollector: @unchecked Sendable {
 		return modelCode ?? "Unknown"
 	}
 
+	// Battery monitoring is enabled once in init — these are plain getters now.
 	private func batteryLevel() -> Int {
-		UIDevice.current.isBatteryMonitoringEnabled = true
 		let level = UIDevice.current.batteryLevel
 		return level >= 0 ? Int(level * 100) : 0
 	}
 
 	private func isCharging() -> Bool {
-		UIDevice.current.isBatteryMonitoringEnabled = true
 		let state = UIDevice.current.batteryState
 		return state == .charging || state == .full
 	}
@@ -204,33 +211,10 @@ final class DeviceInfoCollector: @unchecked Sendable {
 
 	private func networkType() -> String {
 		if #available(iOS 12.0, *) {
-			let monitor = NWPathMonitor()
-			let semaphore = DispatchSemaphore(value: 0)
-			var result = "none"
-			
-			monitor.pathUpdateHandler = { path in
-				if path.status == .satisfied {
-					if path.usesInterfaceType(.cellular) {
-						result = "cellular"
-					} else if path.usesInterfaceType(.wifi) {
-						result = "wifi"
-					} else if path.usesInterfaceType(.wiredEthernet) {
-						result = "wifi"
-					} else {
-						result = "wifi"
-					}
-				} else {
-					result = "none"
-				}
-				semaphore.signal()
-			}
-			
-			let queue = DispatchQueue(label: "com.bearound.network.monitor")
-			monitor.start(queue: queue)
-			_ = semaphore.wait(timeout: .now() + 0.5)
-			monitor.cancel()
-			
-			return result
+			// Long-lived monitor with an instant snapshot — the old code spun up
+			// a fresh NWPathMonitor and blocked on a semaphore (≤0.5s) on every
+			// read, and this method is called up to 3× per collection.
+			return NetworkSnapshotProvider.shared.current
 		} else {
 			// Fallback for iOS < 12.0
 			var zeroAddress = sockaddr_in()
@@ -379,7 +363,7 @@ final class DeviceInfoCollector: @unchecked Sendable {
 	}
 
 	private func deviceName() -> String {
-		UIDevice.current.name
+		staticDeviceName
 	}
 
 	private func carrierName() -> String? {

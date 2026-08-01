@@ -258,6 +258,20 @@ class BeaconManager: NSObject {
             name: UIApplication.didEnterBackgroundNotification,
             object: nil
         )
+
+        // Cold-start corrector: during didFinishLaunching the app state is
+        // `.inactive`, so init records isInForeground=false — and on a launch
+        // straight into foreground, willEnterForeground never fires (the app was
+        // never backgrounded). Without this observer the flag stays false for the
+        // whole session, silently applying background timeouts/ranging rules in
+        // foreground. didBecomeActive fires on every activation, including the
+        // very first one.
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(appDidBecomeActive),
+            name: UIApplication.didBecomeActiveNotification,
+            object: nil
+        )
     }
 
     // MARK: - App State Handlers
@@ -277,6 +291,12 @@ class BeaconManager: NSObject {
         // start CL ranging here — it would burn battery for no added value.
         // Region monitoring is still active (kernel-level), so iOS will fire
         // didExitRegion / didEnterRegion as needed.
+    }
+
+    @objc private func appDidBecomeActive() {
+        guard !isInForeground else { return }
+        NSLog("[BeAroundSDK] didBecomeActive with isInForeground=false — correcting (cold start into foreground)")
+        appDidEnterForeground()
     }
 
     @objc private func appDidEnterBackground() {
@@ -662,13 +682,18 @@ class BeaconManager: NSObject {
 
     // MARK: - Timers
 
+    // NOTE (threading): all three health timers below fire on a GLOBAL queue but their
+    // handlers reach CLLocationManager (start/stopRangingBeacons). CoreLocation requires
+    // its manager to be driven from the thread it was created on (main, with a run
+    // loop) — so every handler hops to main before touching state or the manager.
+
     private func startWatchdog() {
         stopWatchdog()
 
         let timer = DispatchSource.makeTimerSource(queue: DispatchQueue.global(qos: .utility))
         timer.schedule(deadline: .now() + 30.0)
         timer.setEventHandler { [weak self] in
-            self?.checkRangingHealth()
+            DispatchQueue.main.async { self?.checkRangingHealth() }
         }
         rangingWatchdog = timer
         timer.resume()
@@ -685,7 +710,7 @@ class BeaconManager: NSObject {
         let timer = DispatchSource.makeTimerSource(queue: DispatchQueue.global(qos: .utility))
         timer.schedule(deadline: .now() + 120.0, repeating: 120.0)
         timer.setEventHandler { [weak self] in
-            self?.refreshRanging()
+            DispatchQueue.main.async { self?.refreshRanging() }
         }
         rangingRefreshTimer = timer
         timer.resume()
@@ -706,7 +731,7 @@ class BeaconManager: NSObject {
         let timer = DispatchSource.makeTimerSource(queue: DispatchQueue.global(qos: .utility))
         timer.schedule(deadline: .now() + duration)
         timer.setEventHandler { [weak self] in
-            self?.stopBackgroundTemporaryRanging()
+            DispatchQueue.main.async { self?.stopBackgroundTemporaryRanging() }
         }
         backgroundRangingTimer = timer
         timer.resume()
@@ -1054,6 +1079,18 @@ extension BeaconManager: CLLocationManagerDelegate {
 
     func locationManager(_: CLLocationManager, didFailWithError error: Error) {
         NSLog("[BeAroundSDK] Location manager error: %@", error.localizedDescription)
+        onError?(error)
+    }
+
+    /// Region monitoring failed to arm (e.g. the iOS 20-region cap, kCLErrorDomain
+    /// code 5, or monitoring unavailable). Without this callback the Location eye
+    /// dies silently: startMonitoring() returns as if it succeeded and the SDK
+    /// never gets region entry wake-ups. Surface it loudly so diagnostics and the
+    /// host app can see the eye is down.
+    func locationManager(_: CLLocationManager, monitoringDidFailFor region: CLRegion?, withError error: Error) {
+        let regionId = region?.identifier ?? "nil"
+        NSLog("[BeAroundSDK] REGION MONITORING FAILED for %@: %@", regionId, error.localizedDescription)
+        DiagnosticsStore.shared.recordError("monitoringDidFail(\(regionId)): \(error.localizedDescription)")
         onError?(error)
     }
 }

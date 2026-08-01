@@ -20,6 +20,9 @@ public class SDKConfigStorage {
     private static let keyIsConfigured = "is_configured"
     private static let keyIsScanning = "is_scanning"
     private static let keyInternalId = "internal_id"
+    private static let keyPeriodicEnabled = "periodic_reconciliation_enabled"
+    private static let keyPeriodicInterval = "periodic_reconciliation_interval"
+    private static let keyPeriodicScanDuration = "periodic_scan_duration"
 
     private static var defaults: UserDefaults? {
         UserDefaults(suiteName: suiteName)
@@ -36,6 +39,9 @@ public class SDKConfigStorage {
         defaults.set(config.scanPrecision.rawValue, forKey: keyScanPrecision)
         defaults.set(config.maxQueuedPayloads.rawValue, forKey: keyMaxQueuedPayloads)
         defaults.set(config.technology, forKey: keyTechnology)
+        defaults.set(config.periodicReconciliationEnabled, forKey: keyPeriodicEnabled)
+        defaults.set(config.periodicReconciliationInterval, forKey: keyPeriodicInterval)
+        defaults.set(config.periodicScanDuration, forKey: keyPeriodicScanDuration)
         defaults.set(true, forKey: keyIsConfigured)
 
         defaults.synchronize()
@@ -69,19 +75,25 @@ public class SDKConfigStorage {
         let scanPrecision = ScanPrecision(rawValue: precisionRaw) ?? .high
         let maxQueuedPayloads = MaxQueuedPayloads(rawValue: maxQueuedRaw) ?? .medium
 
+        // Backward-compatible: configs persisted before the periodic-reconciliation
+        // fields existed restore the SDK defaults (feature ON, 20 min, 12s window).
+        let periodicEnabled = defaults.object(forKey: keyPeriodicEnabled) as? Bool ?? true
+        let periodicInterval = defaults.object(forKey: keyPeriodicInterval) as? TimeInterval
+            ?? PeriodicReconciliationDefaults.interval
+        let periodicScanDuration = defaults.object(forKey: keyPeriodicScanDuration) as? TimeInterval
+            ?? PeriodicReconciliationDefaults.scanDuration
+
         NSLog("[BeAroundSDK] Loaded configuration from storage (precision: %@)", precisionRaw)
 
         return SDKConfiguration(
             businessToken: businessToken,
             scanPrecision: scanPrecision,
             maxQueuedPayloads: maxQueuedPayloads,
-            technology: technology
+            technology: technology,
+            periodicReconciliationEnabled: periodicEnabled,
+            periodicReconciliationInterval: periodicInterval,
+            periodicScanDuration: periodicScanDuration
         )
-    }
-
-    /// Checks if a configuration is saved
-    static func isConfigured() -> Bool {
-        defaults?.bool(forKey: keyIsConfigured) ?? false
     }
 
     /// Clears the saved configuration

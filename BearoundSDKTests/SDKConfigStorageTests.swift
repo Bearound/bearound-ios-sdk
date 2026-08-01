@@ -10,7 +10,9 @@ import Testing
 
 @testable import BearoundSDK
 
-@Suite("SDKConfigStorage Tests")
+// .serialized: every test here reads/writes the SAME UserDefaults suite
+// ("com.bearound.sdk.config") — parallel execution makes them clobber each other.
+@Suite("SDKConfigStorage Tests", .serialized)
 struct SDKConfigStorageTests {
 
     @Test("Save and load configuration")
@@ -129,5 +131,37 @@ struct SDKConfigStorageTests {
             let loaded = SDKConfigStorage.load()
             #expect(loaded?.maxQueuedPayloads == queueSize)
         }
+    }
+
+    @Test("Persist and restore periodic reconciliation fields")
+    func persistPeriodicReconciliation() {
+        let config = SDKConfiguration(
+            businessToken: "test-periodic",
+            periodicReconciliationEnabled: false,
+            periodicReconciliationInterval: 10 * 60,
+            periodicScanDuration: 8
+        )
+        SDKConfigStorage.save(config)
+
+        let loaded = SDKConfigStorage.load()
+        #expect(loaded?.periodicReconciliationEnabled == false)
+        #expect(loaded?.periodicReconciliationInterval == 600.0)
+        #expect(loaded?.periodicScanDuration == 8.0)
+    }
+
+    @Test("Legacy stored config without periodic fields restores the defaults")
+    func legacyConfigRestoresPeriodicDefaults() {
+        // Persist a current config, then strip the new keys to simulate a config
+        // written by an SDK version that predates the feature.
+        SDKConfigStorage.save(SDKConfiguration(businessToken: "legacy-token"))
+        let defaults = UserDefaults(suiteName: "com.bearound.sdk.config")
+        defaults?.removeObject(forKey: "periodic_reconciliation_enabled")
+        defaults?.removeObject(forKey: "periodic_reconciliation_interval")
+        defaults?.removeObject(forKey: "periodic_scan_duration")
+
+        let loaded = SDKConfigStorage.load()
+        #expect(loaded?.periodicReconciliationEnabled == true)
+        #expect(loaded?.periodicReconciliationInterval == PeriodicReconciliationDefaults.interval)
+        #expect(loaded?.periodicScanDuration == PeriodicReconciliationDefaults.scanDuration)
     }
 }

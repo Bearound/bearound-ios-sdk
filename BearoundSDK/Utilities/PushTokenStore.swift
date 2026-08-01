@@ -34,9 +34,15 @@ enum PushTokenStore {
         return token // heartbeat: TTL elapsed since last send → re-send
     }
 
-    static func markSent() {
+    /// Marks `exactToken` as delivered. Pass the token that actually RODE in the
+    /// payload (`userDevice.pushToken`). A nil/empty argument is a no-op: the
+    /// payload carried no token, and blindly marking the CURRENT token would
+    /// (a) reset `lastSentAt` on every successful sync, so the 7-day heartbeat
+    /// re-send never fires, and (b) mark a token that rotated mid-request as
+    /// sent even though it never reached the server.
+    static func markSent(_ exactToken: String?) {
+        guard let token = exactToken, !token.isEmpty else { return }
         lock.lock(); defer { lock.unlock() }
-        guard let token = defaults.string(forKey: tokenKey) else { return }
         defaults.set(token, forKey: lastSentKey)
         defaults.set(Date(), forKey: lastSentAtKey)
     }

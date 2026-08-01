@@ -172,6 +172,16 @@ public enum DetectionLogStore {
     private static let maxEntries = 500
     private static let writeLock = NSLock()
 
+    /// In-memory copy of the log. The old implementation re-read AND re-decoded the
+    /// whole 500-entry array from UserDefaults on EVERY append — pure waste on a hot
+    /// path. Loaded once, then the cache is the source of truth (write-through).
+    private static var cache: [[String: Any]]?
+
+    /// Types frequent enough that a forced disk flush per event is not worth it. The
+    /// synchronize() below exists so terminated-relaunch entries survive an immediate
+    /// process kill — a concern for wake-up/region/sync records, not per-scan lines.
+    private static let noFlushTypes: Set<String> = ["Scan"]
+
     public static func append(type: String, detail: String) {
         // Tag computed BEFORE acquiring the storage lock so multiple
         // concurrent writes don't reorder relative to UIApplication state.
@@ -181,7 +191,7 @@ public enum DetectionLogStore {
         defer { writeLock.unlock() }
 
         let defaults = UserDefaults.standard
-        var arr = (defaults.array(forKey: storageKey) as? [[String: Any]]) ?? []
+        var arr = cache ?? (defaults.array(forKey: storageKey) as? [[String: Any]]) ?? []
         let entry: [String: Any] = [
             "id": "\(Date().timeIntervalSince1970)-\(Int.random(in: 0...9999))",
             "timestamp": Int(Date().timeIntervalSince1970 * 1000),
@@ -191,14 +201,20 @@ public enum DetectionLogStore {
         ]
         arr.insert(entry, at: 0)
         if arr.count > maxEntries { arr = Array(arr.prefix(maxEntries)) }
+        cache = arr
         defaults.set(arr, forKey: storageKey)
-        // Force a flush so terminated-relaunch entries survive an immediate
-        // process exit by the system right after the wake-up callback.
-        defaults.synchronize()
+        // Forced flush only for records that must survive an immediate process exit
+        // (wake-up/region/sync trail). High-frequency scan lines ride the normal
+        // UserDefaults persistence cadence.
+        if !noFlushTypes.contains(type) {
+            defaults.synchronize()
+        }
     }
 
     public static func readJSON() -> String {
-        let arr = (UserDefaults.standard.array(forKey: storageKey) as? [[String: Any]]) ?? []
+        writeLock.lock()
+        let arr = cache ?? (UserDefaults.standard.array(forKey: storageKey) as? [[String: Any]]) ?? []
+        writeLock.unlock()
         guard
             let data = try? JSONSerialization.data(withJSONObject: arr),
             let json = String(data: data, encoding: .utf8)
@@ -207,6 +223,9 @@ public enum DetectionLogStore {
     }
 
     public static func clear() {
+        writeLock.lock()
+        cache = []
         UserDefaults.standard.removeObject(forKey: storageKey)
+        writeLock.unlock()
     }
 }

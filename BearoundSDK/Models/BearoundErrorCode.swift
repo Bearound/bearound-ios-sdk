@@ -54,4 +54,9 @@ public enum BearoundErrorCode: Int {
     /// underlying `NSError` from the network layer is propagated as-is; this
     /// code is used only when re-wrapping is needed.
     case registerFailed = 8
+
+    /// Persist-before-send could not write the batch to disk (disk full, data
+    /// protection, missing Application Support). The upload still proceeds, but
+    /// without a durable copy — a crash mid-upload loses the batch.
+    case storageFailure = 9
 }
