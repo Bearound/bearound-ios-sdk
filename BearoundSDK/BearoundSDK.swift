@@ -2058,7 +2058,24 @@ public class BeAroundSDK {
     }
 
     /// Set right before the background-sync completion fires, on `beaconQueue`.
+    ///
+    /// **Every terminal of a background wake must write this** — see
+    /// `recordBackgroundScanInfo`. A wake that returns without writing leaves the previous
+    /// wake's snapshot in place, and the host reports a scan that never happened.
     public private(set) var lastBackgroundScanInfo: BackgroundScanInfo?
+
+    /// Single writer for [lastBackgroundScanInfo]. Call on `beaconQueue`.
+    ///
+    /// Exists because the snapshot is read by the host *after* the wake completes: any path
+    /// that finishes without writing hands the host a stale reading it cannot tell apart
+    /// from a fresh one.
+    private func recordBackgroundScanInfo(beaconsFound: Int, ingestStarted: Bool, pendingBatches: Int) {
+        lastBackgroundScanInfo = BackgroundScanInfo(
+            beaconsFound: beaconsFound,
+            ingestStarted: ingestStarted,
+            pendingBatches: pendingBatches
+        )
+    }
 
     /// Called by BackgroundTaskManager when BGTaskScheduler triggers
     public func performBackgroundSync(trigger: String = "background_sync", completion: @escaping (Bool) -> Void) {
@@ -2078,7 +2095,7 @@ public class BeAroundSDK {
 
             // Snapshot BEFORE syncBeacons() may clear collectedBeacons, so the host app can
             // read an accurate count in its completion handler.
-            self.lastBackgroundScanInfo = BackgroundScanInfo(
+            self.recordBackgroundScanInfo(
                 beaconsFound: beaconsFound,
                 ingestStarted: ingestStarted,
                 pendingBatches: pendingBatches
@@ -2107,6 +2124,14 @@ public class BeAroundSDK {
     /// `bleScanDuration` is the MAX wait: we sync as soon as a beacon is captured, or when it elapses.
     public func performBackgroundBLERefreshAndSync(bleScanDuration: TimeInterval = 10.0, trigger: String = "bg_task", completion: @escaping (Bool) -> Void) {
         NSLog("[BeAroundSDK] BGTask: reconciliation (trigger=%@, maxWait=%.0fs)", trigger, bleScanDuration)
+
+        // Clear the previous wake's snapshot before doing anything. beaconQueue is serial,
+        // so this always lands before whichever terminal records the real outcome. Belt and
+        // braces: should any future path forget to record, the host reads "nothing happened"
+        // instead of an old scan's numbers — wrong in the safe direction.
+        beaconQueue.async { [weak self] in
+            self?.recordBackgroundScanInfo(beaconsFound: 0, ingestStarted: false, pendingBatches: 0)
+        }
 
         // ── Reconciliation policy ─────────────────────────────────────────────
         // The task must complement the standing CoreBluetooth/CoreLocation
@@ -2148,7 +2173,16 @@ public class BeAroundSDK {
                 let hasAnything = !self.collectedBeacons.isEmpty || self.offlineBatchStorage.batchCount > 0
                 guard hasAnything else {
                     NSLog("[BeAroundSDK] BGTask: nothing to synchronize — completing")
-                    completion(true)
+                    // This terminal used to return without touching lastBackgroundScanInfo,
+                    // leaving the PREVIOUS wake's snapshot in place: a device that had once
+                    // seen 4 beacons kept reporting "4 beacons, uploading" on every wake for
+                    // as long as this path was taken — nothing was scanned and nothing was
+                    // sent. Record the truth of THIS wake instead.
+                    self.recordBackgroundScanInfo(beaconsFound: 0, ingestStarted: false, pendingBatches: 0)
+                    // ...and report it honestly: `false` means "no ingest was started", which
+                    // the push handler maps to .noData. Answering .newData for a wake that
+                    // uploaded nothing spends the app's push budget on nothing.
+                    completion(false)
                     return
                 }
                 self.performBackgroundSync(trigger: trigger, completion: completion)
