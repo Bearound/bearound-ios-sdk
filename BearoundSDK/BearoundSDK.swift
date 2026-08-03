@@ -1014,6 +1014,12 @@ public class BeAroundSDK {
             bluetoothManager.autoStartIfAuthorized()
         }
 
+        // 2b. Encounter layer — runs whenever Bluetooth is authorized (same contract as
+        //     the wifi collection); stops with stopScanning().
+        if bluetoothAuthorized {
+            bluetoothManager.setEncounterMesh(enabled: true)
+        }
+
         // 3. Location eye — CoreLocation starts only if authorized AND precise location is on.
         //    Location updates are gated by beacon detection — never run continuously.
         if locationCanRangeBeacons {
@@ -1044,6 +1050,7 @@ public class BeAroundSDK {
     }
 
     public func stopScanning() {
+        bluetoothManager.setEncounterMesh(enabled: false)
         bluetoothManager.stopScanning()
 
         if beaconManager.isScanning {
@@ -1181,11 +1188,12 @@ public class BeAroundSDK {
         let bluetoothState = bluetoothManager.isPoweredOn ? "powered_on" : "powered_off"
         let appInForeground = !isInBackground
 
-        let userDevice = deviceInfoCollector.collectDeviceInfo(
+        var userDevice = deviceInfoCollector.collectDeviceInfo(
             locationPermission: locationPermission,
             bluetoothState: bluetoothState,
             appInForeground: appInForeground
         )
+        attachEncounterData(to: &userDevice)
 
         apiClient.sendBeacons(
             [],
@@ -1480,6 +1488,15 @@ public class BeAroundSDK {
 
     /// Called wherever isSyncing returns to false: fires the queued follow-up so a
     /// sample that arrived mid-upload is never lost.
+    /// Attaches encounter-mesh data (peer sightings + this device's rotating identifiers)
+    /// to an outgoing payload. No-op before the mesh spins up (e.g. Bluetooth denied) —
+    /// the fields stay empty and the payload builder omits them.
+    private func attachEncounterData(to userDevice: inout UserDevice) {
+        guard let mesh = bluetoothManager.encounterMesh else { return }
+        userDevice.encounters = mesh.snapshotEncounters()
+        userDevice.encounterIds = mesh.currentEncounterIds()
+    }
+
     private func syncDidFinishCoordination() {
         beaconQueue.async { [weak self] in
             guard let self, self.syncPendingAfterCurrent else { return }
@@ -1647,11 +1664,12 @@ public class BeAroundSDK {
             let bluetoothState = bluetoothManager.isPoweredOn ? "powered_on" : "powered_off"
             let appInForeground = !isInBackground
 
-            let userDevice = deviceInfoCollector.collectDeviceInfo(
+            var userDevice = deviceInfoCollector.collectDeviceInfo(
                 locationPermission: locationPermission,
                 bluetoothState: bluetoothState,
                 appInForeground: appInForeground
             )
+            attachEncounterData(to: &userDevice)
 
             let trigger = self.syncTrigger
             self.syncTrigger = "unknown"
@@ -1873,11 +1891,12 @@ public class BeAroundSDK {
             let bluetoothState = self.bluetoothManager.isPoweredOn ? "powered_on" : "powered_off"
             let appInForeground = !self.isInBackground
 
-            let userDevice = self.deviceInfoCollector.collectDeviceInfo(
+            var userDevice = self.deviceInfoCollector.collectDeviceInfo(
                 locationPermission: locationPermission,
                 bluetoothState: bluetoothState,
                 appInForeground: appInForeground
             )
+            self.attachEncounterData(to: &userDevice)
 
             apiClient.sendBeacons(
                 beaconsToSend,

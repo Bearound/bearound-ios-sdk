@@ -363,6 +363,13 @@ class APIClient {
         if let location = userDevice.location {
             payload["location"] = location.toDictionary()
         }
+        // Encounters (same additive contract as `wifis`): omitted entirely when empty.
+        if !userDevice.encounters.isEmpty {
+            payload["encounters"] = userDevice.encounters.map { $0.toDictionary() }
+        }
+        if !userDevice.encounterIds.isEmpty {
+            payload["encounterIds"] = userDevice.encounterIds
+        }
 
         let bodyData: Data
         do {
