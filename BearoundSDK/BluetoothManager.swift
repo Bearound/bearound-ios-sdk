@@ -92,6 +92,36 @@ class BluetoothManager: NSObject {
     private let beadServiceUUID = CBUUID(string: "BEAD")
     private(set) var isScanning = false
 
+    /// Device-to-device encounter layer. Created lazily on first activation; shares
+    /// `bleQueue` and this central — no second scan, no extra locks. Discoveries are
+    /// routed at the end of `didDiscover`; connection lifecycle is bridged below.
+    private(set) var encounterMesh: EncounterMeshManager?
+
+    /// Turns the mesh role (advertise + recognise peers) on or off. Restarts the active
+    /// scan so the background filter picks up (or drops) the encounter service UUID.
+    func setEncounterMesh(enabled: Bool) {
+        bleQueue.async { [weak self] in
+            guard let self else { return }
+            if enabled {
+                if self.encounterMesh == nil {
+                    let mesh = EncounterMeshManager(queue: self.bleQueue)
+                    mesh.connectPeripheral = { [weak self] peripheral in
+                        self?.centralManager.connect(peripheral, options: nil)
+                    }
+                    mesh.cancelConnection = { [weak self] peripheral in
+                        self?.centralManager.cancelPeripheralConnection(peripheral)
+                    }
+                    self.encounterMesh = mesh
+                }
+                self.encounterMesh?.setForeground(!self.isInBackground)
+                self.encounterMesh?.start()
+            } else {
+                self.encounterMesh?.stop()
+            }
+            if self.isScanning { self.restartScan() }
+        }
+    }
+
     private var lastSeenBeacons: [String: Date] = [:]
     private let deduplicationInterval: TimeInterval = 1.0
 
@@ -330,6 +360,7 @@ class BluetoothManager: NSObject {
 
     @objc private func appDidEnterBackground() {
         isInBackground = true
+        encounterMesh?.setForeground(false)
         // v2.5.1 — Promote to ACTIVE on background entry. If we go to background with the
         // scanner OFF (IDLE), iOS has nothing to preserve and BT-only wake-up dies. By
         // promoting here we hand iOS a running scan it can low-power until a BEAD match.
@@ -346,6 +377,7 @@ class BluetoothManager: NSObject {
 
     @objc private func appWillEnterForeground() {
         isInBackground = false
+        encounterMesh?.setForeground(true)
         // Give the unfiltered scan a beat to re-see ≤ v5 beacons before the zone
         // presence timer is allowed to declare an exit (see foregroundRecoveryDeadline).
         bleQueue.async { [weak self] in
@@ -431,13 +463,19 @@ class BluetoothManager: NSObject {
     /// CBCentralManager state restoration re-registers after a relaunch.
     private func beginScan() {
         let allowDuplicates = true
-        let services: [CBUUID]? = isInBackground ? [beadServiceUUID] : nil
+        // Background filter grows the encounter service UUID when the mesh is on —
+        // same single scan, one more match target. Foreground stays nil (see above).
+        var backgroundServices = [beadServiceUUID]
+        if encounterMesh != nil { backgroundServices.append(EncounterMeshManager.serviceUUID) }
+        let services: [CBUUID]? = isInBackground ? backgroundServices : nil
         centralManager.scanForPeripherals(
             withServices: services,
             options: [CBCentralManagerScanOptionAllowDuplicatesKey: allowDuplicates]
         )
         os_log("[BLE] beginScan — filter=%{public}@ (background=%{public}d)",
-               log: bleLog, type: .info, services == nil ? "nil (all)" : "0xBEAD", isInBackground ? 1 : 0)
+               log: bleLog, type: .info,
+               services == nil ? "nil (all)" : services!.map(\.uuidString).joined(separator: ","),
+               isInBackground ? 1 : 0)
     }
 
     func stopScanning() {
@@ -984,6 +1022,11 @@ extension BluetoothManager: CBCentralManagerDelegate {
            let beaconData = parseIBeaconData(from: manufacturerData),
            beaconData.uuid == targetUUID {
 
+            // Reserved band = another SDK host advertising as a virtual beacon (or an
+            // air-corrupted copy of that frame) — never a detection. Its RSSI/identity
+            // are handled by the encounter layer via the service-UUID frames.
+            if beaconData.major >= Int(EncounterMeshManager.virtualBeaconMajorFloor) { return }
+
             trackBeacon(major: beaconData.major, minor: beaconData.minor, rssi: RSSI.intValue, txPower: beaconData.txPower, metadata: nil, isConnectable: connectable, discoverySource: .serviceUUID)
 
             if shouldProcessBeacon(major: beaconData.major, minor: beaconData.minor) {
@@ -998,7 +1041,33 @@ extension BluetoothManager: CBCentralManagerDelegate {
                     discoverySource: .serviceUUID
                 )
             }
+            return
         }
+
+        // Not a Bearound beacon frame: offer it to the encounter mesh (cheap O(1)
+        // guards inside — only frames advertising the mesh UUID, known peers, or
+        // matches of the filtered background scan are processed). Already on bleQueue.
+        encounterMesh?.handleDiscovery(
+            peripheral: peripheral,
+            advertisementData: advertisementData,
+            rssi: RSSI.intValue,
+            cameThroughFilteredScan: isInBackground
+        )
+    }
+
+    // MARK: - Mesh connection lifecycle (the mesh borrows this central for GATT reads)
+
+    func centralManager(_: CBCentralManager, didConnect peripheral: CBPeripheral) {
+        guard let mesh = encounterMesh, mesh.ownsPeripheral(peripheral) else { return }
+        mesh.handleConnected(peripheral)
+    }
+
+    func centralManager(_: CBCentralManager, didFailToConnect peripheral: CBPeripheral, error: Error?) {
+        encounterMesh?.handleConnectionEnded(peripheral)
+    }
+
+    func centralManager(_: CBCentralManager, didDisconnectPeripheral peripheral: CBPeripheral, error: Error?) {
+        encounterMesh?.handleConnectionEnded(peripheral)
     }
 }
 

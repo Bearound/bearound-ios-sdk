@@ -1014,6 +1014,12 @@ public class BeAroundSDK {
             bluetoothManager.autoStartIfAuthorized()
         }
 
+        // 2b. Encounter layer — runs whenever Bluetooth is authorized (same contract as
+        //     the wifi collection); stops with stopScanning().
+        if bluetoothAuthorized {
+            bluetoothManager.setEncounterMesh(enabled: true)
+        }
+
         // 3. Location eye — CoreLocation starts only if authorized AND precise location is on.
         //    Location updates are gated by beacon detection — never run continuously.
         if locationCanRangeBeacons {
@@ -1044,6 +1050,7 @@ public class BeAroundSDK {
     }
 
     public func stopScanning() {
+        bluetoothManager.setEncounterMesh(enabled: false)
         bluetoothManager.stopScanning()
 
         if beaconManager.isScanning {
@@ -1181,11 +1188,12 @@ public class BeAroundSDK {
         let bluetoothState = bluetoothManager.isPoweredOn ? "powered_on" : "powered_off"
         let appInForeground = !isInBackground
 
-        let userDevice = deviceInfoCollector.collectDeviceInfo(
+        var userDevice = deviceInfoCollector.collectDeviceInfo(
             locationPermission: locationPermission,
             bluetoothState: bluetoothState,
             appInForeground: appInForeground
         )
+        attachEncounterData(to: &userDevice)
 
         apiClient.sendBeacons(
             [],
@@ -1480,6 +1488,29 @@ public class BeAroundSDK {
 
     /// Called wherever isSyncing returns to false: fires the queued follow-up so a
     /// sample that arrived mid-upload is never lost.
+    /// Timestamp of the last encounters-only upload (no beacons in the batch), for the
+    /// 60s throttle in `shouldSyncEncountersWithoutBeacons()`.
+    private var lastEncounterOnlySyncAt = Date.distantPast
+
+    /// True when the mesh has identified sightings newer than the last encounters-only
+    /// upload AND that upload was 60s+ ago. Advances the throttle timestamp on success.
+    private func shouldSyncEncountersWithoutBeacons() -> Bool {
+        guard let mesh = bluetoothManager.encounterMesh else { return false }
+        guard Date().timeIntervalSince(lastEncounterOnlySyncAt) >= 60 else { return false }
+        guard mesh.hasFreshEncounters(since: lastEncounterOnlySyncAt) else { return false }
+        lastEncounterOnlySyncAt = Date()
+        return true
+    }
+
+    /// Attaches encounter-mesh data (peer sightings + this device's rotating identifiers)
+    /// to an outgoing payload. No-op before the mesh spins up (e.g. Bluetooth denied) —
+    /// the fields stay empty and the payload builder omits them.
+    private func attachEncounterData(to userDevice: inout UserDevice) {
+        guard let mesh = bluetoothManager.encounterMesh else { return }
+        userDevice.encounters = mesh.snapshotEncounters()
+        userDevice.encounterIds = mesh.currentEncounterIds()
+    }
+
     private func syncDidFinishCoordination() {
         beaconQueue.async { [weak self] in
             guard let self, self.syncPendingAfterCurrent else { return }
@@ -1580,20 +1611,30 @@ public class BeAroundSDK {
                 NSLog("[BeAroundSDK] Syncing %d of %d beacons (pending only)", beaconsToSend.count, collectedBeacons.count)
             }
 
-            guard !beaconsToSend.isEmpty else {
-                NSLog("[BeAroundSDK] No new beacons to sync")
-                // No new beacons — drain retry queue if pending batches exist
-                if self.shouldRetryFailedBatches() {
-                    // The drain resolves the settled-waiters at ITS terminals.
-                    self.drainRetryQueue()
+            if beaconsToSend.isEmpty {
+                // Encounter mesh: sightings must reach the backend even with no
+                // physical beacon around — otherwise a device that only sees other
+                // devices never uploads anything. Throttled (60s) and gated on fresh
+                // sightings so an active mesh doesn't turn every empty 15s tick into
+                // an upload.
+                if self.shouldSyncEncountersWithoutBeacons() {
+                    NSLog("[BeAroundSDK] No new beacons — syncing encounter batch")
+                    if self.syncTrigger == "unknown" { self.syncTrigger = "encounter_mesh" }
                 } else {
-                    // P18 — nothing to send and nothing to drain: release any parked
-                    // BGTask/push waiters NOW instead of letting them burn their
-                    // full timeout window.
-                    self.notifySyncSettled(success: true)
+                    NSLog("[BeAroundSDK] No new beacons to sync")
+                    // No new beacons — drain retry queue if pending batches exist
+                    if self.shouldRetryFailedBatches() {
+                        // The drain resolves the settled-waiters at ITS terminals.
+                        self.drainRetryQueue()
+                    } else {
+                        // P18 — nothing to send and nothing to drain: release any parked
+                        // BGTask/push waiters NOW instead of letting them burn their
+                        // full timeout window.
+                        self.notifySyncSettled(success: true)
+                    }
+                    self.syncDidFinishCoordination()
+                    return
                 }
-                self.syncDidFinishCoordination()
-                return
             }
 
             // Acquire the background assertion ONLY when there is a real batch to send
@@ -1647,11 +1688,12 @@ public class BeAroundSDK {
             let bluetoothState = bluetoothManager.isPoweredOn ? "powered_on" : "powered_off"
             let appInForeground = !isInBackground
 
-            let userDevice = deviceInfoCollector.collectDeviceInfo(
+            var userDevice = deviceInfoCollector.collectDeviceInfo(
                 locationPermission: locationPermission,
                 bluetoothState: bluetoothState,
                 appInForeground: appInForeground
             )
+            attachEncounterData(to: &userDevice)
 
             let trigger = self.syncTrigger
             self.syncTrigger = "unknown"
@@ -1873,11 +1915,12 @@ public class BeAroundSDK {
             let bluetoothState = self.bluetoothManager.isPoweredOn ? "powered_on" : "powered_off"
             let appInForeground = !self.isInBackground
 
-            let userDevice = self.deviceInfoCollector.collectDeviceInfo(
+            var userDevice = self.deviceInfoCollector.collectDeviceInfo(
                 locationPermission: locationPermission,
                 bluetoothState: bluetoothState,
                 appInForeground: appInForeground
             )
+            self.attachEncounterData(to: &userDevice)
 
             apiClient.sendBeacons(
                 beaconsToSend,
