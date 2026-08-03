@@ -20,8 +20,39 @@ final class EncounterMeshManager: NSObject {
 
     /// Fixed service every Bearound host advertises for the mesh (encounter beacon).
     static let serviceUUID = CBUUID(string: "B3A20001-0000-4000-8000-BEA0BEA0BEA0")
-    /// Read-only characteristic serving the host's current RPI (16 raw bytes).
+    /// Read-only characteristic serving the host's current RPI (16 raw bytes) — the
+    /// fallback identity path for iOS peers in background (their advertisement carries
+    /// no name/service data there). Android never connects: it reads identities from
+    /// the frames below.
     static let rpiCharacteristicUUID = CBUUID(string: "B3A20002-0000-4000-8000-BEA0BEA0BEA0")
+    /// 16-bit service-data key Android peers use to carry their identifier on air.
+    static let rpiDataUUID = CBUUID(string: "BEA1")
+
+    /// 22-char base64url of the 16 identifier bytes — travels as the advertised local
+    /// name so Android scanners read an iOS host's identity without connecting.
+    static func encodeRpiName(_ hex: String) -> String? {
+        var bytes = [UInt8]()
+        var index = hex.startIndex
+        while index < hex.endIndex, let next = hex.index(index, offsetBy: 2, limitedBy: hex.endIndex) {
+            guard let byte = UInt8(hex[index..<next], radix: 16) else { return nil }
+            bytes.append(byte)
+            index = next
+        }
+        guard bytes.count == 16 else { return nil }
+        return Data(bytes).base64EncodedString()
+            .replacingOccurrences(of: "+", with: "-")
+            .replacingOccurrences(of: "/", with: "_")
+            .replacingOccurrences(of: "=", with: "")
+    }
+
+    static func decodeRpiName(_ name: String) -> String? {
+        guard name.count == 22 else { return nil }
+        var b64 = name.replacingOccurrences(of: "-", with: "+")
+            .replacingOccurrences(of: "_", with: "/")
+        b64 += String(repeating: "=", count: (4 - b64.count % 4) % 4)
+        guard let data = Data(base64Encoded: b64), data.count == 16 else { return nil }
+        return data.map { String(format: "%02x", $0) }.joined()
+    }
 
     /// How often the rotating identifier is renewed.
     static let rpiRotationInterval: TimeInterval = 15 * 60
@@ -265,8 +296,29 @@ final class EncounterMeshManager: NSObject {
         }
         peer.addSample(rssi: rssi, now: now)
 
-        // Identity read: once per peer, re-read every rotation window (the peer rotates
-        // its RPI), never more often than the per-peer cooldown, one connection at a time.
+        // Identity from the frame itself — Android peers put it in service data,
+        // iOS foreground peers in the advertised name. Zero connections.
+        var frameRpi: String?
+        if let serviceData = advertisementData[CBAdvertisementDataServiceDataKey] as? [CBUUID: Data],
+           let data = serviceData[Self.rpiDataUUID], data.count == 16 {
+            frameRpi = data.map { String(format: "%02x", $0) }.joined()
+        } else if let name = advertisementData[CBAdvertisementDataLocalNameKey] as? String {
+            frameRpi = Self.decodeRpiName(name)
+        }
+        if let frameRpi {
+            if let old = peer.rpi, old != frameRpi {
+                // Rotated identity = new logical presence: restart the aggregate.
+                peer = PeerAggregate()
+                peer.addSample(rssi: rssi, now: now)
+            }
+            peer.rpi = frameRpi
+            peer.rpiReadAt = now
+            peers[peripheral.identifier] = peer
+            return
+        }
+
+        // GATT fallback (iOS peers in background — nothing identifying in their frames):
+        // once per peer, re-read every rotation window, one connection at a time.
         let rpiIsFresh = now.timeIntervalSince(peer.rpiReadAt) < Self.rpiRotationInterval
         if !(peer.rpi != nil && rpiIsFresh),
            gattInFlight == nil,
@@ -382,7 +434,13 @@ extension EncounterMeshManager: CBPeripheralManagerDelegate {
             let payload = region.peripheralData(withMeasuredPower: nil) as? [String: Any] ?? [:]
             manager.startAdvertising(payload)
         } else {
-            manager.startAdvertising([CBAdvertisementDataServiceUUIDsKey: [Self.serviceUUID]])
+            var payload: [String: Any] = [CBAdvertisementDataServiceUUIDsKey: [Self.serviceUUID]]
+            // Identity as local name (foreground only — iOS drops it in background):
+            // lets Android scanners read who we are without connecting.
+            if let name = Self.encodeRpiName(rpiStore.current()) {
+                payload[CBAdvertisementDataLocalNameKey] = name
+            }
+            manager.startAdvertising(payload)
         }
     }
 
