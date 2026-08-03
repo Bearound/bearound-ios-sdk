@@ -830,7 +830,8 @@ public class BeAroundSDK {
         technology: String = "ios-native",
         periodicReconciliationEnabled: Bool = true,
         periodicReconciliationInterval: TimeInterval = PeriodicReconciliationDefaults.interval,
-        periodicScanDuration: TimeInterval = PeriodicReconciliationDefaults.scanDuration
+        periodicScanDuration: TimeInterval = PeriodicReconciliationDefaults.scanDuration,
+        requestTrackingOnStart: Bool = true
     ) {
         let config = SDKConfiguration(
             businessToken: businessToken,
@@ -839,7 +840,8 @@ public class BeAroundSDK {
             technology: technology,
             periodicReconciliationEnabled: periodicReconciliationEnabled,
             periodicReconciliationInterval: periodicReconciliationInterval,
-            periodicScanDuration: periodicScanDuration
+            periodicScanDuration: periodicScanDuration,
+            requestTrackingOnStart: requestTrackingOnStart
         )
 
         configuration = config
@@ -879,6 +881,13 @@ public class BeAroundSDK {
             technology: config.technology,
             sdkVersion: Self.version
         )
+
+        // App Tracking Transparency, raised by the SDK so the IDFA arrives without the host
+        // wiring up a call. Waits for the app to be on screen, and stays silent entirely
+        // unless the host declared NSUserTrackingUsageDescription.
+        if config.requestTrackingOnStart {
+            AdvertisingIdCollector.requestAuthorizationOnStart()
+        }
 
         if isScanning {
             startSyncTimer()
@@ -1108,13 +1117,14 @@ public class BeAroundSDK {
     /// Shows the App Tracking Transparency prompt and, once authorised, starts reporting the
     /// IDFA with every payload.
     ///
-    /// The SDK never shows this dialog on its own: Apple requires it to appear in a context
-    /// the user understands, and an app that prompts at an arbitrary moment gets rejected.
-    /// Call it at a moment that makes sense in your onboarding — ideally after explaining
-    /// why — and only while the app is in the foreground (iOS ignores it otherwise).
+    /// **You usually do not need to call this.** The SDK raises the prompt by itself shortly
+    /// after `configure()`. Call it only when you opted out with
+    /// `configure(requestTrackingOnStart: false)` to control the moment — for example, after
+    /// your own screen explaining why you are asking.
     ///
     /// Requires `NSUserTrackingUsageDescription` in your `Info.plist`; without that key iOS
-    /// does not show the dialog and the status stays `notDetermined` forever.
+    /// does not show the dialog and the status stays `notDetermined` forever. Only call it
+    /// while the app is in the foreground — iOS silently ignores it otherwise.
     ///
     /// Answering is a one-time event per install — later calls return the stored decision
     /// with no UI, so it is safe to call on every launch.

@@ -172,4 +172,13 @@ struct PeriodicReconciliationConfigurationTests {
         let config = SDKConfiguration(businessToken: "t", periodicReconciliationEnabled: false)
         #expect(config.periodicReconciliationEnabled == false)
     }
+
+    @Test("SDK asks for tracking on its own unless the host opts out")
+    func requestTrackingOnStartDefault() {
+        #expect(SDKConfiguration(businessToken: "t").requestTrackingOnStart == true)
+        #expect(
+            SDKConfiguration(businessToken: "t", requestTrackingOnStart: false)
+                .requestTrackingOnStart == false
+        )
+    }
 }

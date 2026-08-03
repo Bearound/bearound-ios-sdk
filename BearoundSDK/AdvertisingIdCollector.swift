@@ -1,16 +1,19 @@
 import AdSupport
 import AppTrackingTransparency
 import Foundation
+import UIKit
 
 /// Reads the IDFA (Identifier for Advertisers) — the resettable identifier that lets the
 /// same person be recognised across apps for advertising purposes.
 ///
 /// **On iOS the identifier is gated by a user-facing prompt.** Since iOS 14.5, reading a
 /// real IDFA requires App Tracking Transparency authorisation; without it the platform
-/// returns an all-zero UUID. This collector never shows that prompt on its own — the host
-/// app decides when, through `BeAroundSDK.shared.requestTrackingAuthorization()`, because
-/// Apple requires the dialog to appear in a context the user understands, and because a
-/// prompt fired at an arbitrary moment is a rejected app.
+/// returns an all-zero UUID.
+///
+/// The SDK raises that prompt itself, once, shortly after `configure()` — see
+/// ``requestAuthorizationOnStart()``. Apps that need to control the moment (to show their
+/// own explainer first) opt out via `configure(requestTrackingOnStart: false)` and call
+/// `BeAroundSDK.shared.requestTrackingAuthorization()` when they are ready.
 enum AdvertisingIdCollector {
 
     /// Returned by the platform when tracking is not authorised.
@@ -57,6 +60,85 @@ enum AdvertisingIdCollector {
                 completion?(authorizationStatus())
             }
         }
+    }
+
+    // MARK: - Automatic prompt
+
+    /// Raises the tracking prompt on the SDK's own initiative, once per process, as soon as
+    /// the app is actually on screen.
+    ///
+    /// Two conditions gate it, and both matter:
+    ///
+    /// 1. **The host must declare `NSUserTrackingUsageDescription`.** That key is the
+    ///    integrator's opt-in. An app that has not written a tracking purpose string has not
+    ///    decided to collect the IDFA — and its App Store privacy label almost certainly does
+    ///    not declare tracking — so the SDK stays silent rather than prompting on its behalf.
+    ///    (iOS would suppress the dialog anyway; refusing early keeps the reason legible.)
+    ///
+    /// 2. **The app must be `.active`.** iOS silently drops the request in any other state,
+    ///    leaving the status `notDetermined` forever with no dialog and no error. When the SDK
+    ///    is configured before the UI is up — the common case, `configure()` inside
+    ///    `didFinishLaunching`, and every background relaunch — the request is deferred to the
+    ///    next `didBecomeActive` instead of being wasted.
+    static func requestAuthorizationOnStart() {
+        guard #available(iOS 14, *) else { return }
+        guard hasUsageDescription else {
+            NSLog("[BeAroundSDK] IDFA: NSUserTrackingUsageDescription ausente — prompt não exibido")
+            return
+        }
+
+        DispatchQueue.main.async {
+            guard !autoRequestHandled else { return }
+
+            // Already answered: nothing to show, and nothing left to wait for.
+            guard ATTrackingManager.trackingAuthorizationStatus == .notDetermined else {
+                autoRequestHandled = true
+                cancelPendingActivation()
+                return
+            }
+
+            guard UIApplication.shared.applicationState == .active else {
+                waitForActivation()
+                return
+            }
+
+            autoRequestHandled = true
+            cancelPendingActivation()
+            requestAuthorization()
+        }
+    }
+
+    /// One-shot latch so a reconfigure — or a second `configure()` after a background
+    /// relaunch — never re-enters the prompt path. Main-queue confined.
+    private static var autoRequestHandled = false
+
+    private static var activationObserver: NSObjectProtocol?
+
+    private static func waitForActivation() {
+        guard activationObserver == nil else { return }
+        activationObserver = NotificationCenter.default.addObserver(
+            forName: UIApplication.didBecomeActiveNotification,
+            object: nil,
+            queue: .main
+        ) { _ in
+            cancelPendingActivation()
+            requestAuthorizationOnStart()
+        }
+    }
+
+    private static func cancelPendingActivation() {
+        guard let observer = activationObserver else { return }
+        NotificationCenter.default.removeObserver(observer)
+        activationObserver = nil
+    }
+
+    /// Whether the host app declared a tracking purpose string. Empty or whitespace-only
+    /// counts as absent — iOS rejects those too.
+    private static var hasUsageDescription: Bool {
+        guard let text = Bundle.main.object(
+            forInfoDictionaryKey: "NSUserTrackingUsageDescription"
+        ) as? String else { return false }
+        return !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
     private static var isAuthorised: Bool {

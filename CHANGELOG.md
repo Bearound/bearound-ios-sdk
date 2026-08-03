@@ -5,6 +5,18 @@ All notable changes to BearoundSDK for iOS will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+- **The SDK now raises the App Tracking Transparency prompt itself.** Apps that declare
+  `NSUserTrackingUsageDescription` no longer need to call
+  `requestTrackingAuthorization()` — the prompt appears once, automatically, as soon as
+  the app is active after `configure()`. Apps without that key are unaffected: no prompt,
+  no IDFA, no behaviour change.
+- `requestTrackingAuthorization()` remains public for apps that want to own the timing,
+  via the new `configure(requestTrackingOnStart:)` opt-out (default `true`). The opt-out
+  is persisted, so it survives background relaunches.
+
 ## [3.7.0] - 2026-08-01
 
 ### Changed

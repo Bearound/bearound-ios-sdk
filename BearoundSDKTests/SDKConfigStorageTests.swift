@@ -164,4 +164,31 @@ struct SDKConfigStorageTests {
         #expect(loaded?.periodicReconciliationInterval == PeriodicReconciliationDefaults.interval)
         #expect(loaded?.periodicScanDuration == PeriodicReconciliationDefaults.scanDuration)
     }
+
+    @Test("Tracking opt-out survives a background relaunch")
+    func persistRequestTrackingOnStart() {
+        // The opt-out has to be persisted, not just held in memory: iOS relaunches the app
+        // in the background from the stored config, and an opt-out that did not survive
+        // would put the prompt back on screen the next time the user opened the app.
+        SDKConfigStorage.save(
+            SDKConfiguration(businessToken: "opt-out-token", requestTrackingOnStart: false)
+        )
+        #expect(SDKConfigStorage.load()?.requestTrackingOnStart == false)
+
+        SDKConfigStorage.save(
+            SDKConfiguration(businessToken: "opt-in-token", requestTrackingOnStart: true)
+        )
+        #expect(SDKConfigStorage.load()?.requestTrackingOnStart == true)
+    }
+
+    @Test("Legacy stored config without the tracking flag restores it enabled")
+    func legacyConfigRestoresTrackingDefault() {
+        SDKConfigStorage.save(
+            SDKConfiguration(businessToken: "legacy-token", requestTrackingOnStart: false)
+        )
+        UserDefaults(suiteName: "com.bearound.sdk.config")?
+            .removeObject(forKey: "request_tracking_on_start")
+
+        #expect(SDKConfigStorage.load()?.requestTrackingOnStart == true)
+    }
 }

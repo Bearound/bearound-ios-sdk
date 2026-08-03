@@ -23,6 +23,7 @@ public class SDKConfigStorage {
     private static let keyPeriodicEnabled = "periodic_reconciliation_enabled"
     private static let keyPeriodicInterval = "periodic_reconciliation_interval"
     private static let keyPeriodicScanDuration = "periodic_scan_duration"
+    private static let keyRequestTrackingOnStart = "request_tracking_on_start"
 
     private static var defaults: UserDefaults? {
         UserDefaults(suiteName: suiteName)
@@ -42,6 +43,7 @@ public class SDKConfigStorage {
         defaults.set(config.periodicReconciliationEnabled, forKey: keyPeriodicEnabled)
         defaults.set(config.periodicReconciliationInterval, forKey: keyPeriodicInterval)
         defaults.set(config.periodicScanDuration, forKey: keyPeriodicScanDuration)
+        defaults.set(config.requestTrackingOnStart, forKey: keyRequestTrackingOnStart)
         defaults.set(true, forKey: keyIsConfigured)
 
         defaults.synchronize()
@@ -83,6 +85,11 @@ public class SDKConfigStorage {
         let periodicScanDuration = defaults.object(forKey: keyPeriodicScanDuration) as? TimeInterval
             ?? PeriodicReconciliationDefaults.scanDuration
 
+        // Backward-compatible: configs persisted before the flag existed restore the
+        // default (ON). An app that opted out keeps its choice across background
+        // relaunches — otherwise the prompt would reappear the next time iOS revives us.
+        let requestTrackingOnStart = defaults.object(forKey: keyRequestTrackingOnStart) as? Bool ?? true
+
         NSLog("[BeAroundSDK] Loaded configuration from storage (precision: %@)", precisionRaw)
 
         return SDKConfiguration(
@@ -92,7 +99,8 @@ public class SDKConfigStorage {
             technology: technology,
             periodicReconciliationEnabled: periodicEnabled,
             periodicReconciliationInterval: periodicInterval,
-            periodicScanDuration: periodicScanDuration
+            periodicScanDuration: periodicScanDuration,
+            requestTrackingOnStart: requestTrackingOnStart
         )
     }
 
@@ -103,6 +111,7 @@ public class SDKConfigStorage {
         defaults.removeObject(forKey: keyScanPrecision)
         defaults.removeObject(forKey: keyMaxQueuedPayloads)
         defaults.removeObject(forKey: keyTechnology)
+        defaults.removeObject(forKey: keyRequestTrackingOnStart)
         defaults.removeObject(forKey: keyIsConfigured)
         defaults.removeObject(forKey: keyIsScanning)
         defaults.removeObject(forKey: keyInternalId)
