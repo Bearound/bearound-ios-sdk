@@ -5,7 +5,18 @@ All notable changes to BearoundSDK for iOS will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [3.8.0] - 2026-08-03
+
+### Added
+- **Wi-Fi observations and device location in the `/ingest` payload.** Each sighting can
+  now carry the access points visible at collection time (`wifis[]`, each with a hashed
+  `apId`) plus the last known location, alongside the beacons. Both are omitted entirely
+  when the host app lacks the permissions — an app that grants nothing sends exactly the
+  payload it sent before. The SDK never requests an active location fix and never starts
+  a Wi-Fi scan of its own; it reads what the platform already has.
+- **Advertising identifier (IDFA).** Reported as `device.permissions.advertisingId` while
+  tracking is authorised, with `trackingAuthorization` always present so a refusal is
+  distinguishable from a prompt that was never shown.
 
 ### Changed
 - **The SDK now raises the App Tracking Transparency prompt itself.** Apps that declare
@@ -16,6 +27,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `requestTrackingAuthorization()` remains public for apps that want to own the timing,
   via the new `configure(requestTrackingOnStart:)` opt-out (default `true`). The opt-out
   is persisted, so it survives background relaunches.
+
+### Fixed
+- **Background scan notifications reported beacons from an earlier detection.** The
+  snapshot backing the notification was only written on the paths that found something,
+  so a refresh that found nothing left the previous result in place — a device far from
+  any beacon kept being notified about the beacons it had seen hours before. The snapshot
+  is now reset at the start of every refresh and written on every terminal path.
 
 ## [3.7.0] - 2026-08-01
 
