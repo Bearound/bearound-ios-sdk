@@ -58,10 +58,16 @@ final class EncounterMeshManager: NSObject {
     static let rpiRotationInterval: TimeInterval = 15 * 60
 
     /// Reserved iBeacon major announced by SDK hosts while in foreground. Both receive
-    /// paths (CoreBluetooth parser and CoreLocation ranging) filter this major out so a
-    /// host is never mistaken for a physical beacon; region monitoring still fires on
-    /// the shared UUID, which is the point — proximity can (re)launch nearby apps.
+    /// paths (CoreBluetooth parser and CoreLocation ranging) filter the whole reserved
+    /// BAND (``virtualBeaconMajorFloor``...0xFFFF) out so a host — or an air-corrupted
+    /// copy of its frame — is never mistaken for a physical beacon; region monitoring
+    /// still fires on the shared UUID, which is the point.
     static let virtualBeaconMajor: UInt16 = 0xFFFF
+
+    /// Majors at or above this are reserved for virtual-beacon frames — physical
+    /// Bearound beacons never use them. Field observation: a damaged 0xFFFF byte
+    /// arrived as 0xFF32; band filtering drops those too.
+    static let virtualBeaconMajorFloor: UInt16 = 0xFF00
 
     /// While in foreground the transmitter interleaves two advertisement payloads —
     /// iBeacon (region monitoring visibility) and the encounter service UUID (RSSI +

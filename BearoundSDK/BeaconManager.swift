@@ -553,7 +553,7 @@ class BeaconManager: NSObject {
         // so region monitoring can fire on proximity between devices — it must never
         // surface as a physical-beacon detection.
         let beacons = rangedBeacons.filter {
-            $0.major.uint16Value != EncounterMeshManager.virtualBeaconMajor
+            $0.major.uint16Value < EncounterMeshManager.virtualBeaconMajorFloor
         }
         lastBeaconUpdate = Date()
         if !beacons.isEmpty { lastBeaconEvidenceAt = Date() }

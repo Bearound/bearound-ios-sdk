@@ -1022,10 +1022,10 @@ extension BluetoothManager: CBCentralManagerDelegate {
            let beaconData = parseIBeaconData(from: manufacturerData),
            beaconData.uuid == targetUUID {
 
-            // Reserved major = another SDK host in foreground (virtual beacon), not a
-            // physical beacon — never track it as a detection. Its RSSI/identity are
-            // handled by the encounter layer via the service-UUID frames.
-            if beaconData.major == Int(EncounterMeshManager.virtualBeaconMajor) { return }
+            // Reserved band = another SDK host advertising as a virtual beacon (or an
+            // air-corrupted copy of that frame) — never a detection. Its RSSI/identity
+            // are handled by the encounter layer via the service-UUID frames.
+            if beaconData.major >= Int(EncounterMeshManager.virtualBeaconMajorFloor) { return }
 
             trackBeacon(major: beaconData.major, minor: beaconData.minor, rssi: RSSI.intValue, txPower: beaconData.txPower, metadata: nil, isConnectable: connectable, discoverySource: .serviceUUID)
 
