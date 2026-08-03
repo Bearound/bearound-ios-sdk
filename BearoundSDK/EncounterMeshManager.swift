@@ -1,4 +1,5 @@
 import CoreBluetooth
+import CoreLocation
 import Foundation
 import os.log
 
@@ -24,6 +25,19 @@ final class EncounterMeshManager: NSObject {
 
     /// How often the rotating identifier is renewed.
     static let rpiRotationInterval: TimeInterval = 15 * 60
+
+    /// Reserved iBeacon major announced by SDK hosts while in foreground. Both receive
+    /// paths (CoreBluetooth parser and CoreLocation ranging) filter this major out so a
+    /// host is never mistaken for a physical beacon; region monitoring still fires on
+    /// the shared UUID, which is the point — proximity can (re)launch nearby apps.
+    static let virtualBeaconMajor: UInt16 = 0xFFFF
+
+    /// While in foreground the transmitter interleaves two advertisement payloads —
+    /// iBeacon (region monitoring visibility) and the encounter service UUID (RSSI +
+    /// identity for scanners) — switching every few seconds, like the physical beacons
+    /// interleave their own frames. Background always advertises the service UUID only
+    /// (iBeacon emission is a foreground-only platform capability).
+    private static let advertiseInterleaveInterval: TimeInterval = 6
 
     private static let maxTrackedPeers = 64
     private static let peerStaleEviction: TimeInterval = 10 * 60
@@ -112,6 +126,9 @@ final class EncounterMeshManager: NSObject {
     private var peers: [UUID: PeerAggregate] = [:]
     private var peripheralManager: CBPeripheralManager?
     private var isStarted = false
+    private var isInForeground = true
+    private var interleaveTimer: DispatchSourceTimer?
+    private var advertisingIBeaconPhase = false
 
     /// GATT identity reads: strictly one in flight, retained here so CoreBluetooth
     /// keeps the CBPeripheral alive for the duration.
@@ -147,6 +164,7 @@ final class EncounterMeshManager: NSObject {
         queue.async { [weak self] in
             guard let self, self.isStarted else { return }
             self.isStarted = false
+            self.stopInterleaveTimer()
             if let inFlight = self.gattInFlight { self.cancelConnection?(inFlight) }
             self.gattInFlight = nil
             self.gattTimeoutWork?.cancel()
@@ -155,6 +173,16 @@ final class EncounterMeshManager: NSObject {
             self.peripheralManager = nil
             self.peers.removeAll()
             os_log("[Mesh] stopped", log: self.log, type: .info)
+        }
+    }
+
+    /// Tracks app state: foreground interleaves iBeacon + service UUID; background
+    /// advertises the service UUID only.
+    func setForeground(_ foreground: Bool) {
+        queue.async { [weak self] in
+            guard let self, self.isInForeground != foreground else { return }
+            self.isInForeground = foreground
+            self.refreshAdvertising()
         }
     }
 
@@ -295,8 +323,56 @@ extension EncounterMeshManager: CBPeripheralManagerDelegate {
         service.characteristics = [characteristic]
         peripheral.removeAllServices()
         peripheral.add(service)
-        peripheral.startAdvertising([CBAdvertisementDataServiceUUIDsKey: [Self.serviceUUID]])
-        os_log("[Mesh] advertising encounter service", log: log, type: .info)
+        refreshAdvertising()
+    }
+
+    /// Applies the advertising payload for the current app state. Foreground runs the
+    /// interleave timer (iBeacon ↔ service UUID); background pins the service UUID.
+    /// The timer exists only while started + powered on + foreground — zero cost
+    /// otherwise.
+    private func refreshAdvertising() {
+        guard isStarted, let manager = peripheralManager, manager.state == .poweredOn else { return }
+        stopInterleaveTimer()
+        if isInForeground {
+            advertisingIBeaconPhase = false
+            advanceInterleave()
+            let timer = DispatchSource.makeTimerSource(queue: queue)
+            timer.schedule(deadline: .now() + Self.advertiseInterleaveInterval,
+                           repeating: Self.advertiseInterleaveInterval)
+            timer.setEventHandler { [weak self] in self?.advanceInterleave() }
+            timer.resume()
+            interleaveTimer = timer
+        } else {
+            manager.stopAdvertising()
+            manager.startAdvertising([CBAdvertisementDataServiceUUIDsKey: [Self.serviceUUID]])
+            os_log("[Mesh] advertising service UUID (background)", log: log, type: .info)
+        }
+    }
+
+    private func stopInterleaveTimer() {
+        interleaveTimer?.cancel()
+        interleaveTimer = nil
+    }
+
+    private func advanceInterleave() {
+        guard isStarted, let manager = peripheralManager, manager.state == .poweredOn else { return }
+        advertisingIBeaconPhase.toggle()
+        manager.stopAdvertising()
+        if advertisingIBeaconPhase {
+            // iBeacon phase: same UUID the SDK's region monitoring watches, reserved
+            // major, minor derived from the rotating identifier (nothing stable).
+            let minor = UInt16(rpiStore.current().prefix(4), radix: 16) ?? 0
+            let region = CLBeaconRegion(
+                uuid: BeaconConstants.uuid,
+                major: Self.virtualBeaconMajor,
+                minor: minor,
+                identifier: "io.bearound.sdk.mesh.virtualbeacon"
+            )
+            let payload = region.peripheralData(withMeasuredPower: nil) as? [String: Any] ?? [:]
+            manager.startAdvertising(payload)
+        } else {
+            manager.startAdvertising([CBAdvertisementDataServiceUUIDsKey: [Self.serviceUUID]])
+        }
     }
 
     func peripheralManager(_ peripheral: CBPeripheralManager, didReceiveRead request: CBATTRequest) {

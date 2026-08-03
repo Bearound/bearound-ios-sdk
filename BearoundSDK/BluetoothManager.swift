@@ -113,6 +113,7 @@ class BluetoothManager: NSObject {
                     }
                     self.encounterMesh = mesh
                 }
+                self.encounterMesh?.setForeground(!self.isInBackground)
                 self.encounterMesh?.start()
             } else {
                 self.encounterMesh?.stop()
@@ -359,6 +360,7 @@ class BluetoothManager: NSObject {
 
     @objc private func appDidEnterBackground() {
         isInBackground = true
+        encounterMesh?.setForeground(false)
         // v2.5.1 — Promote to ACTIVE on background entry. If we go to background with the
         // scanner OFF (IDLE), iOS has nothing to preserve and BT-only wake-up dies. By
         // promoting here we hand iOS a running scan it can low-power until a BEAD match.
@@ -375,6 +377,7 @@ class BluetoothManager: NSObject {
 
     @objc private func appWillEnterForeground() {
         isInBackground = false
+        encounterMesh?.setForeground(true)
         // Give the unfiltered scan a beat to re-see ≤ v5 beacons before the zone
         // presence timer is allowed to declare an exit (see foregroundRecoveryDeadline).
         bleQueue.async { [weak self] in
@@ -1018,6 +1021,11 @@ extension BluetoothManager: CBCentralManagerDelegate {
         if let manufacturerData = advertisementData[CBAdvertisementDataManufacturerDataKey] as? Data,
            let beaconData = parseIBeaconData(from: manufacturerData),
            beaconData.uuid == targetUUID {
+
+            // Reserved major = another SDK host in foreground (virtual beacon), not a
+            // physical beacon — never track it as a detection. Its RSSI/identity are
+            // handled by the encounter layer via the service-UUID frames.
+            if beaconData.major == Int(EncounterMeshManager.virtualBeaconMajor) { return }
 
             trackBeacon(major: beaconData.major, minor: beaconData.minor, rssi: RSSI.intValue, txPower: beaconData.txPower, metadata: nil, isConnectable: connectable, discoverySource: .serviceUUID)
 

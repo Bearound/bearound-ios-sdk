@@ -548,7 +548,13 @@ class BeaconManager: NSObject {
 
     // MARK: - Beacon Processing
 
-    private func processBeacons(_ beacons: [CLBeacon]) {
+    private func processBeacons(_ rangedBeacons: [CLBeacon]) {
+        // Reserved major = another SDK host in foreground (virtual beacon). It exists
+        // so region monitoring can fire on proximity between devices — it must never
+        // surface as a physical-beacon detection.
+        let beacons = rangedBeacons.filter {
+            $0.major.uint16Value != EncounterMeshManager.virtualBeaconMajor
+        }
         lastBeaconUpdate = Date()
         if !beacons.isEmpty { lastBeaconEvidenceAt = Date() }
 
