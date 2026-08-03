@@ -168,24 +168,33 @@ Android.
 
 #### Advertising identifier (IDFA — optional)
 
-The SDK can report the **IDFA**, the identifier that lets the same person be recognised
-across apps for advertising. It is what makes audiences built from beacon visits usable in
-ad platforms.
+The SDK can report the **IDFA**, the identifier iOS provides for advertising attribution,
+which lets a visit be tied to the same person across apps.
 
-**Opt-in, and the SDK never prompts on its own.** Two steps:
-
-**1. Add the usage description** to your `Info.plist` — without this key iOS does not show
-the dialog at all, and the status stays `notDetermined` forever:
+**One step: add the usage description** to your `Info.plist`.
 
 ```xml
 <key>NSUserTrackingUsageDescription</key>
 <string>We use this identifier to measure visits and show you more relevant offers.</string>
 ```
 
-**2. Ask for authorisation** at a moment that makes sense in your onboarding — ideally right
-after explaining why, and with the app in the foreground (iOS ignores it otherwise):
+That key is the whole opt-in. **With it present, the SDK raises the App Tracking
+Transparency prompt itself**, once, as soon as the app is on screen after `configure()` —
+you do not have to call anything. **Without it, nothing happens**: no dialog, no IDFA in
+the payload, every other feature unchanged. The SDK never prompts for an app that has not
+declared a tracking purpose.
+
+The prompt waits for the app to be `active`, because iOS silently discards the request in
+any other state — so configuring inside `didFinishLaunching`, or being relaunched in the
+background, does not burn the one chance to ask.
+
+**To control the moment yourself** — to show your own explainer first, or to ask deeper into
+onboarding — opt out and call it when you are ready:
 
 ```swift
+BeAroundSDK.shared.configure(businessToken: "…", requestTrackingOnStart: false)
+
+// later, with the app in the foreground
 BeAroundSDK.shared.requestTrackingAuthorization { status in
     // "authorized" | "denied" | "restricted" | "notDetermined" | "unavailable" (iOS < 14)
     print("ATT: \(status)")
@@ -194,16 +203,16 @@ BeAroundSDK.shared.requestTrackingAuthorization { status in
 
 Safe to call on every launch: iOS shows the dialog only once per install, and later calls
 return the stored decision with no UI. To read the state without prompting, use
-`BeAroundSDK.trackingAuthorizationStatus()`.
+`BeAroundSDK.trackingAuthorizationStatus()`. The opt-out is remembered across background
+relaunches.
 
 The payload carries `device.permissions.advertisingId` only while authorised, plus
 `trackingAuthorization` always — so a refusal is distinguishable from a prompt that was never
 shown.
 
-> **App Store**: prompting for tracking obliges you to declare it in your **privacy label**
-> (App Privacy → Tracking) — the requirement follows the prompt, not this SDK. If you skip
-> both steps nothing changes: no dialog, no IDFA in the payload, and every other feature
-> behaves exactly as before.
+> **App Store**: adding the key means the prompt will appear, and prompting for tracking
+> obliges you to declare it in your **privacy label** (App Privacy → Tracking). Add the key
+> only when you intend to collect the IDFA.
 
 For background mode support, add:
 

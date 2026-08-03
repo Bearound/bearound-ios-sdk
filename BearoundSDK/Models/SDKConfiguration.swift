@@ -153,6 +153,19 @@ public struct SDKConfiguration {
     /// Default: ``PeriodicReconciliationDefaults/scanDuration`` (12 seconds).
     public let periodicScanDuration: TimeInterval
 
+    /// Lets the SDK raise the App Tracking Transparency prompt by itself, shortly after
+    /// `configure()`, so the IDFA is collected without the host wiring up a call.
+    ///
+    /// Nothing is shown unless the host app declares `NSUserTrackingUsageDescription` —
+    /// that key is the real opt-in, and without it this flag has no effect.
+    ///
+    /// Set to `false` to own the moment (to show your own explainer first, or to prompt
+    /// deeper into onboarding) and call
+    /// ``BeAroundSDK/requestTrackingAuthorization(completion:)`` when you are ready.
+    ///
+    /// Default: `true`.
+    public let requestTrackingOnStart: Bool
+
     public init(
         businessToken: String,
         scanPrecision: ScanPrecision = .high,
@@ -160,7 +173,8 @@ public struct SDKConfiguration {
         technology: String = "ios-native",
         periodicReconciliationEnabled: Bool = true,
         periodicReconciliationInterval: TimeInterval = PeriodicReconciliationDefaults.interval,
-        periodicScanDuration: TimeInterval = PeriodicReconciliationDefaults.scanDuration
+        periodicScanDuration: TimeInterval = PeriodicReconciliationDefaults.scanDuration,
+        requestTrackingOnStart: Bool = true
     ) {
         self.businessToken = businessToken
         self.scanPrecision = scanPrecision
@@ -173,6 +187,7 @@ public struct SDKConfiguration {
             PeriodicReconciliationDefaults.sanitizedInterval(periodicReconciliationInterval)
         self.periodicScanDuration =
             PeriodicReconciliationDefaults.sanitizedScanDuration(periodicScanDuration)
+        self.requestTrackingOnStart = requestTrackingOnStart
     }
 
     // MARK: - Per-precision duty-cycle values
