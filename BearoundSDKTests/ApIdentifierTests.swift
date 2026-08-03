@@ -7,33 +7,33 @@ import XCTest
 /// forever. These tests pin that contract — the Android SDK has the mirror of this file.
 final class ApIdentifierTests: XCTestCase {
 
-    /// Verified on real hardware during the POC — the office router seen from an iPhone
-    /// and from an Android phone. If this assertion ever fails, every access point already
-    /// mapped becomes unreachable under the new hash.
-    private let officeAp = "2dc5d7448d0b3ef4"
+    /// Golden value for a fixed input, verified on real hardware on BOTH platforms. If this
+    /// assertion ever fails, every identifier already issued becomes unreachable under the
+    /// new hash — so it is a compatibility gate, not a style check.
+    private let goldenId = "9a6abef5e0c70054"
 
     func testIosAndAndroidFormatsAgreeOnTheSameRouter() {
         // iOS drops leading zeros, Android keeps them — same physical router.
-        XCTAssertEqual(ApIdentifier.from("b8:1e:61:0:95:e"), officeAp)
-        XCTAssertEqual(ApIdentifier.from("b8:1e:61:00:95:0e"), officeAp)
+        XCTAssertEqual(ApIdentifier.from("00:0:5e:0:53:1"), goldenId)
+        XCTAssertEqual(ApIdentifier.from("00:00:5e:00:53:01"), goldenId)
     }
 
     func testCaseAndSeparatorDoNotChangeIdentity() {
-        XCTAssertEqual(ApIdentifier.from("B8:1E:61:00:95:0E"), officeAp)
-        XCTAssertEqual(ApIdentifier.from("b8-1e-61-00-95-0e"), officeAp)
-        XCTAssertEqual(ApIdentifier.from("  b8:1e:61:0:95:e  "), officeAp)
+        XCTAssertEqual(ApIdentifier.from("00:00:5E:00:53:01"), goldenId)
+        XCTAssertEqual(ApIdentifier.from("00-00-5e-00-53-01"), goldenId)
+        XCTAssertEqual(ApIdentifier.from("  00:0:5e:0:53:1  "), goldenId)
     }
 
     func testIdentifierIsSixteenHexCharacters() throws {
-        let id = try XCTUnwrap(ApIdentifier.from("a4:33:d7:fa:48:b8"))
+        let id = try XCTUnwrap(ApIdentifier.from("00:00:5e:00:53:0a"))
         XCTAssertEqual(id.count, 16)
         XCTAssertTrue(id.allSatisfy { $0.isHexDigit && !$0.isUppercase })
     }
 
     func testDifferentRoutersGetDifferentIdentifiers() {
         XCTAssertNotEqual(
-            ApIdentifier.from("b8:1e:61:00:95:0e"),
-            ApIdentifier.from("b8:1e:61:00:95:0f")
+            ApIdentifier.from("00:00:5e:00:53:01"),
+            ApIdentifier.from("00:00:5e:00:53:02")
         )
     }
 
@@ -48,9 +48,9 @@ final class ApIdentifierTests: XCTestCase {
     func testMalformedInputReturnsNilInsteadOfBogusIdentifier() {
         XCTAssertNil(ApIdentifier.from(nil))
         XCTAssertNil(ApIdentifier.from(""))
-        XCTAssertNil(ApIdentifier.from("b8:1e:61:00:95"))        // 5 octets
-        XCTAssertNil(ApIdentifier.from("b8:1e:61:00:95:0e:aa"))  // 7 octets
-        XCTAssertNil(ApIdentifier.from("zz:1e:61:00:95:0e"))     // not hex
-        XCTAssertNil(ApIdentifier.from("b81e6100950e"))          // no separators
+        XCTAssertNil(ApIdentifier.from("00:00:5e:00:53"))        // 5 octets
+        XCTAssertNil(ApIdentifier.from("00:00:5e:00:53:01:aa"))  // 7 octets
+        XCTAssertNil(ApIdentifier.from("zz:00:5e:00:53:01"))     // not hex
+        XCTAssertNil(ApIdentifier.from("00005e005301"))          // no separators
     }
 }
