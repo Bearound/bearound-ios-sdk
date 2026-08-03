@@ -1488,6 +1488,20 @@ public class BeAroundSDK {
 
     /// Called wherever isSyncing returns to false: fires the queued follow-up so a
     /// sample that arrived mid-upload is never lost.
+    /// Timestamp of the last encounters-only upload (no beacons in the batch), for the
+    /// 60s throttle in `shouldSyncEncountersWithoutBeacons()`.
+    private var lastEncounterOnlySyncAt = Date.distantPast
+
+    /// True when the mesh has identified sightings newer than the last encounters-only
+    /// upload AND that upload was 60s+ ago. Advances the throttle timestamp on success.
+    private func shouldSyncEncountersWithoutBeacons() -> Bool {
+        guard let mesh = bluetoothManager.encounterMesh else { return false }
+        guard Date().timeIntervalSince(lastEncounterOnlySyncAt) >= 60 else { return false }
+        guard mesh.hasFreshEncounters(since: lastEncounterOnlySyncAt) else { return false }
+        lastEncounterOnlySyncAt = Date()
+        return true
+    }
+
     /// Attaches encounter-mesh data (peer sightings + this device's rotating identifiers)
     /// to an outgoing payload. No-op before the mesh spins up (e.g. Bluetooth denied) —
     /// the fields stay empty and the payload builder omits them.
@@ -1597,20 +1611,30 @@ public class BeAroundSDK {
                 NSLog("[BeAroundSDK] Syncing %d of %d beacons (pending only)", beaconsToSend.count, collectedBeacons.count)
             }
 
-            guard !beaconsToSend.isEmpty else {
-                NSLog("[BeAroundSDK] No new beacons to sync")
-                // No new beacons — drain retry queue if pending batches exist
-                if self.shouldRetryFailedBatches() {
-                    // The drain resolves the settled-waiters at ITS terminals.
-                    self.drainRetryQueue()
+            if beaconsToSend.isEmpty {
+                // Encounter mesh: sightings must reach the backend even with no
+                // physical beacon around — otherwise a device that only sees other
+                // devices never uploads anything. Throttled (60s) and gated on fresh
+                // sightings so an active mesh doesn't turn every empty 15s tick into
+                // an upload.
+                if self.shouldSyncEncountersWithoutBeacons() {
+                    NSLog("[BeAroundSDK] No new beacons — syncing encounter batch")
+                    if self.syncTrigger == "unknown" { self.syncTrigger = "encounter_mesh" }
                 } else {
-                    // P18 — nothing to send and nothing to drain: release any parked
-                    // BGTask/push waiters NOW instead of letting them burn their
-                    // full timeout window.
-                    self.notifySyncSettled(success: true)
+                    NSLog("[BeAroundSDK] No new beacons to sync")
+                    // No new beacons — drain retry queue if pending batches exist
+                    if self.shouldRetryFailedBatches() {
+                        // The drain resolves the settled-waiters at ITS terminals.
+                        self.drainRetryQueue()
+                    } else {
+                        // P18 — nothing to send and nothing to drain: release any parked
+                        // BGTask/push waiters NOW instead of letting them burn their
+                        // full timeout window.
+                        self.notifySyncSettled(success: true)
+                    }
+                    self.syncDidFinishCoordination()
+                    return
                 }
-                self.syncDidFinishCoordination()
-                return
             }
 
             // Acquire the background assertion ONLY when there is a real batch to send

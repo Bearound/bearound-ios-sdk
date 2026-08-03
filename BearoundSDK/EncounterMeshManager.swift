@@ -198,6 +198,17 @@ final class EncounterMeshManager: NSObject {
         }
     }
 
+    /// Whether any identified peer has been seen after `since` — the cheap check the
+    /// sync path uses to decide if an encounters-only upload is worth making when no
+    /// physical beacon is pending.
+    ///
+    /// - Important: Never call from `queue` (the shared bleQueue) — deadlock.
+    func hasFreshEncounters(since: Date) -> Bool {
+        queue.sync {
+            peers.values.contains { $0.rpi != nil && $0.lastSeen > since }
+        }
+    }
+
     /// Non-destructive snapshot of every identified peer, for the sync payload.
     /// Peers whose identifier has not been read yet are withheld — they join a later
     /// sync once the GATT read lands.
