@@ -42,6 +42,15 @@ BearoundSDK provides BLE beacon detection and indoor location technology for iOS
 - **Bluetooth** — the primary detection path (Bluetooth eye). No Location permission is required for foreground/background detection.
 - **Location "Always"** — optional. Unlocks the Location eye (force-quit survival via region monitoring); see [Terminated App Detection](#terminated-app-detection).
 
+Installing via CocoaPods needs nothing extra to reach iOS 13 — the pod is source-based, so
+the SDK compiles at *your* app's deployment target. If you ship a **pre-built
+`BearoundSDK.xcframework`** instead, it must be built at `13.0`: a framework compiled for a
+newer OS links Swift-Foundation symbols that older iOS does not have, and the host app dies
+at launch with `dyld: Symbol not found` — the install reports success and the icon just
+bounces. Validated on an iPhone 7 running iOS 15.8; the full checklist, including how to
+drive an iOS-15 device from the CLI, is in
+[docs/LEGACY-IOS-DEVICES.md](docs/LEGACY-IOS-DEVICES.md).
+
 ### Installation
 
 #### CocoaPods
