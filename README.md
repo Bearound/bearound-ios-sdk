@@ -93,6 +93,15 @@ Add the following key to your `Info.plist` (required — Bluetooth is the primar
 <string>This app uses Bluetooth to detect nearby Bearound beacons.</string>
 ```
 
+That single Bluetooth permission also covers the **encounter layer**: besides listening
+for beacons, the device advertises a fixed Bearound service and recognises other
+SDK-carrying devices nearby, reporting "saw identifier X at Y dBm" in the regular sync.
+Nothing stable goes on the air (a random identifier rotating every 15 minutes), there is
+no extra prompt, and no additional `Info.plist` key — it runs whenever scanning runs and
+stops with `stopScanning()`. In foreground the device also interleaves an iBeacon-format
+frame with a reserved major (`65535`) so nearby devices' region monitoring can fire on
+its proximity; that frame is filtered out of detection on every receive path.
+
 If you opt into the **Location eye** (force-quit survival — see [Terminated App Detection](#terminated-app-detection)), also add:
 
 ```xml
