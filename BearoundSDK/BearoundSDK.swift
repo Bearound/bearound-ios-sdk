@@ -831,7 +831,8 @@ public class BeAroundSDK {
         periodicReconciliationEnabled: Bool = true,
         periodicReconciliationInterval: TimeInterval = PeriodicReconciliationDefaults.interval,
         periodicScanDuration: TimeInterval = PeriodicReconciliationDefaults.scanDuration,
-        requestTrackingOnStart: Bool = true
+        requestTrackingOnStart: Bool = true,
+        presenceHeartbeatInterval: TimeInterval = PresenceHeartbeatDefaults.interval
     ) {
         let config = SDKConfiguration(
             businessToken: businessToken,
@@ -841,7 +842,8 @@ public class BeAroundSDK {
             periodicReconciliationEnabled: periodicReconciliationEnabled,
             periodicReconciliationInterval: periodicReconciliationInterval,
             periodicScanDuration: periodicScanDuration,
-            requestTrackingOnStart: requestTrackingOnStart
+            requestTrackingOnStart: requestTrackingOnStart,
+            presenceHeartbeatInterval: presenceHeartbeatInterval
         )
 
         configuration = config
@@ -1502,6 +1504,31 @@ public class BeAroundSDK {
         return true
     }
 
+    /// Timestamp of the last empty-scan report, for the throttle in
+    /// `shouldReportEmptyScan(for:)`.
+    private var lastPresenceHeartbeatAt = Date.distantPast
+
+    /// True when a scan that found nothing should still report in.
+    ///
+    /// The scan found no beacon and no peer — but the device has its own location, or the
+    /// Wi-Fi around it, and *that* is the datum: it was here, and there was nothing here.
+    /// Without this the backend cannot tell "no coverage" apart from "app not running".
+    ///
+    /// Throttled by ``SDKConfiguration/presenceHeartbeatInterval`` (5 min by default, `0`
+    /// disables it) so a phone sitting still overnight does not repeat one coordinate every
+    /// minute. Only the upload is throttled — scanning never stops. Advances the timestamp
+    /// on approval, mirroring `shouldSyncEncountersWithoutBeacons()`.
+    private func shouldReportEmptyScan() -> Bool {
+        let interval = configuration?.presenceHeartbeatInterval ?? PresenceHeartbeatDefaults.interval
+        guard interval > 0 else { return false }
+        guard Date().timeIntervalSince(lastPresenceHeartbeatAt) >= interval else { return false }
+        // Nothing to say: no fix and no access point. Reporting an empty shell would cost a
+        // request and teach the backend nothing.
+        guard deviceInfoCollector.hasPresenceSignal() else { return false }
+        lastPresenceHeartbeatAt = Date()
+        return true
+    }
+
     /// Attaches encounter-mesh data (peer sightings + this device's rotating identifiers)
     /// to an outgoing payload. No-op before the mesh spins up (e.g. Bluetooth denied) —
     /// the fields stay empty and the payload builder omits them.
@@ -1620,6 +1647,13 @@ public class BeAroundSDK {
                 if self.shouldSyncEncountersWithoutBeacons() {
                     NSLog("[BeAroundSDK] No new beacons — syncing encounter batch")
                     if self.syncTrigger == "unknown" { self.syncTrigger = "encounter_mesh" }
+                } else if self.shouldReportEmptyScan() {
+                    // The scan found nothing at all — and that is the point. Where the device
+                    // is, and which access points it can see, tells the backend there was
+                    // coverage here and nothing in it; staying silent is indistinguishable
+                    // from the app not running. Throttled by presenceHeartbeatInterval.
+                    NSLog("[BeAroundSDK] No beacons or peers — reporting empty scan (location/Wi-Fi)")
+                    if self.syncTrigger == "unknown" { self.syncTrigger = "presence_heartbeat" }
                 } else {
                     NSLog("[BeAroundSDK] No new beacons to sync")
                     // No new beacons — drain retry queue if pending batches exist
