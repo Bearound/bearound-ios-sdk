@@ -19,6 +19,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   when the host app lacks the permissions — an app that grants nothing sends exactly the
   payload it sent before. The SDK never requests an active location fix and never starts
   a Wi-Fi scan of its own; it reads what the platform already has.
+- **A scan that finds nothing now reports in too.** Until now a device that saw no beacon
+  and no peer stayed silent, and the backend could not tell "there was no coverage here"
+  apart from "the app was not running". Those scans now upload the device's own location
+  and the Wi-Fi around it, under the `presence_heartbeat` sync trigger. Throttled by the
+  new `configure(presenceHeartbeatInterval:)` — **5 minutes** by default, accepted range
+  1 minute to 1 hour, `0` to turn the report off. Only the upload is throttled; scanning is
+  unchanged. Nothing is sent when there is neither a location fix nor an access point to
+  report. Requires an ingest that accepts this payload shape (beacon-ingest ≥ #24).
 - **Advertising identifier (IDFA).** Reported as `device.permissions.advertisingId` while
   tracking is authorised, with `trackingAuthorization` always present so a refusal is
   distinguishable from a prompt that was never shown.
@@ -39,12 +47,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   so a refresh that found nothing left the previous result in place — a device far from
   any beacon kept being notified about the beacons it had seen hours before. The snapshot
   is now reset at the start of every refresh and written on every terminal path.
-- **Uploads with nothing to report no longer leave the device.** A payload with an empty
-  beacon list is answered `400 Missing beacons in payload` unless it is a `register` or
-  carries encounters. The API layer now enforces that rule at the boundary — mirroring the
-  ingest — instead of spending a request to learn it. It completes as success on purpose:
-  nothing was sent, so it must not count against the retry backoff. New `BearoundErrorCode`:
-  `invalidPayload` (10).
+- **Wi-Fi observations were never actually collected.** `wifis[]`, `device.network.apId`
+  and `device.network.wifiSSID` shipped as code but arrived empty on every payload: the
+  collector's cache is filled by a refresh call that nothing ever made. The refresh is now
+  armed on each payload build, so the value lands from the following sync onwards.
 
 ## [3.7.0] - 2026-08-01
 
