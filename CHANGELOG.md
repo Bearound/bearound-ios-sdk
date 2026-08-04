@@ -9,9 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 - **Encounter layer — device-to-device BLE sightings.** The SDK now records nearby Bearound
-  devices, not only beacons, and attaches those sightings to the payloads it already sends.
-  Uploads carrying encounters but **no beacon at all** are held for now (see *Fixed*) — they
-  are the one shape the ingest does not yet accept.
+  devices, not only beacons. Encounters ride along on every payload, and a device that sees
+  peers with **no beacon in range** uploads them on their own (throttled to once a minute)
+  instead of dropping them. Requires an ingest that accepts a beacon-less payload — deploy
+  the backend before shipping this build.
 - **Wi-Fi observations and device location in the `/ingest` payload.** Each sighting can
   now carry the access points visible at collection time (`wifis[]`, each with a hashed
   `apId`) plus the last known location, alongside the beacons. Both are omitted entirely
@@ -38,12 +39,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   so a refresh that found nothing left the previous result in place — a device far from
   any beacon kept being notified about the beacons it had seen hours before. The snapshot
   is now reset at the start of every refresh and written on every terminal path.
-- **Uploads with an empty beacon list are blocked before they leave.** The ingest accepts an
-  empty `beacons` array only for `syncTrigger: "register"` and answers everything else
-  `400 Missing beacons in payload`. The encounter layer was sending exactly such a payload
-  once a minute, so the data was discarded on arrival. The API layer now refuses it at the
-  boundary, and the encounter-only upload waits for backend support — encounters still ride
-  along on every payload that carries at least one beacon. New `BearoundErrorCode`:
+- **Uploads with nothing to report no longer leave the device.** A payload with an empty
+  beacon list is answered `400 Missing beacons in payload` unless it is a `register` or
+  carries encounters. The API layer now enforces that rule at the boundary — mirroring the
+  ingest — instead of spending a request to learn it. It completes as success on purpose:
+  nothing was sent, so it must not count against the retry backoff. New `BearoundErrorCode`:
   `invalidPayload` (10).
 
 ## [3.7.0] - 2026-08-01
