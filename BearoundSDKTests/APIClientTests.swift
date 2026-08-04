@@ -168,6 +168,21 @@ struct APIClientTests {
         #expect(device.appInForeground == true)
     }
     
+    @Test("Só register pode subir com a lista de beacons vazia")
+    func onlyRegisterAcceptsEmptyBeacons() {
+        #expect(APIClient.acceptsEmptyBeacons(syncTrigger: "register"))
+
+        // Todo o resto tem de ser recusado antes de virar requisição — o ingest responde
+        // 400 "Missing beacons in payload" a qualquer um deles. `encounter_mesh` é o que
+        // de fato escapou em campo.
+        for trigger in [
+            "encounter_mesh", "ble_detection", "precision_high_timer",
+            "bluetooth_zone_enter", "background_fetch", "unknown", "", "Register", "register ",
+        ] {
+            #expect(!APIClient.acceptsEmptyBeacons(syncTrigger: trigger), "aceitou \(trigger)")
+        }
+    }
+
     @Test("Beacon metadata model")
     func beaconMetadataModel() {
         let metadata = BeaconMetadata(

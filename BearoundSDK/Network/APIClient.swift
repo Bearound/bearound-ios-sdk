@@ -268,6 +268,16 @@ class APIClient {
     /// background task's `taskDescription` so a task that outlives the process can still
     /// reconcile (remove) its batches on success after relaunch. Empty for payloads with no
     /// durable copy (e.g. register).
+    /// The one payload shape the ingest accepts with an empty `beacons` array.
+    ///
+    /// Mirrors `beacon-ingest/src/index.ts`, which short-circuits on
+    /// `syncTrigger === "register"` and answers `400 Missing beacons in payload` to everything
+    /// else. Named (rather than inlined) because this is the rule that was violated silently:
+    /// the encounter layer began uploading beacon-less payloads and nothing here objected.
+    static func acceptsEmptyBeacons(syncTrigger: String) -> Bool {
+        syncTrigger == "register"
+    }
+
     func sendBeacons(
         _ beacons: [Beacon],
         sdkInfo: SDKInfo,
@@ -278,9 +288,32 @@ class APIClient {
         persistedBatchIds: [String] = [],
         completion: @escaping (Result<Void, Error>) -> Void
     ) {
-        // Empty-beacons payloads are valid: syncTrigger="register" sends beacons:[] intentionally.
-        // The BearoundSDK.syncBeacons() path already guards against empty-list no-ops before
-        // calling here, so removing this early-exit does not introduce spurious network requests.
+        // `register` is the ONLY payload the ingest accepts with an empty beacon list; every
+        // other one is answered 400 "Missing beacons in payload". Enforced here, at the
+        // boundary, because the previous unconditional early-exit was removed to let `register`
+        // through — and that quietly opened the door for the encounter layer to ship a
+        // beacon-less upload that the backend rejected on arrival.
+        //
+        // Completes as SUCCESS on purpose: reaching here is an SDK-side mistake, not a delivery
+        // failure. Reporting it as a failure would bump `consecutiveFailures` and push the retry
+        // drain into exponential backoff — punishing real batches for a request that was never
+        // sent. Telemetry carries the signal instead, so the mistake is still visible.
+        guard !beacons.isEmpty || Self.acceptsEmptyBeacons(syncTrigger: syncTrigger) else {
+            NSLog("[BeAroundSDK] Upload sem beacons bloqueado (syncTrigger=%@) — o ingest só aceita vazio em register", syncTrigger)
+            ErrorReporter.shared.report(
+                NSError(
+                    domain: "BeAroundSDK",
+                    code: BearoundErrorCode.invalidPayload.rawValue,
+                    userInfo: [
+                        NSLocalizedDescriptionKey:
+                            "Upload com beacons vazio bloqueado (syncTrigger=\(syncTrigger))"
+                    ]
+                ),
+                context: "sendBeacons.emptyBeacons"
+            )
+            completion(.success(()))
+            return
+        }
 
         guard let url = URL(string: "\(configuration.apiBaseURL)/ingest") else {
             completion(.failure(APIError.invalidURL))

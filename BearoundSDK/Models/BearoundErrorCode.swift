@@ -59,4 +59,10 @@ public enum BearoundErrorCode: Int {
     /// protection, missing Application Support). The upload still proceeds, but
     /// without a durable copy — a crash mid-upload loses the batch.
     case storageFailure = 9
+
+    /// An upload was assembled that the ingest cannot accept — today, a payload with an
+    /// empty `beacons` array under any `syncTrigger` other than `register`. Blocked at the
+    /// API boundary before the request leaves, and reported here rather than as a delivery
+    /// failure: nothing was sent, so it must not count against the retry backoff.
+    case invalidPayload = 10
 }
