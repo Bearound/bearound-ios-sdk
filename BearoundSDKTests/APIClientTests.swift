@@ -168,7 +168,7 @@ struct APIClientTests {
         #expect(device.appInForeground == true)
     }
     
-    @Test("Lista de beacons vazia só sobe em register ou com encontros")
+    @Test("Lista de beacons vazia só sobe quando há o que arquivar")
     func emptyBeaconsRule() {
         // register: registra o aparelho antes de ele ter visto qualquer beacon.
         #expect(APIClient.acceptsEmptyBeacons(syncTrigger: "register", hasEncounters: false))
@@ -177,10 +177,22 @@ struct APIClientTests {
         #expect(APIClient.acceptsEmptyBeacons(syncTrigger: "encounter_mesh", hasEncounters: true))
         #expect(APIClient.acceptsEmptyBeacons(syncTrigger: "ble_detection", hasEncounters: true))
 
-        // Sem beacon e sem encontro não há nada a registrar — o ingest responde 400
-        // "Missing beacons in payload", então isso não pode virar requisição.
+        // Scan que não achou nada: onde o aparelho estava, e o Wi-Fi ao redor, É o dado.
+        #expect(
+            APIClient.acceptsEmptyBeacons(
+                syncTrigger: "presence_heartbeat", hasEncounters: false, hasLocation: true
+            )
+        )
+        #expect(
+            APIClient.acceptsEmptyBeacons(
+                syncTrigger: "presence_heartbeat", hasEncounters: false, hasWifis: true
+            )
+        )
+
+        // Sem beacon, sem encontro, sem localização e sem Wi-Fi não há nada a registrar — o
+        // ingest responde 400 "Missing beacons in payload", então isso não pode virar requisição.
         for trigger in [
-            "encounter_mesh", "ble_detection", "precision_high_timer",
+            "encounter_mesh", "ble_detection", "precision_high_timer", "presence_heartbeat",
             "bluetooth_zone_enter", "background_fetch", "unknown", "", "Register", "register ",
         ] {
             #expect(
