@@ -1475,6 +1475,27 @@ public class BeAroundSDK {
         }
     }
 
+    /// Adds a reason to the composed trigger instead of replacing it.
+    ///
+    /// What *woke* the sync and what is *actually going up* are different facts, and the
+    /// wire needs both. The previous form — assigning only while the trigger was still
+    /// `"unknown"` — meant neither `encounter_mesh` nor `presence_heartbeat` ever reached
+    /// the payload on a coordinated sync: `coordinatorFire()` always writes the scheduler's
+    /// reason first, so the guard was never true. Every empty-scan report went out labelled
+    /// `precision_high_timer`, indistinguishable from an ordinary sync, which defeats the
+    /// point of having the trigger at all.
+    private func addingSyncReason(_ reason: String) -> String {
+        Self.composedTrigger(current: syncTrigger, adding: reason)
+    }
+
+    /// Pure form of the above, so the composition is covered by tests.
+    static func composedTrigger(current: String, adding reason: String) -> String {
+        guard current != "unknown", !current.isEmpty else { return reason }
+        var parts = Set(current.split(separator: "+").map(String.init))
+        parts.insert(reason)
+        return parts.sorted().joined(separator: "+")
+    }
+
     /// Runs on beaconQueue. Consumes the pending reasons and starts one sync.
     private func coordinatorFire() {
         coordinatorScheduled = false
@@ -1646,14 +1667,14 @@ public class BeAroundSDK {
                 // an upload.
                 if self.shouldSyncEncountersWithoutBeacons() {
                     NSLog("[BeAroundSDK] No new beacons — syncing encounter batch")
-                    if self.syncTrigger == "unknown" { self.syncTrigger = "encounter_mesh" }
+                    self.syncTrigger = self.addingSyncReason("encounter_mesh")
                 } else if self.shouldReportEmptyScan() {
                     // The scan found nothing at all — and that is the point. Where the device
                     // is, and which access points it can see, tells the backend there was
                     // coverage here and nothing in it; staying silent is indistinguishable
                     // from the app not running. Throttled by presenceHeartbeatInterval.
                     NSLog("[BeAroundSDK] No beacons or peers — reporting empty scan (location/Wi-Fi)")
-                    if self.syncTrigger == "unknown" { self.syncTrigger = "presence_heartbeat" }
+                    self.syncTrigger = self.addingSyncReason("presence_heartbeat")
                 } else {
                     NSLog("[BeAroundSDK] No new beacons to sync")
                     // No new beacons — drain retry queue if pending batches exist
