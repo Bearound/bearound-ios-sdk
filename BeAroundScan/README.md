@@ -1,6 +1,34 @@
 # BeAroundScan - App de Exemplo
 
-App de exemplo para demonstrar todas as funcionalidades do **BearoundSDK v2.2.0**.
+App de exemplo para demonstrar as funcionalidades do **BearoundSDK**.
+
+## 🚀 Buildar e instalar num aparelho
+
+```bash
+./install_example.sh              # da raiz do repo, no primeiro aparelho disponível
+./install_example.sh <UDID>       # num aparelho específico
+./install_example.sh --list       # listar aparelhos
+```
+
+O script reconstrói o XCFramework quando o fonte do SDK mudou, builda, confere assinatura
+e versão, e só então instala — imprimindo no fim qual SDK foi para o aparelho.
+
+> ⚠️ **Este app NÃO compila o SDK.** Ele linka o artefato pré-construído em
+> `../build/BearoundSDK.xcframework`. Alterar código do SDK e apertar Build no Xcode
+> geraria um app com o SDK **antigo** dentro, em silêncio — foi assim que um teste de campo
+> chegou a "validar" uma correção que nunca esteve no binário.
+>
+> Por isso existe a build phase **"Verificar frescor do XCFramework"**: ela roda antes de
+> compilar e **falha o build** se qualquer `.swift` do SDK for mais novo que o artefato,
+> dizendo qual arquivo e o que fazer. Todo build também imprime
+> `note: BearoundSDK embarcado neste build: X.Y.Z`.
+>
+> Se precisar reinstalar a phase (projeto recriado, merge que a perdeu):
+> `scripts/add-freshness-guard.sh`
+>
+> Para conferir o que está rodando de fato num aparelho, a fonte de verdade é o payload:
+> o campo `sdk.version` lê o `CFBundleShortVersionString` do framework embarcado. A tela de
+> Ajustes do app mostra o mesmo valor.
 
 ## 🎯 Funcionalidades
 
