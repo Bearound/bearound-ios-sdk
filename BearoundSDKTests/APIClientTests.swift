@@ -202,6 +202,32 @@ struct APIClientTests {
         }
     }
 
+    @Test("o motivo do envio sobrevive ao motivo que agendou o sync")
+    func composedSyncTrigger() {
+        // A regressão que isto tranca: o carimbo só acontecia enquanto o trigger ainda era
+        // "unknown", mas o coordenador SEMPRE escreve o motivo do agendamento antes. Resultado:
+        // nem encounter_mesh nem presence_heartbeat chegavam ao payload — todo reporte de scan
+        // vazio subia como "precision_high_timer", indistinguível de um sync comum.
+        #expect(
+            BeAroundSDK.composedTrigger(current: "precision_high_timer", adding: "presence_heartbeat")
+                == "precision_high_timer+presence_heartbeat"
+        )
+        #expect(
+            BeAroundSDK.composedTrigger(current: "ble_detection+precision_high_timer", adding: "encounter_mesh")
+                == "ble_detection+encounter_mesh+precision_high_timer"
+        )
+
+        // Sem motivo prévio, o motivo do envio é o trigger inteiro.
+        #expect(BeAroundSDK.composedTrigger(current: "unknown", adding: "presence_heartbeat") == "presence_heartbeat")
+        #expect(BeAroundSDK.composedTrigger(current: "", adding: "encounter_mesh") == "encounter_mesh")
+
+        // Idempotente: reentrar no mesmo caminho não duplica a razão.
+        #expect(
+            BeAroundSDK.composedTrigger(current: "presence_heartbeat", adding: "presence_heartbeat")
+                == "presence_heartbeat"
+        )
+    }
+
     @Test("Beacon metadata model")
     func beaconMetadataModel() {
         let metadata = BeaconMetadata(
