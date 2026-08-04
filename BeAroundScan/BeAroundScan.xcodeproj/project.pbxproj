@@ -9,7 +9,7 @@
 /* Begin PBXBuildFile section */
 		7CFC23D12F02FD140097E609 /* BearoundSDK.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 7CFC23D02F02FD140097E609 /* BearoundSDK.xcframework */; };
 		7CFC23D22F02FD140097E609 /* BearoundSDK.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 7CFC23D02F02FD140097E609 /* BearoundSDK.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
-		D073F62B2EFF82CB00B7B602 /* Base.lproj/LaunchScreen.storyboard in Resources */ = {isa = PBXBuildFile; fileRef = D073F62A2EFF82CB00B7B602 /* Base.lproj/LaunchScreen.storyboard */; };
+		D073F62B2EFF82CB00B7B602 /* LaunchScreen.storyboard in Resources */ = {isa = PBXBuildFile; fileRef = D073F62A2EFF82CB00B7B602 /* LaunchScreen.storyboard */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXCopyFilesBuildPhase section */
@@ -29,12 +29,14 @@
 /* Begin PBXFileReference section */
 		7CFC23D02F02FD140097E609 /* BearoundSDK.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = BearoundSDK.xcframework; path = ../build/BearoundSDK.xcframework; sourceTree = "<group>"; };
 		D05732302EFF295000EEAE6E /* BeAroundScan.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = BeAroundScan.app; sourceTree = BUILT_PRODUCTS_DIR; };
-		D073F62A2EFF82CB00B7B602 /* Base.lproj/LaunchScreen.storyboard */ = {isa = PBXFileReference; lastKnownFileType = file.storyboard; path = Base.lproj/LaunchScreen.storyboard; sourceTree = "<group>"; };
+		D073F62A2EFF82CB00B7B602 /* LaunchScreen.storyboard */ = {isa = PBXFileReference; lastKnownFileType = file.storyboard; path = Base.lproj/LaunchScreen.storyboard; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
 		D05732322EFF295000EEAE6E /* BeAroundScan */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+			);
 			path = BeAroundScan;
 			sourceTree = "<group>";
 		};
@@ -81,7 +83,7 @@
 		D06F61B12F00B13500FE6C66 /* Recovered References */ = {
 			isa = PBXGroup;
 			children = (
-				D073F62A2EFF82CB00B7B602 /* Base.lproj/LaunchScreen.storyboard */,
+				D073F62A2EFF82CB00B7B602 /* LaunchScreen.storyboard */,
 			);
 			name = "Recovered References";
 			sourceTree = "<group>";
@@ -93,6 +95,7 @@
 			isa = PBXNativeTarget;
 			buildConfigurationList = D057323B2EFF295100EEAE6E /* Build configuration list for PBXNativeTarget "BeAroundScan" */;
 			buildPhases = (
+				CFCFF6CB39B4B74F878286F8 /* Verificar frescor do XCFramework */,
 				D057322C2EFF295000EEAE6E /* Sources */,
 				D057322D2EFF295000EEAE6E /* Frameworks */,
 				D057322E2EFF295000EEAE6E /* Resources */,
@@ -134,8 +137,6 @@
 			);
 			mainGroup = D05732272EFF295000EEAE6E;
 			minimizedProjectReferenceProxies = 1;
-			packageReferences = (
-			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = D05732312EFF295000EEAE6E /* Products */;
 			projectDirPath = "";
@@ -151,11 +152,33 @@
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				D073F62B2EFF82CB00B7B602 /* Base.lproj/LaunchScreen.storyboard in Resources */,
+				D073F62B2EFF82CB00B7B602 /* LaunchScreen.storyboard in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 /* End PBXResourcesBuildPhase section */
+
+/* Begin PBXShellScriptBuildPhase section */
+		CFCFF6CB39B4B74F878286F8 /* Verificar frescor do XCFramework */ = {
+			isa = PBXShellScriptBuildPhase;
+			alwaysOutOfDate = 1;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+			);
+			inputPaths = (
+			);
+			name = "Verificar frescor do XCFramework";
+			outputFileListPaths = (
+			);
+			outputPaths = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/bash;
+			shellScript = "\"$SRCROOT/../scripts/verify-xcframework-fresh.sh\"\n";
+		};
+/* End PBXShellScriptBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
 		D057322C2EFF295000EEAE6E /* Sources */ = {
