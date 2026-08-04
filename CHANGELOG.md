@@ -5,6 +5,19 @@ All notable changes to BearoundSDK for iOS will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.8.1] - 2026-08-04
+
+### Fixed
+- **`encounter_mesh` and `presence_heartbeat` never reached the payload.** Both were stamped
+  only while `syncTrigger` was still `"unknown"`, but the sync coordinator always writes the
+  scheduling reason first — so on any coordinated sync the guard was false and the reason was
+  dropped. Every encounter batch and every empty-scan report went out labelled
+  `precision_high_timer`, indistinguishable from an ordinary sync, which defeats the point of
+  the trigger. The reason is now **composed** with the scheduler's, in the format the
+  coordinator already produces (`precision_high_timer+presence_heartbeat`): what woke the sync
+  and what is actually going up are different facts and the wire needs both. No new field and
+  no contract change — a payload that carried no explanation now carries one.
+
 ## [3.8.0] - 2026-08-04
 
 ### Added
