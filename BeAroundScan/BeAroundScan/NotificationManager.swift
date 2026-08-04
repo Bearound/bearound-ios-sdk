@@ -198,6 +198,11 @@ class NotificationManager {
 
     /// Fires once when the device enters a beacon zone (rising edge). `eye` names the
     /// detection source — "Bluetooth" works with Location off, "Location" needs Always auth.
+    /// The copy deliberately does NOT promise a beacon. The encounter mesh advertises a
+    /// virtual beacon on the same UUID region monitoring watches (reserved major `0xFF00+`,
+    /// filtered out of detection), precisely so proximity between two SDK hosts fires this
+    /// event. So a zone entry with zero beacons on the wire is correct, not a bug — and
+    /// saying "região de beacons" sent testers looking for a beacon that was never there.
     func notifyZoneEnter(eye: String) {
         guard enableBeaconNotifications else { return }
         guard canSendNotification(for: .zoneEnter) else { return }
@@ -205,7 +210,7 @@ class NotificationManager {
         sendNotification(
             identifier: .zoneEnter,
             title: "Entrou na zona",
-            body: "Bearound detectou uma região de beacons (\(eye))",
+            body: "Sinal Bearound por perto: beacon ou outro aparelho com o SDK (\(eye))",
             sound: .default
         )
     }
@@ -218,7 +223,7 @@ class NotificationManager {
         sendNotification(
             identifier: .zoneExit,
             title: "Saiu da zona",
-            body: "Bearound: você saiu da região de beacons (\(eye))",
+            body: "Sem sinal Bearound por perto (nem beacon, nem aparelho) (\(eye))",
             sound: .default
         )
     }
