@@ -271,14 +271,20 @@ class APIClient {
     /// Which payloads the ingest accepts with an empty `beacons` array.
     ///
     /// Mirrors `beacon-ingest/src/payload_rules.ts`: `register` short-circuits before the
-    /// beacon check, and a payload carrying encounters is accepted because there is still
-    /// something to archive. Everything else is answered `400 Missing beacons in payload`.
+    /// beacon check, and anything else is accepted when it still carries something to
+    /// archive — encounters, the device's own location, or the Wi-Fi around it. Everything
+    /// else is answered `400 Missing beacons in payload`.
     ///
     /// Named (rather than inlined) because this is the rule that was violated silently — the
     /// encounter layer began uploading beacon-less payloads and nothing here objected. Keeping
     /// it in one named place is what makes a future divergence from the backend visible.
-    static func acceptsEmptyBeacons(syncTrigger: String, hasEncounters: Bool) -> Bool {
-        syncTrigger == "register" || hasEncounters
+    static func acceptsEmptyBeacons(
+        syncTrigger: String,
+        hasEncounters: Bool,
+        hasLocation: Bool = false,
+        hasWifis: Bool = false
+    ) -> Bool {
+        syncTrigger == "register" || hasEncounters || hasLocation || hasWifis
     }
 
     func sendBeacons(
@@ -291,8 +297,9 @@ class APIClient {
         persistedBatchIds: [String] = [],
         completion: @escaping (Result<Void, Error>) -> Void
     ) {
-        // `register` is the ONLY payload the ingest accepts with an empty beacon list; every
-        // other one is answered 400 "Missing beacons in payload". Enforced here, at the
+        // A payload with no beacons is only worth a request when it still carries something to
+        // archive — `register`, encounters, the device's own location, or the Wi-Fi around it.
+        // Anything else is answered 400 "Missing beacons in payload". Enforced here, at the
         // boundary, because the previous unconditional early-exit was removed to let `register`
         // through — and that quietly opened the door for the encounter layer to ship a
         // beacon-less upload that the backend rejected on arrival.
@@ -305,7 +312,9 @@ class APIClient {
             !beacons.isEmpty
                 || Self.acceptsEmptyBeacons(
                     syncTrigger: syncTrigger,
-                    hasEncounters: !userDevice.encounters.isEmpty
+                    hasEncounters: !userDevice.encounters.isEmpty,
+                    hasLocation: userDevice.location != nil,
+                    hasWifis: !userDevice.wifis.isEmpty
                 )
         else {
             NSLog("[BeAroundSDK] Upload sem beacons bloqueado (syncTrigger=%@) — o ingest só aceita vazio em register", syncTrigger)

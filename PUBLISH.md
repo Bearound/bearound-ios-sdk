@@ -10,19 +10,25 @@
 
 ## Step-by-step
 
-### 1. Update the version in 3 files
+### 1. Update the version in 4 files
 
-The version must be identical in all three locations:
+The version must be identical in all four locations — the release workflow verifies each
+one against the tag and aborts on the first mismatch:
 
 | File | Where | Example |
 |------|-------|---------|
 | `BearoundSDK.xcodeproj/project.pbxproj` | `MARKETING_VERSION = X.Y.Z;` (all occurrences) | `MARKETING_VERSION = 3.0.0;` |
 | `BearoundSDK.podspec` | `spec.version = "X.Y.Z"` | `spec.version = "3.0.0"` |
+| `BearoundSDK/Constants.swift` | `SDKVersion.current = "X.Y.Z"` | `static let current = "3.0.0"` |
 | `CHANGELOG.md` | `## [X.Y.Z] - YYYY-MM-DD` | `## [3.0.0] - 2026-05-24` |
 
-> The Swift `BeAroundSDK.version` reads `CFBundleShortVersionString` from the framework bundle
-> (derived from `MARKETING_VERSION`) — never edit a version literal in Swift. The release workflow
-> fails if tag != podspec != `MARKETING_VERSION`.
+> **The `Constants.swift` literal is easy to miss** — PR CI does not check it. It is only
+> verified by the release workflow, which runs *after* you push the tag, so a forgotten bump
+> shows up as a failed release rather than a failed PR.
+>
+> At runtime `BeAroundSDK.version` prefers `CFBundleShortVersionString` from the framework
+> bundle (derived from `MARKETING_VERSION`); `SDKVersion.current` is the fallback for when the
+> bundle is unreadable.
 
 ### 2. Update CHANGELOG.md
 
@@ -48,7 +54,8 @@ Add a new section at the top of the file (just below the header) using this form
 ### 3. Commit and push
 
 ```bash
-git add BearoundSDK.xcodeproj/project.pbxproj BearoundSDK.podspec CHANGELOG.md
+git add BearoundSDK.xcodeproj/project.pbxproj BearoundSDK.podspec \
+        BearoundSDK/Constants.swift CHANGELOG.md
 git commit -m "bump: version X.Y.Z"
 git push origin main
 ```

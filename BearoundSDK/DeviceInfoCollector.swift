@@ -125,6 +125,14 @@ final class DeviceInfoCollector: @unchecked Sendable {
 			print("BeAroundSDK: Notification permission cache not ready yet, using default value")
 		}
 
+		// Arms the async Wi-Fi read for the NEXT payload. `refresh()` is the only thing that
+		// ever fills the collector's cache, and until this call existed nothing invoked it —
+		// so `wifis`, `apId` and `wifiSSID` were empty on every payload the SDK ever sent.
+		// Kicked off here (rather than awaited) because the payload builder is synchronous and
+		// `NEHotspotNetwork.fetchCurrent` is not; the value lands one payload later, which is
+		// fine for an access point that changes on the order of minutes.
+		refreshWifi()
+
 		return UserDevice(
 			deviceId: DeviceIdentifier.getDeviceId(),
 			pushToken: PushTokenStore.tokenForPayload,
@@ -173,6 +181,16 @@ final class DeviceInfoCollector: @unchecked Sendable {
 	/// the next payload carries a fresh value; never blocks the caller.
 	func refreshWifi() {
 		wifiCollector.refresh()
+	}
+
+	/// Is there anything worth reporting when the scan found no beacon and no peer?
+	///
+	/// Cheap on purpose: the empty-scan decision runs on every sync tick, and building a whole
+	/// `UserDevice` just to find out there is nothing to say would be the expensive way to
+	/// answer it. Reads the same two sources the payload would carry.
+	func hasPresenceSignal() -> Bool {
+		if locationReader.location != nil { return true }
+		return !wifiCollector.current().isEmpty
 	}
 
 	private func deviceModel() -> String {

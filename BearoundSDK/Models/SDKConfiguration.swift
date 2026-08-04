@@ -31,6 +31,42 @@ private let configLog = OSLog(subsystem: "io.bearound.sdk", category: "configura
 ///   window that eats the whole budget leaves nothing for the sync — the task then
 ///   expires on EVERY run, and the system responds to chronic expiration by granting
 ///   fewer and fewer executions. Half the budget is the safe maximum.
+/// Defaults and bounds for the empty-scan report (see
+/// ``SDKConfiguration/presenceHeartbeatInterval``).
+public enum PresenceHeartbeatDefaults {
+    /// Default floor between two consecutive "saw nothing" reports.
+    public static let interval: TimeInterval = 5 * 60
+    /// Interval floor. Below a minute the same coordinate is repeated for no added meaning,
+    /// and every report wakes the radio.
+    public static let minimumAcceptedInterval: TimeInterval = 60
+    /// Interval ceiling. Past an hour the trail is too sparse to say anything about presence.
+    public static let maximumAcceptedInterval: TimeInterval = 60 * 60
+
+    /// Sanitizes a host-provided interval. Non-positive means "off" and is returned as-is
+    /// (that is the documented way to disable the report); NaN/∞ fall back to the default;
+    /// out-of-range values are clamped. Adjustments are surfaced as `.error`-level os_log.
+    static func sanitizedInterval(_ value: TimeInterval) -> TimeInterval {
+        // Explicit opt-out — not an error, and not clamped into the accepted range.
+        if value <= 0, value.isFinite { return 0 }
+        guard value.isFinite else {
+            os_log("⚠️ BeAroundSDK: presenceHeartbeatInterval (%{public}f) is invalid — using the %{public}.0fs default. Accepted range: %{public}.0fs–%{public}.0fs, or 0 to turn the empty-scan report off.",
+                   log: configLog, type: .error, value, interval, minimumAcceptedInterval, maximumAcceptedInterval)
+            return interval
+        }
+        if value < minimumAcceptedInterval {
+            os_log("⚠️ BeAroundSDK: presenceHeartbeatInterval %{public}.0fs is below the %{public}.0fs floor — CLAMPED. A still device would repeat the same coordinate every few seconds, waking the radio each time, and the extra points say nothing new.",
+                   log: configLog, type: .error, value, minimumAcceptedInterval)
+            return minimumAcceptedInterval
+        }
+        if value > maximumAcceptedInterval {
+            os_log("⚠️ BeAroundSDK: presenceHeartbeatInterval %{public}.0fs is above the %{public}.0fs (1 h) ceiling — CLAMPED. To turn the empty-scan report off, pass 0 instead.",
+                   log: configLog, type: .error, value, maximumAcceptedInterval)
+            return maximumAcceptedInterval
+        }
+        return value
+    }
+}
+
 public enum PeriodicReconciliationDefaults {
     /// Default minimum interval requested between eligible executions.
     public static let interval: TimeInterval = 20 * 60
@@ -166,6 +202,24 @@ public struct SDKConfiguration {
     /// Default: `true`.
     public let requestTrackingOnStart: Bool
 
+    /// How often a scan that found **nothing** still reports in.
+    ///
+    /// A scan that finds no beacon and no peer is data too: the device was *here* and saw
+    /// nothing. Those payloads carry the device's own location and the Wi-Fi it can see, and
+    /// they are what make coverage — and the absence of it — visible.
+    ///
+    /// Only the *upload* is throttled, never the scan: a beacon or an encounter still syncs at
+    /// the normal cadence. This interval is the floor between two consecutive "saw nothing"
+    /// reports, so a phone sitting still all night does not repeat the same coordinate every
+    /// minute for eight hours.
+    ///
+    /// **Accepted range: 1 minute … 1 hour.** Out-of-range values are clamped; invalid ones
+    /// (NaN, ∞) fall back to the default. Use `0` (or any non-positive value) to turn the
+    /// empty-scan report off entirely.
+    ///
+    /// Default: ``PresenceHeartbeatDefaults/interval`` (5 minutes).
+    public let presenceHeartbeatInterval: TimeInterval
+
     public init(
         businessToken: String,
         scanPrecision: ScanPrecision = .high,
@@ -174,7 +228,8 @@ public struct SDKConfiguration {
         periodicReconciliationEnabled: Bool = true,
         periodicReconciliationInterval: TimeInterval = PeriodicReconciliationDefaults.interval,
         periodicScanDuration: TimeInterval = PeriodicReconciliationDefaults.scanDuration,
-        requestTrackingOnStart: Bool = true
+        requestTrackingOnStart: Bool = true,
+        presenceHeartbeatInterval: TimeInterval = PresenceHeartbeatDefaults.interval
     ) {
         self.businessToken = businessToken
         self.scanPrecision = scanPrecision
@@ -188,6 +243,8 @@ public struct SDKConfiguration {
         self.periodicScanDuration =
             PeriodicReconciliationDefaults.sanitizedScanDuration(periodicScanDuration)
         self.requestTrackingOnStart = requestTrackingOnStart
+        self.presenceHeartbeatInterval =
+            PresenceHeartbeatDefaults.sanitizedInterval(presenceHeartbeatInterval)
     }
 
     // MARK: - Per-precision duty-cycle values
