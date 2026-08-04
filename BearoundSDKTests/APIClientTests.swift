@@ -168,18 +168,25 @@ struct APIClientTests {
         #expect(device.appInForeground == true)
     }
     
-    @Test("Só register pode subir com a lista de beacons vazia")
-    func onlyRegisterAcceptsEmptyBeacons() {
-        #expect(APIClient.acceptsEmptyBeacons(syncTrigger: "register"))
+    @Test("Lista de beacons vazia só sobe em register ou com encontros")
+    func emptyBeaconsRule() {
+        // register: registra o aparelho antes de ele ter visto qualquer beacon.
+        #expect(APIClient.acceptsEmptyBeacons(syncTrigger: "register", hasEncounters: false))
 
-        // Todo o resto tem de ser recusado antes de virar requisição — o ingest responde
-        // 400 "Missing beacons in payload" a qualquer um deles. `encounter_mesh` é o que
-        // de fato escapou em campo.
+        // Encontros: viu outros aparelhos, nenhum beacon no alcance. Há o que arquivar.
+        #expect(APIClient.acceptsEmptyBeacons(syncTrigger: "encounter_mesh", hasEncounters: true))
+        #expect(APIClient.acceptsEmptyBeacons(syncTrigger: "ble_detection", hasEncounters: true))
+
+        // Sem beacon e sem encontro não há nada a registrar — o ingest responde 400
+        // "Missing beacons in payload", então isso não pode virar requisição.
         for trigger in [
             "encounter_mesh", "ble_detection", "precision_high_timer",
             "bluetooth_zone_enter", "background_fetch", "unknown", "", "Register", "register ",
         ] {
-            #expect(!APIClient.acceptsEmptyBeacons(syncTrigger: trigger), "aceitou \(trigger)")
+            #expect(
+                !APIClient.acceptsEmptyBeacons(syncTrigger: trigger, hasEncounters: false),
+                "aceitou \(trigger) sem nada para enviar"
+            )
         }
     }
 

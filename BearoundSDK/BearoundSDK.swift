@@ -1492,24 +1492,9 @@ public class BeAroundSDK {
     /// 60s throttle in `shouldSyncEncountersWithoutBeacons()`.
     private var lastEncounterOnlySyncAt = Date.distantPast
 
-    /// Whether the SDK may upload a payload carrying encounters but **no beacons at all**.
-    ///
-    /// Held at `false` until the ingest accepts such a payload. Today it exempts an empty
-    /// `beacons` array for `syncTrigger == "register"` and answers every other one
-    /// `400 Missing beacons in payload` — so the encounter data is discarded on arrival and the
-    /// device spends a request per minute finding that out.
-    ///
-    /// This does **not** disable the encounter layer: encounters ride along on every payload
-    /// that has at least one beacon (see `attachEncounterData`). Only the beacon-less upload
-    /// waits. Flip to `true` in the same change that teaches the ingest to accept it.
-    private static let encounterOnlyUploadEnabled = false
-
     /// True when the mesh has identified sightings newer than the last encounters-only
     /// upload AND that upload was 60s+ ago. Advances the throttle timestamp on success.
     private func shouldSyncEncountersWithoutBeacons() -> Bool {
-        // First guard on purpose: the throttle timestamp must NOT advance while held, so the
-        // first upload after the ingest is ready is not delayed by a stale mark.
-        guard Self.encounterOnlyUploadEnabled else { return false }
         guard let mesh = bluetoothManager.encounterMesh else { return false }
         guard Date().timeIntervalSince(lastEncounterOnlySyncAt) >= 60 else { return false }
         guard mesh.hasFreshEncounters(since: lastEncounterOnlySyncAt) else { return false }

@@ -268,14 +268,17 @@ class APIClient {
     /// background task's `taskDescription` so a task that outlives the process can still
     /// reconcile (remove) its batches on success after relaunch. Empty for payloads with no
     /// durable copy (e.g. register).
-    /// The one payload shape the ingest accepts with an empty `beacons` array.
+    /// Which payloads the ingest accepts with an empty `beacons` array.
     ///
-    /// Mirrors `beacon-ingest/src/index.ts`, which short-circuits on
-    /// `syncTrigger === "register"` and answers `400 Missing beacons in payload` to everything
-    /// else. Named (rather than inlined) because this is the rule that was violated silently:
-    /// the encounter layer began uploading beacon-less payloads and nothing here objected.
-    static func acceptsEmptyBeacons(syncTrigger: String) -> Bool {
-        syncTrigger == "register"
+    /// Mirrors `beacon-ingest/src/payload_rules.ts`: `register` short-circuits before the
+    /// beacon check, and a payload carrying encounters is accepted because there is still
+    /// something to archive. Everything else is answered `400 Missing beacons in payload`.
+    ///
+    /// Named (rather than inlined) because this is the rule that was violated silently — the
+    /// encounter layer began uploading beacon-less payloads and nothing here objected. Keeping
+    /// it in one named place is what makes a future divergence from the backend visible.
+    static func acceptsEmptyBeacons(syncTrigger: String, hasEncounters: Bool) -> Bool {
+        syncTrigger == "register" || hasEncounters
     }
 
     func sendBeacons(
@@ -298,7 +301,13 @@ class APIClient {
         // failure. Reporting it as a failure would bump `consecutiveFailures` and push the retry
         // drain into exponential backoff — punishing real batches for a request that was never
         // sent. Telemetry carries the signal instead, so the mistake is still visible.
-        guard !beacons.isEmpty || Self.acceptsEmptyBeacons(syncTrigger: syncTrigger) else {
+        guard
+            !beacons.isEmpty
+                || Self.acceptsEmptyBeacons(
+                    syncTrigger: syncTrigger,
+                    hasEncounters: !userDevice.encounters.isEmpty
+                )
+        else {
             NSLog("[BeAroundSDK] Upload sem beacons bloqueado (syncTrigger=%@) — o ingest só aceita vazio em register", syncTrigger)
             ErrorReporter.shared.report(
                 NSError(
