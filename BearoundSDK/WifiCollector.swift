@@ -13,7 +13,11 @@ import SystemConfiguration.CaptiveNetwork
 /// Two host-app requirements, both outside the SDK's control:
 ///
 /// - the **Access WiFi Information** capability (`com.apple.developer.networking.wifi-info`)
-/// - location authorisation (When In Use is enough)
+/// - location authorisation — When In Use is enough **while the app is in the foreground**;
+///   `.always` is what keeps the access point coming once it is backgrounded. With
+///   `.whenInUse` iOS returns `nil` in the background rather than an error, so the payload
+///   simply arrives without Wi-Fi and nothing reports why. A fleet lives in the background,
+///   so this is the difference between collecting and not collecting.
 ///
 /// Without either, iOS returns `nil` and the SDK simply reports no Wi-Fi — every other
 /// feature behaves exactly as before.
