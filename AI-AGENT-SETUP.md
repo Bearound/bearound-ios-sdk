@@ -101,7 +101,14 @@ Start; the steps below refine it).
    Do NOT add the location usage strings by default: the Bluetooth-only default keeps
    ONLY NSBluetoothAlwaysUsageDescription. Add NSLocationWhenInUseUsageDescription and
    NSLocationAlwaysAndWhenInUseUsageDescription ONLY if you enable the Location eye
-   (step 4).
+   (step 4) OR if I want Wi-Fi observations collected in the BACKGROUND. On the Wi-Fi
+   side the level matters and the difference is invisible: .whenInUse reveals the access
+   point only while the app is on screen — once backgrounded iOS returns nil, not an
+   error, so the payload just arrives without Wi-Fi and nothing says why. A fleet lives
+   in the background, so .whenInUse means "almost never". If the Location eye is already
+   on, .always covers both and there is nothing extra to decide; if it is NOT on, ASK ME
+   before requesting .always purely for Wi-Fi — it is a real prompt with a real refusal
+   rate.
    - NSUserTrackingUsageDescription — add it ONLY if I ask for the advertising
      identifier (IDFA). ASK ME before adding it: the key alone makes the SDK show the
      App Tracking Transparency prompt, and prompting for tracking obliges the app to
@@ -155,8 +162,10 @@ Guardrails — follow strictly:
   Background Modes capability -> enable Remote notifications (plus Location updates
   and Uses Bluetooth LE accessories); the Access WiFi Information capability, which
   unlocks the Wi-Fi observations (optional — without it the SDK just omits those
-  fields and everything else works); and on-device Always location + Background App
-  Refresh. Do not attempt those yourself.
+  fields and everything else works; note the capability alone is not enough, the
+  collection also needs location authorisation, and .always for it to survive
+  backgrounding); and on-device Always location + Background App Refresh. Do not
+  attempt those yourself.
 ```
 
 Web-capable agents can fetch this prompt directly from its raw URL:

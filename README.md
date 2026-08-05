@@ -140,8 +140,22 @@ silently returns nothing.
 **2. Request location authorisation** — iOS will not reveal the access point without it:
 
 ```swift
-BeAroundSDK.shared.requestLocationAuthorization(.whenInUse)
+BeAroundSDK.shared.requestLocationAuthorization(.always)
 ```
+
+> ### ⚠️ `.whenInUse` collects Wi-Fi only while your app is open
+>
+> Both levels unlock the access point, but not for the same amount of time. With
+> `.whenInUse`, iOS stops revealing it once your app is backgrounded — it returns `nil`, not
+> an error, so the SDK simply reports no Wi-Fi and nothing anywhere says why.
+>
+> Since a fleet spends almost all of its time in the background, "foreground only" means
+> "almost never". If you test by hand with the app open, it will look perfect.
+>
+> `.always` is what keeps the collection alive in the background — and if you already
+> enabled the [Location eye](#the-two-eyes) for force-quit survival, you are asking for it
+> anyway. Requesting `.always` purely for Wi-Fi, on an app that does not need the Location
+> eye, is a real prompt with a real refusal rate: decide it deliberately.
 
 `.whenInUse` is enough here. If you already call `.always` for the Location eye, you are
 covered and there is nothing else to do.
@@ -489,8 +503,9 @@ BeAroundSDK.shared.requestLocationAuthorization(.always)
 ```
 
 The same call unlocks [Wi-Fi observations](#wi-fi-observations-optional) — iOS requires
-location authorisation before it will reveal the connected access point, and `.whenInUse` is
-enough for that.
+location authorisation before it will reveal the connected access point. `.whenInUse` is
+enough while your app is in the foreground; **`.always` is what keeps it coming in the
+background**, which for a real fleet is nearly all of the time.
 
 **Check Permission Status:**
 ```swift
