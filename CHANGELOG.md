@@ -5,6 +5,23 @@ All notable changes to BearoundSDK for iOS will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.8.2] - 2026-08-17
+
+### Fixed
+- **The iOS Bluetooth alert no longer pops up over other apps.** Both `CBCentralManager`
+  instances — the scanner's and the throwaway one telemetry uses to snapshot the radio state —
+  were created without `CBCentralManagerOptionShowPowerAlertKey`, which defaults to `true`.
+  With the radio off or the Bluetooth permission denied, iOS answers that instantiation with
+  its own alert ("… would like to use Bluetooth for new connections" / "turn on Bluetooth").
+  Because the SDK wakes in the **background** (CoreBluetooth state restoration) and telemetry
+  runs in the background too, that alert surfaced **on top of whatever app the user had open** —
+  the host app's name showing up in an alert while the user was somewhere else entirely.
+  Both managers now pass `ShowPowerAlert: false`, mirroring what `EncounterMeshManager` already
+  did for its `CBPeripheralManager`. Nothing changes functionally: scanning stays gated on
+  `state == .poweredOn` and authorization is still read from `CBCentralManager.authorization`,
+  so a user with Bluetooth off or denied simply doesn't scan — silently, without the
+  interruption. The first-time authorization prompt is a different mechanism and is unaffected.
+
 ## [3.8.1] - 2026-08-04
 
 ### Fixed
