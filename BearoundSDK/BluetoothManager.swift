@@ -79,7 +79,15 @@ class BluetoothManager: NSObject {
     }
 
     private lazy var centralManager: CBCentralManager = {
-        var options: [String: Any] = [:]
+        // ShowPowerAlert:false — do NOT let iOS surface its own Bluetooth alert ("… would
+        // like to use Bluetooth for new connections / turn on Bluetooth") when the radio is
+        // off or the permission is denied. The SDK wakes in the BACKGROUND (state
+        // restoration), so that OS alert popped up OVER whatever app the user was in. We
+        // already handle unauthorized/poweredOff ourselves (scans are gated on
+        // `state == .poweredOn`; authorization is read via `CBCentralManager.authorization`),
+        // so suppressing the alert loses no functionality — it only removes the intrusion.
+        // Mirrors what EncounterMeshManager already does for its CBPeripheralManager.
+        var options: [String: Any] = [CBCentralManagerOptionShowPowerAlertKey: false]
         if BluetoothManager.hostDeclaresBluetoothCentralBackgroundMode {
             options[CBCentralManagerOptionRestoreIdentifierKey] = BluetoothManager.restoreIdentifier
         } else {

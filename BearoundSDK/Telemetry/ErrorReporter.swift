@@ -589,9 +589,17 @@ final class ErrorReporter {
 
     /// Best-effort read of the radio power state. Returns nil if it cannot be determined.
     private func bluetoothPoweredOnSafe() -> Bool? {
-        // Instantiating CBCentralManager with a nil delegate and no options does not prompt for
-        // permission and reads the current adapter state synchronously enough for a snapshot.
-        let manager = CBCentralManager()
+        // Instantiating CBCentralManager with a nil delegate reads the current adapter state
+        // synchronously enough for a snapshot. ShowPowerAlert:false is REQUIRED here: without
+        // it, the default (true) lets iOS pop its Bluetooth alert when the radio is off or the
+        // permission is denied — and because telemetry can run in the BACKGROUND, that alert
+        // surfaced over whatever app the user had open. (It never prompted for *authorization*,
+        // but it did trigger the power/settings alert.)
+        let manager = CBCentralManager(
+            delegate: nil,
+            queue: nil,
+            options: [CBCentralManagerOptionShowPowerAlertKey: false]
+        )
         switch manager.state {
         case .poweredOn: return true
         case .poweredOff, .resetting, .unauthorized, .unsupported, .unknown: return false
