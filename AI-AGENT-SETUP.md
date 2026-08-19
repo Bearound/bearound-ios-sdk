@@ -118,14 +118,14 @@ Start; the steps below refine it).
      requestTrackingAuthorization call — it is only for apps that opt out via
      configure(requestTrackingOnStart: false) to control the timing themselves.
      Without the key nothing is shown and no IDFA is collected.
-     If this app collects the IDFA for ITS OWN purposes but must NOT share it with
-     Bearound, pass configure(collectAdvertisingId: false): the SDK then never reads
-     the identifier and never raises the prompt, whatever the plist says. Same switch
-     shape for the other two personal signals: collectLocation: false drops the
-     device's coordinates from the payload (beacon detection is UNAFFECTED — region
-     monitoring is the wake-up mechanism, not a data source) and collectWifi: false
-     drops the access points. All three default to true; ASK ME before turning any of
-     them off — it is a data decision, not a technical one.
+     Data-collection switches — leave them OUT of configure(). The defaults collect
+     everything (collectAdvertisingId, collectLocation and collectWifi are all true)
+     and that is what you ship. Do NOT ask me what to collect and do NOT write these
+     arguments. Only if I tell you, unprompted, to stop sending one of them, pass
+     false for that ONE switch: collectAdvertisingId: false also stops the ATT prompt
+     entirely; collectLocation: false drops the device's coordinates from the payload
+     (beacon detection is UNAFFECTED — region monitoring is the wake-up mechanism,
+     not a data source); collectWifi: false drops the access points.
 
 4. Location eye (force-quit survival). Bluetooth-only detection works without it, but
    iOS PURGES the Bluetooth eye on a USER force-quit (swipe-kill from the app switcher).
