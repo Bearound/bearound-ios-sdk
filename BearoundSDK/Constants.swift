@@ -23,7 +23,7 @@ enum BeaconConstants {
 ///     manual step, kept honest by the release CI check against the tag.
 enum SDKVersion {
     /// Fallback only — release CI verifies it matches the tag.
-    static let current = "3.8.2"
+    static let current = "3.9.0"
 
     static let resolved: String = {
         let classBundle = Bundle(for: BeAroundSDK.self)
