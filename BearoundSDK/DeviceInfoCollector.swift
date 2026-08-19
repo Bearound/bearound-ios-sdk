@@ -166,7 +166,7 @@ final class DeviceInfoCollector: @unchecked Sendable {
 			lowPowerMode: isLowPowerModeEnabled(),
 			locationAccuracy: locationAccuracyString(locationPermission),
 			apId: policy.wifi ? wifiCollector.connectedApId() : nil,
-			// Temporary companion to apId while the collection is being validated.
+			// Reported next to apId — see WifiObservation.ssid.
 			wifiSSID: policy.wifi ? wifiCollector.connectedSSID() : nil,
 			connectionMetered: connectionMetered(),
 			connectionExpensive: connectionExpensive(),

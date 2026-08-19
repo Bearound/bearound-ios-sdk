@@ -528,7 +528,7 @@ class APIClient {
         if let apId = device.apId {
             network["apId"] = apId
         }
-        // Temporary, for validating the collection — see WifiObservation.ssid.
+        // Network name — part of the contract, see WifiObservation.ssid.
         if let wifiSSID = device.wifiSSID {
             network["wifiSSID"] = wifiSSID
         }

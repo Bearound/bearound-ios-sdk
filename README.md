@@ -176,10 +176,11 @@ The identity that matters is `apId`: a one-way SHA-256 hash of the access point'
 address, canonicalised so that the same router yields the same identifier on iOS and on
 Android.
 
-> **`ssid` and `network.wifiSSID` are transitional.** They ride along so the collection can
-> be validated against real networks while the access-point map is being built. Nothing
-> downstream consumes them — `apId` is the identity. They are marked for removal in the
-> source, so dropping them later is a single grep.
+> **`ssid` and `network.wifiSSID` carry the network name**, and the backend consumes them:
+> the name says something the hashed `apId` cannot. Because a network name identifies a
+> place — and at home a household — both are personal data and ship only while Wi-Fi
+> collection is on. `configure(collectWifi: false)` drops them with the rest of the Wi-Fi
+> block; see [Controlling what the SDK collects](#controlling-what-the-sdk-collects).
 
 > **What iOS can and cannot give.** There is no public API for scanning neighbouring
 > networks — iOS reports only the access point you are connected to, and its signal-strength
@@ -188,8 +189,8 @@ Android.
 > structure with the neighbours and their real dBm. In the map, iOS confirms points that
 > Android draws.
 >
-> `network.apId` joins `network.wifiSSID` and is the field consumers should read — a stable
-> identity that survives the SSID being dropped later.
+> `network.apId` joins `network.wifiSSID`: a stable identity for the access point, reported
+> next to the name rather than instead of it.
 
 > **When does the Bluetooth prompt appear?** The first time your code touches
 > `BeAroundSDK.shared`, the SDK creates its `CBCentralManager` — and iOS shows the
