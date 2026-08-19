@@ -5,6 +5,47 @@ All notable changes to BearoundSDK for iOS will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.9.0] - 2026-08-19
+
+### Added
+- **`configure()` ganha três interruptores de coleta**: `collectAdvertisingId`,
+  `collectLocation` e `collectWifi` — todos com default `true`, então uma integração que não
+  os mencione se comporta exatamente como antes. Servem ao app que coleta o IDFA, a
+  localização ou o Wi-Fi para uso próprio e não quer compartilhá-los com a Bearound.
+
+  Desligar significa **não coletar**, não "coletar e reter": o valor nunca é lido da
+  plataforma. Com `collectAdvertisingId: false` o SDK também não levanta o prompt de App
+  Tracking Transparency — nem no start, nem através de `requestTrackingAuthorization()`,
+  que passa a apenas reportar o status atual (a resposta é única por instalação e não pode
+  ser desfeita).
+
+  | Desligado | Ausente do payload |
+  |---|---|
+  | `collectAdvertisingId` | `device.permissions.advertisingId`, `trackingAuthorization` |
+  | `collectLocation` | bloco `location` no topo do envelope |
+  | `collectWifi` | array `wifis`, `device.network.apId`, `device.network.wifiSSID` |
+
+  `permissions.location` e `locationAccuracy` permanecem: descrevem a autorização concedida,
+  não a posição, e o backend precisa deles para explicar dados ausentes.
+
+  **A detecção de beacon não é afetada.** O region monitoring do CoreLocation é o mecanismo
+  de acordar em background, não uma fonte de dado: com `collectLocation: false` o SDK
+  continua acordando, fazendo ranging e reportando beacons — apenas para de dizer *onde* o
+  aparelho estava. O relatório de scan vazio (`presenceHeartbeatInterval`) só reporta quando
+  tem localização ou ponto de acesso para carregar, então com os dois desligados ele
+  deliberadamente para de disparar.
+
+  A escolha é persistida junto com o resto da configuração e reaplicada nos dois caminhos de
+  relaunch em background — sem isso, um processo revivido pelo iOS voltaria coletando o sinal
+  que o integrador desligou. Configurações gravadas por versões anteriores restauram tudo
+  ligado, de modo que a base instalada não muda de comportamento.
+
+### Changed
+- Os campos `ssid` / `network.wifiSSID` deixam de ser documentados como transitórios: o
+  backend os consome, e o nome da rede carrega informação que o `apId` (hash) não carrega.
+  Continuam sendo dado pessoal e agora saem apenas enquanto a coleta de Wi-Fi estiver
+  ligada. Nada muda no que é enviado.
+
 ## [3.8.2] - 2026-08-17
 
 ### Fixed
