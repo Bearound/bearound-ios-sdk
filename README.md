@@ -176,10 +176,11 @@ The identity that matters is `apId`: a one-way SHA-256 hash of the access point'
 address, canonicalised so that the same router yields the same identifier on iOS and on
 Android.
 
-> **`ssid` and `network.wifiSSID` are transitional.** They ride along so the collection can
-> be validated against real networks while the access-point map is being built. Nothing
-> downstream consumes them — `apId` is the identity. They are marked for removal in the
-> source, so dropping them later is a single grep.
+> **`ssid` and `network.wifiSSID` carry the network name**, and the backend consumes them:
+> the name says something the hashed `apId` cannot. Because a network name identifies a
+> place — and at home a household — both are personal data and ship only while Wi-Fi
+> collection is on. `configure(collectWifi: false)` drops them with the rest of the Wi-Fi
+> block; see [Controlling what the SDK collects](#controlling-what-the-sdk-collects).
 
 > **What iOS can and cannot give.** There is no public API for scanning neighbouring
 > networks — iOS reports only the access point you are connected to, and its signal-strength
@@ -188,8 +189,8 @@ Android.
 > structure with the neighbours and their real dBm. In the map, iOS confirms points that
 > Android draws.
 >
-> `network.apId` joins `network.wifiSSID` and is the field consumers should read — a stable
-> identity that survives the SSID being dropped later.
+> `network.apId` joins `network.wifiSSID`: a stable identity for the access point, reported
+> next to the name rather than instead of it.
 
 > **When does the Bluetooth prompt appear?** The first time your code touches
 > `BeAroundSDK.shared`, the SDK creates its `CBCentralManager` — and iOS shows the
@@ -245,6 +246,12 @@ shown.
 > **App Store**: adding the key means the prompt will appear, and prompting for tracking
 > obliges you to declare it in your **privacy label** (App Privacy → Tracking). Add the key
 > only when you intend to collect the IDFA.
+
+If your app collects the IDFA for its own purposes but you do not want it sent to Bearound,
+pass `collectAdvertisingId: false` — see
+[Controlling what the SDK collects](#controlling-what-the-sdk-collects). That is stronger
+than `requestTrackingOnStart: false`: it stops the prompt *and* keeps the identifier out of
+every payload, even if your app authorises tracking on its own.
 
 For background mode support, add:
 
@@ -637,6 +644,49 @@ if let precision = BeAroundSDK.shared.currentScanPrecision {
 print("Pending batches: \(BeAroundSDK.shared.pendingBatchCount)")
 ```
 
+### Controlling what the SDK collects
+
+Three of the signals in the payload describe the **person**, not the sighting: the
+advertising identifier (IDFA), the device's own coordinates, and the Wi-Fi access points
+around it. Your app may collect them for its own purposes and still not want to share them
+with Bearound — a different legal basis, a privacy label you do not want to extend, or a
+client policy that simply says no.
+
+Each one has a switch in `configure(...)`:
+
+```swift
+BeAroundSDK.shared.configure(
+    businessToken: "your-business-token-here",
+    collectAdvertisingId: false,  // default: true — my app collects the IDFA, but don't send it
+    collectLocation: false,        // default: true — don't send the device's coordinates
+    collectWifi: true              // default: true
+)
+```
+
+**All three default to `true`**, so an integration that does not mention them keeps behaving
+exactly as it does today.
+
+A switch turned off means **collect nothing**, not "collect and withhold": the value is never
+read from the platform in the first place.
+
+| Switch | What disappears from the payload | Also |
+|--------|----------------------------------|------|
+| `collectAdvertisingId: false` | `device.permissions.advertisingId`, `device.permissions.trackingAuthorization` | The SDK never raises the App Tracking Transparency prompt — not on start, and `requestTrackingAuthorization()` becomes a no-op that just reports the current status |
+| `collectLocation: false` | the top-level `location` block | `device.permissions.location` / `locationAccuracy` **stay** — they report the authorisation the user granted, not where they are |
+| `collectWifi: false` | the top-level `wifis` array, `device.network.apId`, `device.network.wifiSSID` | No Wi-Fi read is issued at all |
+
+**Beacon detection is never affected.** CoreLocation region monitoring is the background
+wake-up mechanism, not a data source: with `collectLocation: false` the SDK still wakes,
+still ranges, still reports beacons — it just stops saying *where* the device was.
+
+What it does affect is the **empty-scan report** (`presenceHeartbeatInterval`): a scan that
+found no beacon and no peer only reports in when it has a location or an access point to
+carry. Turn both off and there is nothing left to report, so the heartbeat stops firing —
+by design.
+
+The choice is persisted with the rest of the configuration, so it survives the background
+relaunches iOS performs on the SDK's behalf.
+
 ### Device Telemetry (Collected Automatically)
 
 The SDK automatically collects comprehensive device information (see the [API Payload Format](#api-payload-format) for the exact wire shape):
@@ -665,7 +715,7 @@ The SDK automatically collects comprehensive device information (see the [API Pa
 - App state (foreground/background), app uptime, cold start detection
 - Device name, system language, thermal state, system uptime
 
-The SDK does **not** collect GPS coordinates (removed in v3.0). The IDFA is collected **only** when the host app opts in and the user authorises tracking — see [Advertising identifier](#advertising-identifier-idfa--optional).
+The SDK reports the device's **cached** location fix — the one CoreLocation already holds; it never starts a location request of its own. The IDFA is collected **only** when the host app opts in and the user authorises tracking — see [Advertising identifier](#advertising-identifier-idfa--optional). The advertising identifier, the location and the Wi-Fi observations can each be turned off at `configure(...)` time — see [Controlling what the SDK collects](#controlling-what-the-sdk-collects).
 
 ### Beacon Data Model
 
@@ -953,6 +1003,7 @@ The SDK logs important events with tag `[BeAroundSDK]`:
 - Authorization header sent as `Authorization: {businessToken}` (no Bearer prefix)
 - No local data storage by default
 - Identity is a per-app stable device id (Keychain UUID), never the IDFA. The IDFA is reported only as an **opt-in** extra, after the user authorises tracking
+- The advertising identifier, the device location and the Wi-Fi observations can each be switched off at `configure(...)` time — see [Controlling what the SDK collects](#controlling-what-the-sdk-collects). A switch turned off means the value is never read, and the choice survives background relaunches
 - Comprehensive device telemetry for analytics
 
 ### Testing

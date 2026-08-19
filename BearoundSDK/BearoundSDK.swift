@@ -319,6 +319,11 @@ public class BeAroundSDK {
             return
         }
 
+        // The host's data-collection switches are part of the configuration and must survive
+        // a background relaunch: without this the SDK would come back with everything on and
+        // start uploading a signal the host turned off, silently and only in background.
+        DataCollectionPolicyStore.apply(savedConfig.dataCollectionPolicy)
+
         restoreUserIdentityIfNeeded()
 
         // First-party error telemetry — install on background relaunch too, so a crash/error
@@ -832,7 +837,10 @@ public class BeAroundSDK {
         periodicReconciliationInterval: TimeInterval = PeriodicReconciliationDefaults.interval,
         periodicScanDuration: TimeInterval = PeriodicReconciliationDefaults.scanDuration,
         requestTrackingOnStart: Bool = true,
-        presenceHeartbeatInterval: TimeInterval = PresenceHeartbeatDefaults.interval
+        presenceHeartbeatInterval: TimeInterval = PresenceHeartbeatDefaults.interval,
+        collectAdvertisingId: Bool = true,
+        collectLocation: Bool = true,
+        collectWifi: Bool = true
     ) {
         let config = SDKConfiguration(
             businessToken: businessToken,
@@ -843,10 +851,17 @@ public class BeAroundSDK {
             periodicReconciliationInterval: periodicReconciliationInterval,
             periodicScanDuration: periodicScanDuration,
             requestTrackingOnStart: requestTrackingOnStart,
-            presenceHeartbeatInterval: presenceHeartbeatInterval
+            presenceHeartbeatInterval: presenceHeartbeatInterval,
+            collectAdvertisingId: collectAdvertisingId,
+            collectLocation: collectLocation,
+            collectWifi: collectWifi
         )
 
         configuration = config
+        // Applied FIRST: everything below (telemetry install, the ATT prompt, an in-flight
+        // sync) can reach a collector, and a collector that runs before the policy lands
+        // would read a signal the host just turned off.
+        DataCollectionPolicyStore.apply(config.dataCollectionPolicy)
         apiClient = APIClient(configuration: config)
         setupSDKInfo(from: config)
 
@@ -887,7 +902,9 @@ public class BeAroundSDK {
         // App Tracking Transparency, raised by the SDK so the IDFA arrives without the host
         // wiring up a call. Waits for the app to be on screen, and stays silent entirely
         // unless the host declared NSUserTrackingUsageDescription.
-        if config.requestTrackingOnStart {
+        // `collectAdvertisingId: false` means the identifier is not ours to ask for — raising
+        // the prompt would spend the host's one-shot ATT dialog on data the SDK will never read.
+        if config.requestTrackingOnStart && config.collectAdvertisingId {
             AdvertisingIdCollector.requestAuthorizationOnStart()
         }
 
@@ -1141,6 +1158,15 @@ public class BeAroundSDK {
     /// - Parameter completion: authorisation status on the main queue — `authorized`,
     ///   `denied`, `restricted`, `notDetermined`, or `unavailable` below iOS 14.
     public func requestTrackingAuthorization(completion: ((String) -> Void)? = nil) {
+        // A host that configured `collectAdvertisingId: false` told the SDK the IDFA is off
+        // limits; showing the system dialog on its behalf would contradict that, and the one
+        // per-install answer it burns cannot be taken back. Reports the current status instead.
+        guard DataCollectionPolicyStore.current.advertisingId else {
+            NSLog("[BeAroundSDK] requestTrackingAuthorization ignorado — configure(collectAdvertisingId: false)")
+            let status = AdvertisingIdCollector.authorizationStatus()
+            DispatchQueue.main.async { completion?(status) }
+            return
+        }
         AdvertisingIdCollector.requestAuthorization(completion: completion)
     }
 
@@ -2336,6 +2362,7 @@ public class BeAroundSDK {
         if configuration == nil {
             if let savedConfig = SDKConfigStorage.load() {
                 configuration = savedConfig
+                DataCollectionPolicyStore.apply(savedConfig.dataCollectionPolicy)
                 apiClient = APIClient(configuration: savedConfig)
                 setupSDKInfo(from: savedConfig)
                 // Fix 1 — keep the background-upload session alive on this relaunch path too.

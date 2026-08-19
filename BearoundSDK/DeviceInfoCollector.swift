@@ -125,13 +125,20 @@ final class DeviceInfoCollector: @unchecked Sendable {
 			print("BeAroundSDK: Notification permission cache not ready yet, using default value")
 		}
 
+		// What the host allows us to collect. Read once per payload so a reconfigure lands on
+		// the next one instead of mid-build.
+		let policy = DataCollectionPolicyStore.current
+
 		// Arms the async Wi-Fi read for the NEXT payload. `refresh()` is the only thing that
 		// ever fills the collector's cache, and until this call existed nothing invoked it —
 		// so `wifis`, `apId` and `wifiSSID` were empty on every payload the SDK ever sent.
 		// Kicked off here (rather than awaited) because the payload builder is synchronous and
 		// `NEHotspotNetwork.fetchCurrent` is not; the value lands one payload later, which is
 		// fine for an access point that changes on the order of minutes.
-		refreshWifi()
+		//
+		// Skipped entirely when Wi-Fi collection is off: nothing to withhold later if the
+		// value is never read.
+		if policy.wifi { refreshWifi() }
 
 		return UserDevice(
 			deviceId: DeviceIdentifier.getDeviceId(),
@@ -158,9 +165,9 @@ final class DeviceInfoCollector: @unchecked Sendable {
 			coldStart: isColdStart ? Self.consumeColdStart() : false,
 			lowPowerMode: isLowPowerModeEnabled(),
 			locationAccuracy: locationAccuracyString(locationPermission),
-			apId: wifiCollector.connectedApId(),
-			// Temporary companion to apId while the collection is being validated.
-			wifiSSID: wifiCollector.connectedSSID(),
+			apId: policy.wifi ? wifiCollector.connectedApId() : nil,
+			// Reported next to apId — see WifiObservation.ssid.
+			wifiSSID: policy.wifi ? wifiCollector.connectedSSID() : nil,
 			connectionMetered: connectionMetered(),
 			connectionExpensive: connectionExpensive(),
 			os: "iOS",
@@ -170,10 +177,11 @@ final class DeviceInfoCollector: @unchecked Sendable {
 			systemLanguage: systemLanguage(),
 			thermalState: thermalState(),
 			systemUptimeMs: systemUptimeMs(),
-			wifis: wifiCollector.current(),
-			location: DeviceLocation(locationReader.location),
-			advertisingId: AdvertisingIdCollector.current(),
-			trackingAuthorization: AdvertisingIdCollector.authorizationStatus()
+			wifis: policy.wifi ? wifiCollector.current() : [],
+			location: policy.location ? DeviceLocation(locationReader.location) : nil,
+			advertisingId: policy.advertisingId ? AdvertisingIdCollector.current() : nil,
+			trackingAuthorization: policy.advertisingId
+				? AdvertisingIdCollector.authorizationStatus() : nil
 		)
 	}
 
@@ -189,8 +197,12 @@ final class DeviceInfoCollector: @unchecked Sendable {
 	/// `UserDevice` just to find out there is nothing to say would be the expensive way to
 	/// answer it. Reads the same two sources the payload would carry.
 	func hasPresenceSignal() -> Bool {
-		if locationReader.location != nil { return true }
-		return !wifiCollector.current().isEmpty
+		// Mirrors the policy the payload builder applies: a signal the host turned off is not
+		// a reason to spend a request. With both off the heartbeat has nothing to carry and
+		// correctly stops firing.
+		let policy = DataCollectionPolicyStore.current
+		if policy.location, locationReader.location != nil { return true }
+		return policy.wifi && !wifiCollector.current().isEmpty
 	}
 
 	private func deviceModel() -> String {

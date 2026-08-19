@@ -49,7 +49,7 @@ final class WifiCollector {
         }
     }
 
-    /// The connected network's name. **Temporary** — see `WifiObservation.ssid`.
+    /// The connected network's name. Part of the payload contract — see `WifiObservation.ssid`.
     func connectedSSID() -> String? {
         lock.lock()
         let ssid = cached?.ssid
@@ -80,7 +80,7 @@ final class WifiCollector {
         guard let apId = ApIdentifier.from(bssid) else { return nil }
         return WifiObservation(
             apId: apId,
-            // Temporary, for validating the collection — see WifiObservation.ssid.
+            // Part of the contract, not a leftover — see WifiObservation.ssid.
             ssid: ssid,
             // Deliberately nil: `NEHotspotNetwork.signalStrength` is a coarse 0…1 value that
             // measured 0 on real hardware. Publishing a fabricated dBm would poison the
