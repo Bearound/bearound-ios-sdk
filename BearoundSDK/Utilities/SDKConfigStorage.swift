@@ -24,6 +24,9 @@ public class SDKConfigStorage {
     private static let keyPeriodicInterval = "periodic_reconciliation_interval"
     private static let keyPeriodicScanDuration = "periodic_scan_duration"
     private static let keyRequestTrackingOnStart = "request_tracking_on_start"
+    private static let keyCollectAdvertisingId = "collect_advertising_id"
+    private static let keyCollectLocation = "collect_location"
+    private static let keyCollectWifi = "collect_wifi"
 
     private static var defaults: UserDefaults? {
         UserDefaults(suiteName: suiteName)
@@ -44,6 +47,9 @@ public class SDKConfigStorage {
         defaults.set(config.periodicReconciliationInterval, forKey: keyPeriodicInterval)
         defaults.set(config.periodicScanDuration, forKey: keyPeriodicScanDuration)
         defaults.set(config.requestTrackingOnStart, forKey: keyRequestTrackingOnStart)
+        defaults.set(config.collectAdvertisingId, forKey: keyCollectAdvertisingId)
+        defaults.set(config.collectLocation, forKey: keyCollectLocation)
+        defaults.set(config.collectWifi, forKey: keyCollectWifi)
         defaults.set(true, forKey: keyIsConfigured)
 
         defaults.synchronize()
@@ -90,6 +96,14 @@ public class SDKConfigStorage {
         // relaunches — otherwise the prompt would reappear the next time iOS revives us.
         let requestTrackingOnStart = defaults.object(forKey: keyRequestTrackingOnStart) as? Bool ?? true
 
+        // Same backward-compatible shape: a config persisted before these switches existed
+        // restores everything ON, which is what that install was already doing. An app that
+        // opted out keeps the opt-out across every background relaunch — the alternative is a
+        // relaunched process quietly uploading the signal the host disabled.
+        let collectAdvertisingId = defaults.object(forKey: keyCollectAdvertisingId) as? Bool ?? true
+        let collectLocation = defaults.object(forKey: keyCollectLocation) as? Bool ?? true
+        let collectWifi = defaults.object(forKey: keyCollectWifi) as? Bool ?? true
+
         NSLog("[BeAroundSDK] Loaded configuration from storage (precision: %@)", precisionRaw)
 
         return SDKConfiguration(
@@ -100,7 +114,10 @@ public class SDKConfigStorage {
             periodicReconciliationEnabled: periodicEnabled,
             periodicReconciliationInterval: periodicInterval,
             periodicScanDuration: periodicScanDuration,
-            requestTrackingOnStart: requestTrackingOnStart
+            requestTrackingOnStart: requestTrackingOnStart,
+            collectAdvertisingId: collectAdvertisingId,
+            collectLocation: collectLocation,
+            collectWifi: collectWifi
         )
     }
 
@@ -112,6 +129,9 @@ public class SDKConfigStorage {
         defaults.removeObject(forKey: keyMaxQueuedPayloads)
         defaults.removeObject(forKey: keyTechnology)
         defaults.removeObject(forKey: keyRequestTrackingOnStart)
+        defaults.removeObject(forKey: keyCollectAdvertisingId)
+        defaults.removeObject(forKey: keyCollectLocation)
+        defaults.removeObject(forKey: keyCollectWifi)
         defaults.removeObject(forKey: keyIsConfigured)
         defaults.removeObject(forKey: keyIsScanning)
         defaults.removeObject(forKey: keyInternalId)

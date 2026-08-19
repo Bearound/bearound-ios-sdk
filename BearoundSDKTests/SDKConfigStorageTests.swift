@@ -191,4 +191,48 @@ struct SDKConfigStorageTests {
 
         #expect(SDKConfigStorage.load()?.requestTrackingOnStart == true)
     }
+
+    // The opt-out has to survive a background relaunch: iOS revives the process, the SDK
+    // restores its configuration from disk, and a lost switch means the signal the host
+    // disabled starts uploading again — in background, where nobody is looking.
+    @Test("Opt-out survives the background relaunch restore")
+    func policySurvivesPersistence() {
+        defer { SDKConfigStorage.clear() }
+
+        SDKConfigStorage.save(
+            SDKConfiguration(
+                businessToken: "test-token-privacy",
+                collectAdvertisingId: false,
+                collectLocation: false,
+                collectWifi: true
+            )
+        )
+
+        let restored = SDKConfigStorage.load()
+
+        #expect(restored?.collectAdvertisingId == false)
+        #expect(restored?.collectLocation == false)
+        #expect(restored?.collectWifi == true)
+    }
+
+    // Every install out there persisted its config before these keys existed. Restoring
+    // them as "off" would silently switch collection off for the whole installed base.
+    @Test("A config persisted before the switches existed restores everything on")
+    func legacyConfigRestoresAllEnabled() {
+        defer { SDKConfigStorage.clear() }
+
+        SDKConfigStorage.save(SDKConfiguration(businessToken: "test-token-legacy"))
+
+        // Simulates a payload written by an older SDK: the keys are simply absent.
+        let defaults = UserDefaults(suiteName: "com.bearound.sdk.config")
+        defaults?.removeObject(forKey: "collect_advertising_id")
+        defaults?.removeObject(forKey: "collect_location")
+        defaults?.removeObject(forKey: "collect_wifi")
+
+        let restored = SDKConfigStorage.load()
+
+        #expect(restored?.collectAdvertisingId == true)
+        #expect(restored?.collectLocation == true)
+        #expect(restored?.collectWifi == true)
+    }
 }

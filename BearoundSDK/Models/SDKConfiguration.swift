@@ -220,6 +220,47 @@ public struct SDKConfiguration {
     /// Default: ``PresenceHeartbeatDefaults/interval`` (5 minutes).
     public let presenceHeartbeatInterval: TimeInterval
 
+    /// Whether the SDK may read and report the IDFA.
+    ///
+    /// `false` means the advertising identifier is never read and never leaves the device:
+    /// `permissions.advertisingId` and `permissions.trackingAuthorization` are absent from
+    /// every payload, and the SDK never raises the App Tracking Transparency prompt —
+    /// neither on start nor through ``BeAroundSDK/requestTrackingAuthorization(completion:)``.
+    ///
+    /// For an app that collects the IDFA for its own purposes but does not want to share it
+    /// with Bearound. Default: `true`.
+    public let collectAdvertisingId: Bool
+
+    /// Whether the SDK may report the device's own location.
+    ///
+    /// `false` means the cached fix is never read and the `location` block is absent from
+    /// every payload. The `permissions.location` / `permissions.locationAccuracy` fields
+    /// stay — they describe the authorisation, not the position.
+    ///
+    /// - Important: this does **not** stop beacon detection. CoreLocation region monitoring
+    ///   is the background wake-up mechanism and keeps running; only the coordinates stop
+    ///   being reported.
+    ///
+    /// Default: `true`.
+    public let collectLocation: Bool
+
+    /// Whether the SDK may report the Wi-Fi access points around the device.
+    ///
+    /// `false` means no Wi-Fi read is issued and the `wifis` array plus the
+    /// `network.apId` / `network.wifiSSID` fields are absent from every payload.
+    ///
+    /// Default: `true`.
+    public let collectWifi: Bool
+
+    /// The three switches above as one value, for the collectors.
+    var dataCollectionPolicy: DataCollectionPolicy {
+        DataCollectionPolicy(
+            advertisingId: collectAdvertisingId,
+            location: collectLocation,
+            wifi: collectWifi
+        )
+    }
+
     public init(
         businessToken: String,
         scanPrecision: ScanPrecision = .high,
@@ -229,7 +270,10 @@ public struct SDKConfiguration {
         periodicReconciliationInterval: TimeInterval = PeriodicReconciliationDefaults.interval,
         periodicScanDuration: TimeInterval = PeriodicReconciliationDefaults.scanDuration,
         requestTrackingOnStart: Bool = true,
-        presenceHeartbeatInterval: TimeInterval = PresenceHeartbeatDefaults.interval
+        presenceHeartbeatInterval: TimeInterval = PresenceHeartbeatDefaults.interval,
+        collectAdvertisingId: Bool = true,
+        collectLocation: Bool = true,
+        collectWifi: Bool = true
     ) {
         self.businessToken = businessToken
         self.scanPrecision = scanPrecision
@@ -245,6 +289,9 @@ public struct SDKConfiguration {
         self.requestTrackingOnStart = requestTrackingOnStart
         self.presenceHeartbeatInterval =
             PresenceHeartbeatDefaults.sanitizedInterval(presenceHeartbeatInterval)
+        self.collectAdvertisingId = collectAdvertisingId
+        self.collectLocation = collectLocation
+        self.collectWifi = collectWifi
     }
 
     // MARK: - Per-precision duty-cycle values
