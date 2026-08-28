@@ -105,6 +105,24 @@ class BluetoothManager: NSObject {
     /// routed at the end of `didDiscover`; connection lifecycle is bridged below.
     private(set) var encounterMesh: EncounterMeshManager?
 
+    /// Brings up every BLE surface of a scan session: the beacon eye and the encounter
+    /// mesh. Single entry point on purpose — the public `startScanning()` and the
+    /// background-relaunch path both call it, so an instance restored by iOS joins the
+    /// same surfaces a host-started one does. Starting the eye without the mesh left the
+    /// device scanning for beacons while neither advertising to nor recognising peers.
+    func startScanSurfaces(bluetoothAuthorized: Bool) {
+        guard bluetoothAuthorized else { return }
+        autoStartIfAuthorized()
+        setEncounterMesh(enabled: true)
+    }
+
+    /// Background scan filter: the beacon service UUID, plus the encounter service UUID
+    /// when the mesh is on — same single scan, one more match target, beacon matching
+    /// untouched. Foreground scans stay unfiltered (see `beginScan`).
+    static func backgroundScanServices(beadServiceUUID: CBUUID, meshEnabled: Bool) -> [CBUUID] {
+        meshEnabled ? [beadServiceUUID, EncounterMeshManager.serviceUUID] : [beadServiceUUID]
+    }
+
     /// Turns the mesh role (advertise + recognise peers) on or off. Restarts the active
     /// scan so the background filter picks up (or drops) the encounter service UUID.
     func setEncounterMesh(enabled: Bool) {
@@ -471,11 +489,9 @@ class BluetoothManager: NSObject {
     /// CBCentralManager state restoration re-registers after a relaunch.
     private func beginScan() {
         let allowDuplicates = true
-        // Background filter grows the encounter service UUID when the mesh is on —
-        // same single scan, one more match target. Foreground stays nil (see above).
-        var backgroundServices = [beadServiceUUID]
-        if encounterMesh != nil { backgroundServices.append(EncounterMeshManager.serviceUUID) }
-        let services: [CBUUID]? = isInBackground ? backgroundServices : nil
+        let services: [CBUUID]? = isInBackground
+            ? Self.backgroundScanServices(beadServiceUUID: beadServiceUUID, meshEnabled: encounterMesh != nil)
+            : nil
         centralManager.scanForPeripherals(
             withServices: services,
             options: [CBCentralManagerScanOptionAllowDuplicatesKey: allowDuplicates]
