@@ -79,7 +79,7 @@ struct EncounterMeshTests {
         #expect(peer.rssiMax == -42)
     }
 
-    // MARK: - Window draining (an encounter must expire)
+    // MARK: - Window draining
 
     private static let staleAfter: TimeInterval = 10 * 60
 
@@ -109,7 +109,7 @@ struct EncounterMeshTests {
         #expect(first.count == 1)
         #expect(first[0].sampleCount == 2)
 
-        // Same peer, no new advertisement: every subsequent sync must carry nothing.
+        // No new advertisement: every subsequent sync must carry nothing.
         let second = EncounterMeshManager.drainWindows(
             from: &peers, now: t0.addingTimeInterval(60), staleAfter: Self.staleAfter)
         #expect(second.isEmpty)
@@ -126,10 +126,9 @@ struct EncounterMeshTests {
         var peers = [key: identifiedPeer(rpi: "aa", samples: [-55], firstSeen: t0, lastSeen: t0)]
 
         _ = EncounterMeshManager.drainWindows(from: &peers, now: t0, staleAfter: Self.staleAfter)
-        #expect(peers.count == 1)  // still fresh, kept for continuity
+        #expect(peers.count == 1)  // still fresh
 
-        // Far below maxTrackedPeers — the old code only ever expired at capacity, so this
-        // entry lived forever.
+        // Far below maxTrackedPeers: expiry must not depend on the capacity guard.
         _ = EncounterMeshManager.drainWindows(
             from: &peers, now: t0.addingTimeInterval(Self.staleAfter + 1), staleAfter: Self.staleAfter)
         #expect(peers.isEmpty)
@@ -155,7 +154,7 @@ struct EncounterMeshTests {
             from: &peers, now: t1.addingTimeInterval(10), staleAfter: Self.staleAfter)
         #expect(second.count == 1)
         #expect(second[0].rpi == "aa")
-        // A NEW window: it starts when the peer was seen again, not at the first encounter.
+        // A new window: it starts when the peer was seen again.
         #expect(second[0].firstSeen == Int(t1.timeIntervalSince1970 * 1000))
         #expect(second[0].sampleCount == 2)
         #expect(second[0].rssiMin == -72)
@@ -169,7 +168,7 @@ struct EncounterMeshTests {
         var peers = [key: EncounterMeshManager.PeerAggregate()]
         peers[key]?.rpi = "aa"
 
-        // Two phones side by side for hours: 200 sync cycles, 3 samples each.
+        // Two phones side by side: 200 sync cycles, 3 samples each.
         var now = t0
         var lastReport: EncounterObservation?
         for _ in 0..<200 {
@@ -180,13 +179,13 @@ struct EncounterMeshTests {
             let out = EncounterMeshManager.drainWindows(
                 from: &peers, now: now, staleAfter: Self.staleAfter)
             #expect(out.count == 1)
-            // Every payload carries exactly ONE window — never the accumulation since boot.
+            // Every payload carries exactly one window, never the accumulation since boot.
             #expect(out[0].sampleCount == 3)
             lastReport = out[0]
         }
 
         guard let report = lastReport else { Issue.record("no window reported"); return }
-        // ...and that window is recent, not anchored to the first sighting hours ago.
+        // And that window is recent, not anchored to the first sighting.
         #expect(report.firstSeen > Int(t0.timeIntervalSince1970 * 1000))
         #expect(report.lastSeen - report.firstSeen <= 30_000)
     }
@@ -200,7 +199,7 @@ struct EncounterMeshTests {
 
         let out = EncounterMeshManager.drainWindows(from: &peers, now: t0, staleAfter: Self.staleAfter)
         #expect(out.isEmpty)
-        // Its samples survive: the GATT read may still land and the window is then reportable.
+        // Its samples survive: the GATT read may still land.
         #expect(peers[key]?.sampleCount == 1)
 
         peers[key]?.rpi = "aa"
@@ -220,7 +219,7 @@ struct EncounterMeshTests {
 
         #expect(peer.sampleCount == 0)
         #expect(peer.rssiAvg == 0)
-        #expect(peer.rpi == "aa")       // identity survives — same logical peer
+        #expect(peer.rpi == "aa")       // identity survives
         #expect(peer.lastSeen == t0)    // age survives — eviction reads it
 
         let t1 = t0.addingTimeInterval(120)
