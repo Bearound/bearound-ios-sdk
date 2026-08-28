@@ -393,10 +393,10 @@ public class BeAroundSDK {
             bluetoothAuthorized = (btAuth != .denied && btAuth != .restricted)
         }
 
-        // BLE starts if authorized
-        if bluetoothAuthorized {
-            bluetoothManager.autoStartIfAuthorized()
-        }
+        // BLE starts if authorized — beacon eye and encounter mesh, the same surfaces
+        // startScanning() brings up. A relaunched instance that skipped the mesh was
+        // awake and scanning, but invisible to peers and blind to them.
+        bluetoothManager.startScanSurfaces(bluetoothAuthorized: bluetoothAuthorized)
 
         // CoreLocation starts only if authorized AND precise location is on
         if locationCanRangeBeacons {
@@ -1029,15 +1029,9 @@ public class BeAroundSDK {
         //    Its zone presence is derived from its own rolling-window detector
         //    (see BluetoothManager.evaluateZonePresence) and surfaced as
         //    didEnterBluetoothZone / didExitBluetoothZone on the delegate.
-        if bluetoothAuthorized {
-            bluetoothManager.autoStartIfAuthorized()
-        }
-
-        // 2b. Encounter layer — runs whenever Bluetooth is authorized (same contract as
-        //     the wifi collection); stops with stopScanning().
-        if bluetoothAuthorized {
-            bluetoothManager.setEncounterMesh(enabled: true)
-        }
+        //    The encounter layer comes up with it, under the same Bluetooth-authorized
+        //    condition (stops with stopScanning()).
+        bluetoothManager.startScanSurfaces(bluetoothAuthorized: bluetoothAuthorized)
 
         // 3. Location eye — CoreLocation starts only if authorized AND precise location is on.
         //    Location updates are gated by beacon detection — never run continuously.
