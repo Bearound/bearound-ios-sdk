@@ -1579,9 +1579,14 @@ public class BeAroundSDK {
     /// Attaches encounter-mesh data (peer sightings + this device's rotating identifiers)
     /// to an outgoing payload. No-op before the mesh spins up (e.g. Bluetooth denied) —
     /// the fields stay empty and the payload builder omits them.
+    ///
+    /// - Important: this **drains** the mesh — each payload carries one window and the
+    ///   accumulator resets. Call it exactly once per outgoing payload, right before the
+    ///   upload; calling it speculatively discards a window (see
+    ///   ``EncounterMeshManager/drainEncounters()``).
     private func attachEncounterData(to userDevice: inout UserDevice) {
         guard let mesh = bluetoothManager.encounterMesh else { return }
-        userDevice.encounters = mesh.snapshotEncounters()
+        userDevice.encounters = mesh.drainEncounters()
         userDevice.encounterIds = mesh.currentEncounterIds()
     }
 

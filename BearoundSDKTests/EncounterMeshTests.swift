@@ -79,6 +79,157 @@ struct EncounterMeshTests {
         #expect(peer.rssiMax == -42)
     }
 
+    // MARK: - Window draining (an encounter must expire)
+
+    private static let staleAfter: TimeInterval = 10 * 60
+
+    /// Builds a peer whose window is `samples` readings ending at `lastSeen`.
+    private func identifiedPeer(
+        rpi: String,
+        samples: [Int],
+        firstSeen: Date,
+        lastSeen: Date
+    ) -> EncounterMeshManager.PeerAggregate {
+        var peer = EncounterMeshManager.PeerAggregate()
+        peer.rpi = rpi
+        for (index, rssi) in samples.enumerated() {
+            peer.addSample(rssi: rssi, now: index == samples.count - 1 ? lastSeen : firstSeen)
+        }
+        return peer
+    }
+
+    @Test("A peer seen once is reported once, not on every later sync")
+    func peerSeenOnceIsNotReplayed() {
+        let t0 = Date(timeIntervalSince1970: 100_000)
+        let key = UUID()
+        var peers = [key: identifiedPeer(rpi: "aa", samples: [-55, -57], firstSeen: t0, lastSeen: t0)]
+
+        let first = EncounterMeshManager.drainWindows(
+            from: &peers, now: t0.addingTimeInterval(30), staleAfter: Self.staleAfter)
+        #expect(first.count == 1)
+        #expect(first[0].sampleCount == 2)
+
+        // Same peer, no new advertisement: every subsequent sync must carry nothing.
+        let second = EncounterMeshManager.drainWindows(
+            from: &peers, now: t0.addingTimeInterval(60), staleAfter: Self.staleAfter)
+        #expect(second.isEmpty)
+
+        let third = EncounterMeshManager.drainWindows(
+            from: &peers, now: t0.addingTimeInterval(120), staleAfter: Self.staleAfter)
+        #expect(third.isEmpty)
+    }
+
+    @Test("A peer unseen past the stale window stops occupying a slot")
+    func stalePeerIsEvictedWithoutTheCapacityGuard() {
+        let t0 = Date(timeIntervalSince1970: 100_000)
+        let key = UUID()
+        var peers = [key: identifiedPeer(rpi: "aa", samples: [-55], firstSeen: t0, lastSeen: t0)]
+
+        _ = EncounterMeshManager.drainWindows(from: &peers, now: t0, staleAfter: Self.staleAfter)
+        #expect(peers.count == 1)  // still fresh, kept for continuity
+
+        // Far below maxTrackedPeers — the old code only ever expired at capacity, so this
+        // entry lived forever.
+        _ = EncounterMeshManager.drainWindows(
+            from: &peers, now: t0.addingTimeInterval(Self.staleAfter + 1), staleAfter: Self.staleAfter)
+        #expect(peers.isEmpty)
+    }
+
+    @Test("A peer still present keeps being reported, with a NEW window each time")
+    func presentPeerKeepsBeingReportedWithFreshWindows() {
+        let t0 = Date(timeIntervalSince1970: 100_000)
+        let key = UUID()
+        var peers = [key: identifiedPeer(rpi: "aa", samples: [-55, -65], firstSeen: t0, lastSeen: t0)]
+
+        let first = EncounterMeshManager.drainWindows(
+            from: &peers, now: t0.addingTimeInterval(1), staleAfter: Self.staleAfter)
+        #expect(first.count == 1)
+        #expect(first[0].firstSeen == Int(t0.timeIntervalSince1970 * 1000))
+
+        // The encounter is still happening: new advertisements land after the drain.
+        let t1 = t0.addingTimeInterval(60)
+        peers[key]?.addSample(rssi: -70, now: t1)
+        peers[key]?.addSample(rssi: -72, now: t1.addingTimeInterval(5))
+
+        let second = EncounterMeshManager.drainWindows(
+            from: &peers, now: t1.addingTimeInterval(10), staleAfter: Self.staleAfter)
+        #expect(second.count == 1)
+        #expect(second[0].rpi == "aa")
+        // A NEW window: it starts when the peer was seen again, not at the first encounter.
+        #expect(second[0].firstSeen == Int(t1.timeIntervalSince1970 * 1000))
+        #expect(second[0].sampleCount == 2)
+        #expect(second[0].rssiMin == -72)
+        #expect(second[0].rssiMax == -70)
+    }
+
+    @Test("The reported window never grows without bound for a permanently present peer")
+    func windowDoesNotGrowUnbounded() {
+        let t0 = Date(timeIntervalSince1970: 100_000)
+        let key = UUID()
+        var peers = [key: EncounterMeshManager.PeerAggregate()]
+        peers[key]?.rpi = "aa"
+
+        // Two phones side by side for hours: 200 sync cycles, 3 samples each.
+        var now = t0
+        var lastReport: EncounterObservation?
+        for _ in 0..<200 {
+            for _ in 0..<3 {
+                peers[key]?.addSample(rssi: -60, now: now)
+                now = now.addingTimeInterval(10)
+            }
+            let out = EncounterMeshManager.drainWindows(
+                from: &peers, now: now, staleAfter: Self.staleAfter)
+            #expect(out.count == 1)
+            // Every payload carries exactly ONE window — never the accumulation since boot.
+            #expect(out[0].sampleCount == 3)
+            lastReport = out[0]
+        }
+
+        guard let report = lastReport else { Issue.record("no window reported"); return }
+        // ...and that window is recent, not anchored to the first sighting hours ago.
+        #expect(report.firstSeen > Int(t0.timeIntervalSince1970 * 1000))
+        #expect(report.lastSeen - report.firstSeen <= 30_000)
+    }
+
+    @Test("A peer whose identity was never read is withheld and not drained away")
+    func unidentifiedPeerIsWithheld() {
+        let t0 = Date(timeIntervalSince1970: 100_000)
+        let key = UUID()
+        var peers = [key: EncounterMeshManager.PeerAggregate()]
+        peers[key]?.addSample(rssi: -55, now: t0)
+
+        let out = EncounterMeshManager.drainWindows(from: &peers, now: t0, staleAfter: Self.staleAfter)
+        #expect(out.isEmpty)
+        // Its samples survive: the GATT read may still land and the window is then reportable.
+        #expect(peers[key]?.sampleCount == 1)
+
+        peers[key]?.rpi = "aa"
+        let later = EncounterMeshManager.drainWindows(from: &peers, now: t0, staleAfter: Self.staleAfter)
+        #expect(later.count == 1)
+        #expect(later[0].sampleCount == 1)
+    }
+
+    @Test("resetWindow clears the accumulators but keeps identity and age")
+    func resetWindowKeepsIdentityAndAge() {
+        let t0 = Date(timeIntervalSince1970: 100_000)
+        var peer = EncounterMeshManager.PeerAggregate()
+        peer.rpi = "aa"
+        peer.addSample(rssi: -50, now: t0)
+        peer.addSample(rssi: -70, now: t0)
+        peer.resetWindow()
+
+        #expect(peer.sampleCount == 0)
+        #expect(peer.rssiAvg == 0)
+        #expect(peer.rpi == "aa")       // identity survives — same logical peer
+        #expect(peer.lastSeen == t0)    // age survives — eviction reads it
+
+        let t1 = t0.addingTimeInterval(120)
+        peer.addSample(rssi: -80, now: t1)
+        #expect(peer.firstSeen == t1)   // the next window starts now
+        #expect(peer.rssiMin == -80)
+        #expect(peer.rssiMax == -80)
+    }
+
     // MARK: - Observation payload shape
 
     @Test("EncounterObservation serialises to the ingest contract")

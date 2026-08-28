@@ -154,6 +154,22 @@ final class EncounterMeshManager: NSObject {
         var rssiAvg: Int {
             sampleCount == 0 ? 0 : Int((Double(rssiSum) / Double(sampleCount)).rounded())
         }
+
+        /// Clears the accumulated window while keeping the peer's identity and GATT
+        /// bookkeeping. Called right after the window has been handed to a payload, so
+        /// the next report starts from zero instead of re-sending the same aggregate.
+        ///
+        /// `lastSeen` is deliberately kept: it is the age the stale eviction reads, and
+        /// it must survive a drain (a drained peer is not an unseen peer). `firstSeen`
+        /// is re-stamped by the next ``addSample(rssi:now:)`` because `sampleCount`
+        /// is back to zero.
+        mutating func resetWindow() {
+            sampleCount = 0
+            rssiSum = 0
+            rssiMin = 0
+            rssiMax = Int.min
+            lastRssi = 0
+        }
     }
 
     // MARK: - State (all mutated on `queue`)
@@ -235,38 +251,109 @@ final class EncounterMeshManager: NSObject {
         }
     }
 
-    /// Whether any identified peer has been seen after `since` — the cheap check the
-    /// sync path uses to decide if an encounters-only upload is worth making when no
-    /// physical beacon is pending.
+    /// Whether any identified peer has an **undrained** window newer than `since` — the
+    /// cheap check the sync path uses to decide if an encounters-only upload is worth
+    /// making when no physical beacon is pending.
+    ///
+    /// `sampleCount > 0` is part of the question, not an optimisation: after
+    /// ``drainEncounters()`` a peer that went away still carries its old `lastSeen`, and
+    /// without this it would keep opening encounters-only uploads that carry an empty
+    /// `encounters[]`.
     ///
     /// - Important: Never call from `queue` (the shared bleQueue) — deadlock.
     func hasFreshEncounters(since: Date) -> Bool {
         queue.sync {
-            peers.values.contains { $0.rpi != nil && $0.lastSeen > since }
+            peers.values.contains { $0.rpi != nil && $0.sampleCount > 0 && $0.lastSeen > since }
         }
     }
 
-    /// Non-destructive snapshot of every identified peer, for the sync payload.
+    /// Every identified peer's window accumulated since the last call, **and resets it**.
     /// Peers whose identifier has not been read yet are withheld — they join a later
     /// sync once the GATT read lands.
     ///
+    /// ## Why this drains instead of expiring by age
+    ///
+    /// This used to be a non-destructive snapshot, and the only thing that ever removed a
+    /// peer was ``evictStalePeers(now:)`` — which was called from exactly one place, *inside*
+    /// the `peers.count < maxTrackedPeers` guard in ``handleDiscovery(peripheral:advertisementData:rssi:cameThroughFilteredScan:)``.
+    /// A phone that sees one or two peers never reaches that threshold, so expiry never ran
+    /// and the aggregate lived as long as the process: a two-minute encounter was re-uploaded,
+    /// byte-identical, in every payload for days. It resolved to nothing on the backend, since
+    /// pair resolution only works inside the queried window (60 min max) while the identifier
+    /// rotates every ``rpiRotationInterval``.
+    ///
+    /// Two fixes were on the table:
+    ///
+    /// 1. **Expire by age, outside the capacity guard.** Keeps the aggregate until the peer
+    ///    has been unseen for ``peerStaleEviction``. Rejected: it fixes the *unbounded* replay
+    ///    but not the replay itself. A phone parked next to another one all day is never stale,
+    ///    so its window grows without limit and every sync re-sends the same ever-growing
+    ///    aggregate with a `firstSeen` from hours ago — exactly the datum the backend cannot use.
+    /// 2. **Drain (chosen).** Each payload carries exactly ONE window, the same contract the
+    ///    hardware-beacon stats and ``EncounterMeshManager`` sibling on Android
+    ///    (`drainVirtualBeacons`) already honour. A peer that is still present keeps being
+    ///    reported — its next advertisement re-stamps `firstSeen` and starts a fresh window —
+    ///    so continuity is preserved as a *sequence of windows*, which is what the backend
+    ///    reconstructs edges from anyway. A peer that is gone reports once and then stops.
+    ///
+    /// **What draining costs:** the window is handed to the payload builder, not to a
+    /// confirmed upload. If that upload fails, those samples are lost — the persisted retry
+    /// batch stores beacons, not encounters. Accepted deliberately: the loss is bounded to one
+    /// window of an encounter that, if still happening, is re-reported in the next one, and the
+    /// alternative (a commit token per payload, threaded through three call sites with three
+    /// different terminal/stale-completion paths, mirrored on Android) is a far larger blast
+    /// radius than the defect warrants.
+    ///
+    /// Age eviction is still run here — unconditionally, which is the part that was missing —
+    /// so a peer that is gone also stops occupying a slot and stops holding a stale identifier.
+    /// It runs *after* the emit so a sync that was delayed past ``peerStaleEviction`` still
+    /// reports the window it was holding.
+    ///
     /// - Important: Never call from `queue` (the shared bleQueue) — deadlock.
-    func snapshotEncounters() -> [EncounterObservation] {
+    func drainEncounters() -> [EncounterObservation] {
         queue.sync {
-            peers.values.compactMap { peer in
-                guard let rpi = peer.rpi, peer.sampleCount > 0 else { return nil }
-                return EncounterObservation(
-                    rpi: rpi,
-                    rssi: peer.lastRssi,
-                    sampleCount: peer.sampleCount,
-                    rssiMin: peer.rssiMin,
-                    rssiMax: peer.rssiMax,
-                    rssiAvg: peer.rssiAvg,
-                    firstSeen: Int(peer.firstSeen.timeIntervalSince1970 * 1000),
-                    lastSeen: Int(peer.lastSeen.timeIntervalSince1970 * 1000)
-                )
-            }
+            Self.drainWindows(from: &peers, now: Date(), staleAfter: Self.peerStaleEviction)
         }
+    }
+
+    /// Pure core of ``drainEncounters()``: emit one window per identified peer, reset the
+    /// accumulators, then drop whoever has been unseen for `staleAfter`.
+    ///
+    /// Split out from the instance method purely so the behaviour can be exercised without a
+    /// CoreBluetooth radio — `handleDiscovery` needs a real `CBPeripheral`, which a unit test
+    /// cannot build.
+    static func drainWindows(
+        from peers: inout [UUID: PeerAggregate],
+        now: Date,
+        staleAfter: TimeInterval
+    ) -> [EncounterObservation] {
+        var out: [EncounterObservation] = []
+        for (key, peer) in peers {
+            guard let rpi = peer.rpi, peer.sampleCount > 0 else { continue }
+            out.append(EncounterObservation(
+                rpi: rpi,
+                rssi: peer.lastRssi,
+                sampleCount: peer.sampleCount,
+                rssiMin: peer.rssiMin,
+                rssiMax: peer.rssiMax,
+                rssiAvg: peer.rssiAvg,
+                firstSeen: Int(peer.firstSeen.timeIntervalSince1970 * 1000),
+                lastSeen: Int(peer.lastSeen.timeIntervalSince1970 * 1000)
+            ))
+            peers[key]?.resetWindow()
+        }
+        // Emit first, evict after: a sync delayed past `staleAfter` still reports the window
+        // it was holding instead of silently discarding it.
+        evictStale(&peers, now: now, staleAfter: staleAfter)
+        return out
+    }
+
+    static func evictStale(
+        _ peers: inout [UUID: PeerAggregate],
+        now: Date,
+        staleAfter: TimeInterval
+    ) {
+        peers = peers.filter { now.timeIntervalSince($0.value.lastSeen) < staleAfter }
     }
 
     // MARK: - RX (fed by BluetoothManager's existing scan)
@@ -292,13 +379,12 @@ final class EncounterMeshManager: NSObject {
 
         let now = Date()
         var peer = peers[peripheral.identifier] ?? PeerAggregate()
-        if peers[peripheral.identifier] == nil {
-            guard peers.count < Self.maxTrackedPeers else {
-                evictStalePeers(now: now)
-                guard peers.count < Self.maxTrackedPeers else { return }
-                peers[peripheral.identifier] = peer
-                return
-            }
+        if peers[peripheral.identifier] == nil, peers.count >= Self.maxTrackedPeers {
+            evictStalePeers(now: now)
+            guard peers.count < Self.maxTrackedPeers else { return }
+            // Room was freed: fall through and record this advertisement instead of
+            // inserting an empty aggregate and dropping the sample that opened the slot.
+            // Matches the Android receive path.
         }
         peer.addSample(rssi: rssi, now: now)
 
@@ -373,8 +459,15 @@ final class EncounterMeshManager: NSObject {
         gattTimeoutWork = nil
     }
 
+    /// Capacity-guard eviction: makes room when ``maxTrackedPeers`` is reached.
+    ///
+    /// - Important: this is **not** the expiry the reporting path relies on. It used to be
+    ///   the only caller of the stale filter, and it lives inside the capacity guard — so on
+    ///   any device tracking fewer than ``maxTrackedPeers`` peers (i.e. nearly all of them)
+    ///   nothing ever expired and aggregates lived as long as the process. The expiry that
+    ///   matters now runs unconditionally in ``drainWindows(from:now:staleAfter:)``.
     private func evictStalePeers(now: Date) {
-        peers = peers.filter { now.timeIntervalSince($0.value.lastSeen) < Self.peerStaleEviction }
+        Self.evictStale(&peers, now: now, staleAfter: Self.peerStaleEviction)
     }
 }
 
