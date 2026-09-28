@@ -1108,7 +1108,7 @@ public class BeAroundSDK {
             beaconManager.stopScanning()
         }
 
-        // 3b. Visit detection: independent of the beacon eye, self-gated (REQ-014).
+        // 3b. Visit detection: independent of the beacon eye, self-gated.
         startVisitMonitor()
 
         // 4. Always: sync timer, persist, BGTasks
@@ -1431,7 +1431,7 @@ public class BeAroundSDK {
     ///
     /// Durable: the event is persisted in `OfflineBatchStorage` with its captured context
     /// (exempt from the count eviction) and delivered by the retry drain, which keeps
-    /// `syncTrigger: "visit"` and the captured location on every attempt (REQ-010).
+    /// `syncTrigger: "visit"` and the captured location on every attempt.
     private func sendVisitEvent(_ event: VisitEvent) {
         let userDevice = Self.visitUserDevice(
             for: event,
@@ -1958,7 +1958,7 @@ public class BeAroundSDK {
             }
 
             // Capture the send context BEFORE persisting: the batch is stored with it, so a
-            // retry replays this exact device state, location and trigger (REQ-018).
+            // retry replays this exact device state, location and trigger.
             let locationPermission = Self.authorizationStatus()
             let bluetoothState = bluetoothManager.isPoweredOn ? "powered_on" : "powered_off"
             let appInForeground = !isInBackground
@@ -2153,7 +2153,7 @@ public class BeAroundSDK {
     /// The batches one retry request carries: the oldest record plus the records right
     /// behind it with an IDENTICAL captured context (same device snapshot and trigger).
     /// Batches captured at different moments never share a request, so each keeps its own
-    /// location, device state and `syncTrigger` (REQ-018). Legacy batches (no captured
+    /// location, device state and `syncTrigger`. Legacy batches (no captured
     /// context) group with each other, as the drain did before.
     static func retryGroup(from records: [OfflineBatchStorage.StoredBatchRecord]) -> [OfflineBatchStorage.StoredBatchRecord] {
         guard let head = records.first else { return [] }

@@ -147,7 +147,7 @@ public struct SDKConfiguration {
     public let technology: String
 
     /// The single SDK host: `/ingest`, `/sdk-errors` and `/sdk/places/*` (the ingest's load
-    /// balancer routes the places paths to the places service by path, REQ-004).
+    /// balancer routes the places paths to the places service by path).
     let apiBaseURL: String
 
     /// Enables the periodic background reconciliation (`BGAppRefreshTask` layer).

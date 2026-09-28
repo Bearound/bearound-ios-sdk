@@ -3,7 +3,7 @@
 //  BearoundSDK
 //
 //  Visit detection config: the nearby target environments and the kill switch,
-//  served by `GET /sdk/places/nearby` on the Control Hub API (REQ-013, REQ-021, D-14).
+//  served by `GET /sdk/places/nearby` on the Bearound backend (the SDK host, `apiBaseURL`).
 //
 
 import Foundation
@@ -12,7 +12,7 @@ import UIKit
 // MARK: - Response model
 
 /// Body of `GET /sdk/places/nearby`. The list keeps the name `places` for payload
-/// compatibility, but every item is an environment (D-23).
+/// compatibility, but every item is an environment.
 struct PlacesConfig: Codable, Equatable {
 
     struct Coordinate: Codable, Equatable {
@@ -74,7 +74,7 @@ struct PlacesConfig: Codable, Equatable {
         origin = try container.decode(Coordinate.self, forKey: .origin)
         refreshAfterMeters = try container.decode(Double.self, forKey: .refreshAfterMeters)
         maxAgeSeconds = try container.decode(Double.self, forKey: .maxAgeSeconds)
-        // The API defaults the flag to true (D-13); an absent field keeps that default.
+        // The API defaults the flag to true; an absent field keeps that default.
         visitDetectionEnabled = try container.decodeIfPresent(Bool.self, forKey: .visitDetectionEnabled) ?? true
         // One malformed item must not throw away the whole list.
         places = try container.decode([LossyPlace].self, forKey: .places).compactMap(\.place)
@@ -205,8 +205,8 @@ final class PlacesConfigClient: PlacesConfigFetching {
 // MARK: - Persistence
 
 /// Last good config plus the open-stop bookkeeping, persisted so a failed fetch keeps the
-/// last list and the last `visit_detection_enabled` (D-22), and so a departure delivered
-/// after a relaunch still pairs with the arrival sent by the previous process (REQ-023).
+/// last list and the last `visit_detection_enabled`, and so a departure delivered
+/// after a relaunch still pairs with the arrival sent by the previous process.
 final class VisitStateStore {
 
     static let defaultSuiteName = "com.bearound.sdk.visit"

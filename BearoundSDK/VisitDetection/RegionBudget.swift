@@ -7,13 +7,13 @@
 
 import Foundation
 
-/// Pure planner for the iOS region-monitoring budget (REQ-015, D-09).
+/// Pure planner for the iOS region-monitoring budget.
 ///
 /// iOS caps monitored regions at 20 per app, and that cap is shared by
 /// everything running inside the host process: the host app's own regions,
 /// the SDK beacon region (`BeaconManager`, identifier `BeAroundRegion`), the
-/// visit refresh fence (REQ-021) and the circular regions of the nearest
-/// target environments (D-23: the unit is the environment).
+/// visit refresh fence and the circular regions of the nearest
+/// target environments (the unit is the environment).
 ///
 /// Priority when the budget is short, highest first:
 /// 1. host regions: never touched, never removed, always counted;
