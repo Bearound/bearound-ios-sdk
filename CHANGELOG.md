@@ -5,6 +5,26 @@ All notable changes to BearoundSDK for iOS will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+- **O SDK deixa de levantar sozinho o prompt de App Tracking Transparency.** Até a 3.9.x,
+  bastava declarar `NSUserTrackingUsageDescription` para o prompt aparecer logo depois do
+  `configure()`. Agora quem decide quando (e se) pedir é o app integrador: ele chama
+  `requestTrackingAuthorization()` no ponto do fluxo que escolher, ou usa o
+  `ATTrackingManager` diretamente. O SDK apenas lê o status resultante e passa a reportar o
+  IDFA quando autorizado.
+
+  **Ação para quem dependia do prompt automático:** chamar
+  `BeAroundSDK.shared.requestTrackingAuthorization()` com o app em primeiro plano. Sem essa
+  chamada (ou uma equivalente do próprio app), o aparelho fica em `notDetermined` e o
+  payload segue sem IDFA.
+
+### Deprecated
+- `configure(requestTrackingOnStart:)`: o parâmetro é ignorado e existe só para não quebrar
+  a compilação de quem o passa. `SDKConfiguration.requestTrackingOnStart` foi removido, e o
+  valor persistido pela 3.9.x é apagado no próximo `configure()`.
+
 ## [3.9.0] - 2026-08-19
 
 ### Added

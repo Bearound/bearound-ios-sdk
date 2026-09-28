@@ -189,19 +189,6 @@ public struct SDKConfiguration {
     /// Default: ``PeriodicReconciliationDefaults/scanDuration`` (12 seconds).
     public let periodicScanDuration: TimeInterval
 
-    /// Lets the SDK raise the App Tracking Transparency prompt by itself, shortly after
-    /// `configure()`, so the IDFA is collected without the host wiring up a call.
-    ///
-    /// Nothing is shown unless the host app declares `NSUserTrackingUsageDescription` —
-    /// that key is the real opt-in, and without it this flag has no effect.
-    ///
-    /// Set to `false` to own the moment (to show your own explainer first, or to prompt
-    /// deeper into onboarding) and call
-    /// ``BeAroundSDK/requestTrackingAuthorization(completion:)`` when you are ready.
-    ///
-    /// Default: `true`.
-    public let requestTrackingOnStart: Bool
-
     /// How often a scan that found **nothing** still reports in.
     ///
     /// A scan that finds no beacon and no peer is data too: the device was *here* and saw
@@ -224,8 +211,8 @@ public struct SDKConfiguration {
     ///
     /// `false` means the advertising identifier is never read and never leaves the device:
     /// `permissions.advertisingId` and `permissions.trackingAuthorization` are absent from
-    /// every payload, and the SDK never raises the App Tracking Transparency prompt —
-    /// neither on start nor through ``BeAroundSDK/requestTrackingAuthorization(completion:)``.
+    /// every payload, and ``BeAroundSDK/requestTrackingAuthorization(completion:)`` does not
+    /// show the App Tracking Transparency prompt (it only reports the current status).
     ///
     /// For an app that collects the IDFA for its own purposes but does not want to share it
     /// with Bearound. Default: `true`.
@@ -269,7 +256,6 @@ public struct SDKConfiguration {
         periodicReconciliationEnabled: Bool = true,
         periodicReconciliationInterval: TimeInterval = PeriodicReconciliationDefaults.interval,
         periodicScanDuration: TimeInterval = PeriodicReconciliationDefaults.scanDuration,
-        requestTrackingOnStart: Bool = true,
         presenceHeartbeatInterval: TimeInterval = PresenceHeartbeatDefaults.interval,
         collectAdvertisingId: Bool = true,
         collectLocation: Bool = true,
@@ -286,7 +272,6 @@ public struct SDKConfiguration {
             PeriodicReconciliationDefaults.sanitizedInterval(periodicReconciliationInterval)
         self.periodicScanDuration =
             PeriodicReconciliationDefaults.sanitizedScanDuration(periodicScanDuration)
-        self.requestTrackingOnStart = requestTrackingOnStart
         self.presenceHeartbeatInterval =
             PresenceHeartbeatDefaults.sanitizedInterval(presenceHeartbeatInterval)
         self.collectAdvertisingId = collectAdvertisingId
