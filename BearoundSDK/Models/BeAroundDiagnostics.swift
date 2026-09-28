@@ -46,6 +46,16 @@ public struct BeAroundDiagnostics {
     /// call or `BGTaskSchedulerPermittedIdentifiers` Info.plist entries).
     public let backgroundTasksRegistered: Bool
 
+    /// ``BeAroundDetectionReadiness`` as a String (`full` / `backgroundBle` / `foregroundOnly`
+    /// / `blind`): what this install can actually detect, given the authorization granted and
+    /// the background modes the host declared.
+    public let detectionReadiness: String
+
+    /// The host app's declared `UIBackgroundModes`. Build-time, so it never changes at runtime:
+    /// and it decides whether the BLE eye survives backgrounding (`bluetooth-central`) and
+    /// whether background location updates are legal at all (`location`).
+    public let backgroundModes: [String]
+
     public func summary() -> String {
         let iso = ISO8601DateFormatter()
         func fmt(_ d: Date?) -> String { d.map { iso.string(from: $0) } ?? "—" }
@@ -64,6 +74,8 @@ public struct BeAroundDiagnostics {
             "  lastSync: \(fmt(lastSyncAt)) \(sync) (\(fmt(lastSyncBeaconCount)) beacons)",
             "  location: \(authorizationStatus)  bluetooth: \(bluetoothState)",
             "  bgRefresh: \(backgroundRefreshStatus)  bgTasks: \(backgroundTasksRegistered ? "registered" : "not registered")",
+            "  bgModes:  \(backgroundModes.isEmpty ? "none" : backgroundModes.joined(separator: ", "))",
+            "  detects:  \(detectionReadiness)",
         ]
         if recentErrors.isEmpty {
             lines.append("  errors:   none")

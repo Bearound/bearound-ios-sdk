@@ -5,6 +5,60 @@ All notable changes to BearoundSDK for iOS will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+- **`whenInUse` não é um despertador, e o SDK tratava como se fosse.** O olho BLE tem um
+  ciclo ocioso (espiada de 10 s a cada 5 min) que só é seguro porque o region monitoring
+  acorda o app na entrada da região. O gate que decidia isso aceitava qualquer autorização
+  de Location, inclusive `whenInUse`, com a qual o iOS **recusa** armar o monitoramento
+  (`kCLErrorDomain` 4). Nessas instalações os dois olhos ficavam degradados ao mesmo tempo:
+  sem acordar por região, e com o BLE ocioso esperando um acorde que nunca vinha. O gate
+  agora é `hasLocationWaker()`: `authorizedAlways` **e** precisão total, o par exato que o
+  iOS exige para `startMonitoring(for:)`. Fora disso o olho BLE fica contínuo.
+
+  Efeito colateral aceito: em device com `whenInUse` o BLE passa a varrer continuamente
+  enquanto o app estiver vivo. É mais bateria do que antes, e é o preço de detectar: antes
+  a alternativa não era "menos bateria", era "quase nenhuma detecção".
+
+- **O monitoramento negado vira erro tipado em vez de frase opaca.** `monitoringDidFailFor`
+  com `kCLErrorDomain` 4 (`CLError.regionMonitoringDenied`) chegava ao app hospedeiro como
+  `"A operação não pôde ser concluída. (kCLErrorDomain erro 4.)"`, localizado no idioma do
+  device, sem nada estável para casar. Medido em campo (app de um cliente, iPhone XR, iOS 18.7.2),
+  registrado como não-fatal e sem ação possível. Agora é re-embrulhado como
+  `BeAroundSDK` / `BearoundErrorCode.regionMonitoringDenied` (11), com o status de
+  autorização na mensagem e o erro original em `NSUnderlyingErrorKey`. Os demais erros do
+  CoreLocation continuam passando intactos.
+
+### Added
+- **`BeAroundSDK.shared.detectionReadiness`**: o que esta instalação consegue de fato
+  detectar, em um valor só: `full` (Sempre + precisão total: acorda o app até depois de
+  force-quit), `backgroundBle` (sem despertador do CoreLocation, mas o app declara
+  `bluetooth-central`: varre em background e o state restoration religa depois de um
+  encerramento do sistema, não de um force-quit), `foregroundOnly` (só com o app aberto) e
+  `blind` (nada consegue varrer). Cada caso traz um `explanation` pronto para log ou tela de
+  suporte.
+
+  Existe porque detecção no iOS não é booleano: depende de uma autorização de runtime e de
+  um background mode de build time, e nenhum dos dois é do SDK. Ele pode pedir o primeiro e
+  ler o segundo, então agora ele **nomeia o regime** em vez de deixar o app hospedeiro
+  deduzir a partir de string de erro. A decisão é função pura
+  (`BeAroundDetectionReadiness.evaluate`), testada na matriz inteira.
+
+- `BeAroundDiagnostics` ganha `detectionReadiness` e `backgroundModes`; o `summary()` passa
+  a mostrar as duas linhas. `backgroundModes` é o Info.plist do hospedeiro: sem
+  `bluetooth-central` não há varredura em background nem state restoration, e isso não
+  aparecia em lugar nenhum do diagnóstico.
+
+- `BearoundErrorCode.regionMonitoringDenied` (11): o iOS recusou armar a região de beacon
+  porque o app não tem `Always`. Não é crash nem transitório: o olho de Location fica fora
+  do ar para aquela instalação até a autorização mudar.
+- `BeAroundSDK.hasLocationWaker()` (internal): única fonte de verdade sobre existir ou não
+  um despertador do CoreLocation. Um `regionMonitoringDenied` observado também derruba o
+  ciclo ocioso na hora: a falha medida vale mais que a consulta de status, que pode dizer
+  `authorizedAlways` enquanto o iOS recusa (Location Services desligado no device,
+  restrição de MDM/Tempo de Uso).
+
 ## [3.11.0] - 2026-09-28
 
 ### Added
