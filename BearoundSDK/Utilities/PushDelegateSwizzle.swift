@@ -8,11 +8,11 @@
 //  class, to detect a tap on a Bearound notification (bearound.sid in the response's
 //  userInfo) and record an `opened` event. Always calls through to the original
 //  implementation (or the completion handler, if the class had none), so host behavior is
-//  unaffected (REQ-019).
+//  unaffected.
 //
 //  Opt out via `BearoundAppDelegateProxyEnabled = NO` in Info.plist (same flag as
 //  `PushTokenAutoCapture`), which leaves `BeAroundSDK.shared.handleNotificationResponse(_:)`
-//  and `trackNotificationOpened(userInfo:)` as the host's explicit wiring path (REQ-021).
+//  and `trackNotificationOpened(userInfo:)` as the host's explicit wiring path.
 //
 
 import Foundation
@@ -37,8 +37,8 @@ enum PushDelegateSwizzle {
         #selector(UNUserNotificationCenterDelegate.userNotificationCenter(_:didReceive:withCompletionHandler:))
 
     /// Installs the `setDelegate:` swizzle and, if no delegate is set yet, a minimal
-    /// SDK-owned delegate (REQ-020). No-op when the host opted out via Info.plist
-    /// (REQ-021) or when already installed.
+    /// SDK-owned delegate. No-op when the host opted out via Info.plist
+    /// or when already installed.
     static func enableIfPossible() {
         guard !installed else { return }
 
@@ -185,7 +185,7 @@ enum PushDelegateSwizzle {
 }
 
 /// Minimal SDK-owned `UNUserNotificationCenterDelegate` installed only when the host has
-/// none at SDK install time (REQ-020). It deliberately does NOT implement `willPresent`:
+/// none at SDK install time. It deliberately does NOT implement `willPresent`:
 /// a delegate without it presents like no delegate at all (no foreground banner), and
 /// libraries that chain to a delegate they find (firebase_messaging, for one) fall back
 /// to their own presentation options instead of inheriting an empty set from us.

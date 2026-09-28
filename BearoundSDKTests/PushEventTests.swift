@@ -13,7 +13,7 @@ import UserNotifications
 
 @testable import BearoundSDK
 
-// MARK: - Marker parsing (REQ-018)
+// MARK: - Marker parsing
 
 private let trackerBase = "https://track.bearound.io"
 
@@ -63,7 +63,7 @@ struct PushMarkerTests {
     }
 }
 
-// MARK: - Fake transport (REQ-026)
+// MARK: - Fake transport
 
 /// Test double that replays a scripted outcome for every `send`, and records every
 /// request it was asked to send.
@@ -103,7 +103,7 @@ final class DeferredPushEventTransport: PushEventTransport {
     }
 }
 
-// MARK: - Queue: cap / age / dedupe / drain-keep (REQ-025, REQ-026)
+// MARK: - Queue: cap / age / dedupe / drain-keep
 
 @Suite("PushEventQueue")
 struct PushEventQueueTests {
@@ -286,7 +286,7 @@ struct PushEventQueueTests {
     }
 }
 
-// MARK: - UN delegate swizzle (REQ-019, REQ-020)
+// MARK: - UN delegate swizzle
 
 /// Builds a real `UNNotificationResponse` via KVC. Neither `UNNotification` nor
 /// `UNNotificationResponse` expose a public initializer; both are plain `NSObject`
