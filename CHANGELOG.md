@@ -24,7 +24,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **O monitoramento negado vira erro tipado em vez de frase opaca.** `monitoringDidFailFor`
   com `kCLErrorDomain` 4 (`CLError.regionMonitoringDenied`) chegava ao app hospedeiro como
   `"A operação não pôde ser concluída. (kCLErrorDomain erro 4.)"`, localizado no idioma do
-  device, sem nada estável para casar. Medido em campo (cutpro 1.1.42, iPhone XR, iOS 18.7.2),
+  device, sem nada estável para casar. Medido em campo (app de um cliente, iPhone XR, iOS 18.7.2),
   registrado como não-fatal e sem ação possível. Agora é re-embrulhado como
   `BeAroundSDK` / `BearoundErrorCode.regionMonitoringDenied` (11), com o status de
   autorização na mensagem e o erro original em `NSUnderlyingErrorKey`. Os demais erros do
