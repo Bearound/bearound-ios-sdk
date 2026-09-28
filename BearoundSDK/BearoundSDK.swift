@@ -11,6 +11,7 @@ import CoreLocation
 import Foundation
 import os.log
 import UIKit
+import UserNotifications
 
 private let sdkLog = OSLog(subsystem: "com.bearound.sdk", category: "SDK")
 
@@ -334,6 +335,10 @@ public class BeAroundSDK {
             technology: savedConfig.technology,
             sdkVersion: Self.version
         )
+
+        // Push receipt/open queue: flush whatever a notification tap enqueued while the
+        // app was not running (hits carry no credential, so no configuration is needed).
+        PushEventQueue.shared.flush()
 
         // Periodic reconciliation settings must survive background relaunches too —
         // handleSyncTask/scheduleSync read them from the manager, not from the SDK.
@@ -888,6 +893,9 @@ public class BeAroundSDK {
         // so clients get push targeting without writing any token-forwarding code.
         PushTokenAutoCapture.enableIfPossible()
 
+        // Reports push opens (taps) via the UN delegate swizzle (REQ-019/REQ-020).
+        PushDelegateSwizzle.enableIfPossible()
+
         // First-party error telemetry — chains the uncaught-exception handler (idempotent) and
         // primes the transport. Best-effort; never affects the host app.
         ErrorReporter.shared.install(
@@ -896,6 +904,9 @@ public class BeAroundSDK {
             technology: config.technology,
             sdkVersion: Self.version
         )
+
+        // Push receipt/open queue: flush anything a cold-launch tap enqueued before this call.
+        PushEventQueue.shared.flush()
 
         // No App Tracking Transparency prompt here: the host app decides when (and whether)
         // to ask, via requestTrackingAuthorization(). The SDK only reads the outcome.
@@ -2162,6 +2173,11 @@ public class BeAroundSDK {
         // app, where configure() runs early. enableIfPossible() is idempotent (guarded by
         // `installed`), so configure() calling it again is a harmless no-op.
         PushTokenAutoCapture.enableIfPossible()
+
+        // Same reasoning for the UN delegate swizzle: a notification tap can cold-launch the
+        // app (and deliver the response) before configure() runs. The resulting `opened`
+        // event persists in PushEventQueue and is sent as soon as the network allows.
+        PushDelegateSwizzle.enableIfPossible()
     }
 
     /// Background-upload identifier owned by the SDK's background `URLSession`.
@@ -2276,6 +2292,38 @@ public class BeAroundSDK {
                 completion(false)
             }
         }
+    }
+
+    // MARK: - Push receipt / open measurement (REQ-018...REQ-021)
+
+    /// Records a push `received` event for a Bearound notification's `userInfo` (the
+    /// `bearound` marker with a `sid`). Called automatically by the swizzled
+    /// `didReceiveRemoteNotification` path; exposed publicly for hosts that opt out of the
+    /// AppDelegate proxy (`BearoundAppDelegateProxyEnabled = NO`) or for bridges (React
+    /// Native's Expo plugin `didReceiveRemoteNotification` override) that need to report
+    /// receipt explicitly. A `userInfo` with no `bearound.sid` is a no-op.
+    public func trackNotificationReceived(userInfo: [AnyHashable: Any]) {
+        guard let marker = PushMarker.extract(from: userInfo) else { return }
+        PushEventQueue.shared.enqueue(marker: marker, type: .received)
+    }
+
+    /// Records a push `opened` event (which also records `received`) for a Bearound
+    /// notification's `userInfo`. Called automatically by the swizzled UN delegate when
+    /// `BearoundAppDelegateProxyEnabled` is not `NO`; exposed publicly for hosts that opt
+    /// out and want to report a tap explicitly. A `userInfo` with no `bearound.sid` is a
+    /// no-op.
+    public func trackNotificationOpened(userInfo: [AnyHashable: Any]) {
+        guard let marker = PushMarker.extract(from: userInfo) else { return }
+        PushEventQueue.shared.enqueue(marker: marker, type: .opened)
+        PushEventQueue.shared.enqueue(marker: marker, type: .received)
+    }
+
+    /// Convenience for hosts that opt out of the UN delegate swizzle
+    /// (`BearoundAppDelegateProxyEnabled = NO`) and want to forward a
+    /// `UNUserNotificationCenterDelegate.userNotificationCenter(_:didReceive:withCompletionHandler:)`
+    /// response directly, without extracting `userInfo` themselves.
+    public func handleNotificationResponse(_ response: UNNotificationResponse) {
+        trackNotificationOpened(userInfo: response.notification.request.content.userInfo)
     }
 
     /// Called by BGTaskScheduler / silent push — refreshes BLE scan, collects Service Data, then syncs.

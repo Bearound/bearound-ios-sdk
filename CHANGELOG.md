@@ -5,6 +5,26 @@ All notable changes to BearoundSDK for iOS will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.11.0] - 2026-09-28
+
+### Added
+- **Medição de recebimento e abertura de push.** O SDK passa a reportar dois eventos por
+  envio mensurável (marcador `bearound: { sid, d, tr }`) ao tracker da Bearound, em
+  `GET {tr}/v1/push:received?d=` e `GET {tr}/v1/push:open?d=`, sem credencial (o `d` é o
+  contexto de entrega que o backend selou para o aparelho): `received`, quando a notificação
+  chega (reaproveita o `didReceiveRemoteNotification` já existente), e `opened`, quando o
+  usuário toca nela. A abertura é detectada por um swizzle de
+  `UNUserNotificationCenter.setDelegate:`, que remenda o delegate do host (ou instala um
+  mínimo, se nenhum existir) sem alterar o comportamento padrão para pushes que não são do
+  Bearound. Os eventos ficam numa fila persistida própria (separada da fila de beacons),
+  com envio imediato best-effort, retry com backoff exponencial, limite de 200 itens / 7
+  dias e desduplicação local por `(sid, tipo)`: sobrevive a um toque que reabre o app antes
+  do `configure()`.
+- Novas APIs públicas: `BeAroundSDK.shared.handleNotificationResponse(_:)`,
+  `trackNotificationOpened(userInfo:)` e `trackNotificationReceived(userInfo:)`, para hosts
+  que desativam o proxy automático (`BearoundAppDelegateProxyEnabled = NO`) ou para pontes
+  (Expo/React Native) que precisam reportar manualmente.
+
 ## [3.10.0] - 2026-09-28
 
 ### Changed
