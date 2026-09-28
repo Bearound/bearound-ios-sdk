@@ -65,4 +65,14 @@ public enum BearoundErrorCode: Int {
     /// API boundary before the request leaves, and reported here rather than as a delivery
     /// failure: nothing was sent, so it must not count against the retry backoff.
     case invalidPayload = 10
+
+    /// iOS refused to arm the beacon region: `kCLErrorDomain` code 4
+    /// (`CLError.regionMonitoringDenied`). Region monitoring requires `Always`
+    /// authorization, and the app holds at most `When In Use`, or lost `Always`
+    /// when the user answered the background-usage prompt with "Keep Only While
+    /// Using". Not a crash and not transient: the Location eye is down for this
+    /// install until the authorization changes, so there is no wake-up for a
+    /// backgrounded or terminated app. The originating CoreLocation error is kept
+    /// in `NSUnderlyingErrorKey`.
+    case regionMonitoringDenied = 11
 }

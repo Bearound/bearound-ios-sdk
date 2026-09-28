@@ -1093,10 +1093,61 @@ extension BeaconManager: CLLocationManagerDelegate {
     /// dies silently: startMonitoring() returns as if it succeeded and the SDK
     /// never gets region entry wake-ups. Surface it loudly so diagnostics and the
     /// host app can see the eye is down.
-    func locationManager(_: CLLocationManager, monitoringDidFailFor region: CLRegion?, withError error: Error) {
+    func locationManager(_ manager: CLLocationManager, monitoringDidFailFor region: CLRegion?, withError error: Error) {
         let regionId = region?.identifier ?? "nil"
         NSLog("[BeAroundSDK] REGION MONITORING FAILED for %@: %@", regionId, error.localizedDescription)
         DiagnosticsStore.shared.recordError("monitoringDidFail(\(regionId)): \(error.localizedDescription)")
-        onError?(error)
+        onError?(Self.translatedMonitoringFailure(error, manager: manager))
+    }
+
+    /// Re-wraps the one CoreLocation monitoring failure that is a permission state, not a bug.
+    ///
+    /// `kCLErrorDomain` code 4 (`CLError.regionMonitoringDenied`) is iOS refusing to arm the
+    /// beacon region because the app does not hold `Always`, the level region monitoring
+    /// requires. `startScanning()` accepts `whenInUse` (foreground ranging is still worth
+    /// having), so this failure is reachable by design and the host app must be able to tell
+    /// it apart from a real fault. Forwarded raw it reaches the host as the opaque
+    /// "The operation couldn't be completed. (kCLErrorDomain error 4.)", measured in the
+    /// field, a non-fatal with nothing to act on. Re-wrapped, it carries a stable code, the
+    /// authorization status that caused it, and the original error in `NSUnderlyingErrorKey`.
+    ///
+    /// Every other CoreLocation error passes through untouched.
+    private static func translatedMonitoringFailure(_ error: Error, manager: CLLocationManager) -> Error {
+        let nsError = error as NSError
+        guard nsError.domain == kCLErrorDomain,
+              nsError.code == CLError.Code.regionMonitoringDenied.rawValue
+        else { return error }
+
+        let status: CLAuthorizationStatus
+        if #available(iOS 14.0, *) {
+            status = manager.authorizationStatus
+        } else {
+            status = CLLocationManager.authorizationStatus()
+        }
+
+        return NSError(
+            domain: "BeAroundSDK",
+            code: BearoundErrorCode.regionMonitoringDenied.rawValue,
+            userInfo: [
+                NSLocalizedDescriptionKey:
+                    "Region monitoring denied by iOS (authorization=\(authorizationName(status))). "
+                    + "Beacon region monitoring requires 'Always' location authorization; without it "
+                    + "there is no wake-up for a backgrounded or terminated app. Ask for Always "
+                    + "(requestLocationAuthorization(.always)) or send the user to Settings.",
+                NSUnderlyingErrorKey: nsError,
+            ]
+        )
+    }
+
+    /// Human-readable authorization status for error messages and logs.
+    private static func authorizationName(_ status: CLAuthorizationStatus) -> String {
+        switch status {
+        case .notDetermined: return "notDetermined"
+        case .restricted: return "restricted"
+        case .denied: return "denied"
+        case .authorizedAlways: return "authorizedAlways"
+        case .authorizedWhenInUse: return "authorizedWhenInUse"
+        @unknown default: return "unknown(\(status.rawValue))"
+        }
     }
 }

@@ -151,7 +151,9 @@ public class BeAroundSDK {
             authorizationStatus: Self.authorizationStatusString(Self.authorizationStatus()),
             bluetoothState: Self.bluetoothStateString(),
             backgroundRefreshStatus: backgroundRefresh,
-            backgroundTasksRegistered: bgTasksRegistered
+            backgroundTasksRegistered: bgTasksRegistered,
+            detectionReadiness: detectionReadiness.rawValue,
+            backgroundModes: Self.declaredBackgroundModes
         )
     }
 
@@ -374,9 +376,9 @@ public class BeAroundSDK {
         let locationStatus = Self.authorizationStatus()
         let locationAuthorized = (locationStatus == .authorizedWhenInUse || locationStatus == .authorizedAlways)
 
-        // BLE-only gating (see startScanning): without Location there is no region-monitoring
-        // waker, so the BLE eye must stay continuously active instead of using the idle cycle.
-        bluetoothManager.keepContinuousScanWhenBleOnly = !locationAuthorized
+        // BLE-only gating (see startScanning): without a region-monitoring waker the BLE eye
+        // must stay continuously active instead of using the idle cycle.
+        updateBleOnlyContinuousScanFlag()
 
         // iOS 14+: Precise Location off disables all beacon APIs
         var locationCanRangeBeacons = locationAuthorized
@@ -505,6 +507,16 @@ public class BeAroundSDK {
 
         beaconManager.onError = { [weak self] error in
             ErrorReporter.shared.report(error, context: "beaconManager")
+            // A denied region monitor is proof there is no Location waker on this device:
+            // stronger than the authorization query, which can read `authorizedAlways` while
+            // iOS still refuses (Location Services off globally, MDM/Screen Time restriction).
+            // Keep the BLE eye continuously active so detection does not sit in the 5-min idle
+            // cycle waiting for a wake-up that will never arrive.
+            let nsError = error as NSError
+            if nsError.domain == "BeAroundSDK",
+               nsError.code == BearoundErrorCode.regionMonitoringDenied.rawValue {
+                self?.bluetoothManager.keepContinuousScanWhenBleOnly = true
+            }
             // CoreLocation delegate callbacks arrive on the main thread, but ranging-watchdog
             // timers can fire this off other queues — always hop to main so the host's UI code
             // in didFailWithError never touches UIKit off-thread.
@@ -1012,10 +1024,10 @@ public class BeAroundSDK {
         let locationAuthorized = (locationStatus == .authorizedWhenInUse || locationStatus == .authorizedAlways)
         os_log("[SDK] locationStatus=%{public}ld authorized=%{public}d", log: sdkLog, type: .info, locationStatus.rawValue, locationAuthorized ? 1 : 0)
 
-        // BLE-only gating: if Location is not authorized, there is no region-monitoring waker,
-        // so the BLE eye must stay continuously active (no idle duty cycle). Set this BEFORE
-        // starting the BLE eye so it picks the right behavior from its first tick.
-        bluetoothManager.keepContinuousScanWhenBleOnly = !locationAuthorized
+        // BLE-only gating: without a region-monitoring waker the BLE eye must stay
+        // continuously active (no idle duty cycle). Set this BEFORE starting the BLE eye so
+        // it picks the right behavior from its first tick.
+        updateBleOnlyContinuousScanFlag()
 
         // iOS 14+: Precise Location off (reducedAccuracy) disables all beacon APIs (ranging + region monitoring)
         var locationCanRangeBeacons = locationAuthorized
@@ -1132,15 +1144,62 @@ public class BeAroundSDK {
     /// may use the idle duty cycle.
     ///
     /// The BLE idle cycle (10s peek every 5 min) relies on the Location eye's region monitoring
-    /// to wake it back to `.active` instantly on a region-enter. When Location is NOT authorized
-    /// (notDetermined / denied / restricted) there is no such waker, so a demotion to idle would
-    /// delay the next detection by up to a full cycle (5 min). In that case we tell the BLE eye
-    /// to stay continuously active. When Location IS authorized (whenInUse or always) the duty
-    /// cycle is safe and we leave it enabled.
+    /// to wake it back to `.active` instantly on a region-enter. Without that waker a demotion
+    /// to idle delays the next detection by up to a full cycle (5 min), so the BLE eye must
+    /// stay continuously active instead.
+    ///
+    /// The gate used to be "Location authorized", which counted `whenInUse` as a waker. It is
+    /// not one: iOS arms region monitoring only under `Always` and answers `whenInUse` with
+    /// `kCLErrorDomain` 4 (`regionMonitoringDenied`). On those installs both eyes were degraded
+    /// at once: no region wake-up, and a BLE eye idling in wait of one. See ``hasLocationWaker``.
     private func updateBleOnlyContinuousScanFlag() {
-        let status = Self.authorizationStatus()
-        let locationAuthorized = (status == .authorizedAlways || status == .authorizedWhenInUse)
-        bluetoothManager.keepContinuousScanWhenBleOnly = !locationAuthorized
+        bluetoothManager.keepContinuousScanWhenBleOnly = !Self.hasLocationWaker()
+    }
+
+    /// Whether CoreLocation can actually wake the app on a beacon region enter.
+    ///
+    /// True only under `Always` **and** full accuracy, the exact pair iOS requires to arm
+    /// `startMonitoring(for:)` on a `CLBeaconRegion`. `whenInUse` grants foreground ranging
+    /// and nothing else; reduced accuracy disables every beacon API. Anything else means the
+    /// SDK has no waker and must not rely on one.
+    internal static func hasLocationWaker() -> Bool {
+        guard authorizationStatus() == .authorizedAlways else { return false }
+        if #available(iOS 14.0, *) {
+            return authQueryManager.accuracyAuthorization == .fullAccuracy
+        }
+        return true
+    }
+
+    /// What this install can actually detect right now. See ``BeAroundDetectionReadiness``.
+    ///
+    /// One value the host can render, instead of inferring the regime from a localized error
+    /// string. Cheap: four status reads, no CoreLocation or CoreBluetooth object is created.
+    public var detectionReadiness: BeAroundDetectionReadiness {
+        var fullAccuracy = true
+        if #available(iOS 14.0, *) {
+            fullAccuracy = Self.authQueryManager.accuracyAuthorization == .fullAccuracy
+        }
+
+        var bluetoothAuthorized = true
+        if #available(iOS 13.1, *) {
+            let auth = CBCentralManager.authorization
+            bluetoothAuthorized = (auth != .denied && auth != .restricted)
+        }
+
+        return BeAroundDetectionReadiness.evaluate(
+            locationStatus: Self.authorizationStatus(),
+            fullAccuracy: fullAccuracy,
+            locationServicesEnabled: CLLocationManager.locationServicesEnabled(),
+            bluetoothAuthorized: bluetoothAuthorized,
+            declaresBluetoothCentral: Self.declaredBackgroundModes.contains("bluetooth-central")
+        )
+    }
+
+    /// The host app's `UIBackgroundModes`, as declared in its Info.plist. Build-time truth the
+    /// SDK can read but never change, and the difference between detecting in the background
+    /// and only in the foreground, so it belongs in diagnostics.
+    internal static var declaredBackgroundModes: [String] {
+        (Bundle.main.object(forInfoDictionaryKey: "UIBackgroundModes") as? [String]) ?? []
     }
 
     /// Opts the SDK into the **Location eye** by requesting Location authorization
