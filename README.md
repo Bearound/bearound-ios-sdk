@@ -361,6 +361,48 @@ func application(_ application: UIApplication,
 
 The capture lives in the native `configure()`, so it works **automatically** in the React Native and Flutter wrappers too — the swizzle runs on the app's native `AppDelegate` (RN's / Flutter's) when you call `configure()` from JS/Dart. The **Push Notifications capability** still has to be enabled in the wrapper app's iOS target (the unavoidable manual step above).
 
+### Push Receipt & Open Measurement
+
+For pushes the backend sends with a `bearound: { sid, ... }` marker (measurable sends, as
+opposed to the sync scheduler's plain silent pushes), the SDK reports two events back:
+
+- **`received`**: the notification reached the device. Reuses the same silent-push handling
+  described above; no extra code required.
+- **`opened`**: the user tapped the notification. Detected by swizzling
+  `UNUserNotificationCenter.setDelegate:`, so whatever delegate your app installs (now or
+  later) gets patched automatically. If your app never sets a delegate, the SDK installs a
+  minimal one that preserves the default system presentation behavior for your own
+  notifications.
+
+Both events go through a small persisted queue (separate from the beacon batch queue),
+delivered best-effort with retry, so a tap that cold-launches the app before `configure()`
+runs is not lost: it flushes once the business token is known.
+
+You do **not** need to write any code for this to work, **unless** you opted out via
+`BearoundAppDelegateProxyEnabled = NO` above. In that case, call these from your own
+`UNUserNotificationCenterDelegate`:
+
+```swift
+func userNotificationCenter(_ center: UNUserNotificationCenter,
+                             didReceive response: UNNotificationResponse,
+                             withCompletionHandler completionHandler: @escaping () -> Void) {
+    BeAroundSDK.shared.handleNotificationResponse(response)
+    // ... your own handling ...
+    completionHandler()
+}
+```
+
+Or, if you only have the raw `userInfo` (e.g. a bridge like the RN Expo plugin's
+`didReceiveRemoteNotification` override):
+
+```swift
+BeAroundSDK.shared.trackNotificationReceived(userInfo: userInfo)
+BeAroundSDK.shared.trackNotificationOpened(userInfo: userInfo)
+```
+
+A `userInfo`/response with no `bearound.sid` (a non-Bearound push, or a sync silent push) is
+a no-op.
+
 ### Advanced Background Integration
 
 For maximum reliability when the app is completely closed, implement the following in your `AppDelegate`:
