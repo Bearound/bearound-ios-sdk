@@ -43,7 +43,7 @@ struct DetectionReadinessTests {
 
     @Test("whenInUse is NOT a waker: this is the kCLErrorDomain#4 install")
     func whenInUseIsNotAWaker() {
-        // The field case: cutpro on iOS 18.7.2. iOS refuses to arm the region, so the
+        // The field case: a customer app on iOS 18.7.2. iOS refuses to arm the region, so the
         // best available regime is whatever Bluetooth can do.
         #expect(evaluate(.authorizedWhenInUse) == .backgroundBle)
         #expect(evaluate(.authorizedWhenInUse, declaresBluetoothCentral: false) == .foregroundOnly)
