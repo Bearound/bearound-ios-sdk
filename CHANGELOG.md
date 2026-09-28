@@ -34,6 +34,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`sdkVersion` junto do push token.** O bloco `userDevice` do payload leva a versão
   nativa do SDK (até 32 caracteres), para o backend saber quais aparelhos já têm as
   extensões de push rico.
+  Depois de uma atualização do SDK, o token é reenviado uma vez mesmo sem ter mudado: o
+  `PushTokenStore` guarda a versão que acompanhou o último envio, e sem isso um aparelho
+  atualizado continuaria marcado como antigo até o token rotacionar, o que pode nunca
+  acontecer.
 
 ## [3.12.0] - 2026-09-28
 

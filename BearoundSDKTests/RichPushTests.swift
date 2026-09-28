@@ -182,3 +182,20 @@ struct RichPushAttachmentExtensionTests {
         #expect(RichPush.attachmentFileExtension(mimeType: nil, data: Data([0x01])) == nil)
     }
 }
+
+@Suite("Push token resend on SDK upgrade")
+struct PushTokenVersionResendTests {
+    @Test("a changed SDK version re-sends the same token once, then stops")
+    func versionChangedResendsOnce() {
+        let sentAt = Date()
+        // Same token, sent a minute ago by the previous SDK version: re-send.
+        #expect(PushTokenStore.shouldSend(token: "tok", lastSent: "tok", lastSentAt: sentAt,
+                                          lastSentVersion: "3.11.0", currentVersion: "3.12.0", now: sentAt + 60))
+        // Installs that predate the version key count as a different version.
+        #expect(PushTokenStore.shouldSend(token: "tok", lastSent: "tok", lastSentAt: sentAt,
+                                          lastSentVersion: nil, currentVersion: "3.12.0", now: sentAt + 60))
+        // After the send is marked with the current version: nothing until rotation or TTL.
+        #expect(!PushTokenStore.shouldSend(token: "tok", lastSent: "tok", lastSentAt: sentAt,
+                                           lastSentVersion: "3.12.0", currentVersion: "3.12.0", now: sentAt + 60))
+    }
+}
