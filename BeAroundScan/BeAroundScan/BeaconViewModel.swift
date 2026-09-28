@@ -264,6 +264,7 @@ class BeaconViewModel: NSObject, ObservableObject, BeAroundSDKDelegate {
         loadSavedSettings()
         loadPersistedLogs()
         setupLockObservers()
+        setupTrackingPrompt()
 
         locationManager.requestAlwaysAuthorization()
         notificationManager.requestAuthorization()
@@ -283,6 +284,26 @@ class BeaconViewModel: NSObject, ObservableObject, BeAroundSDKDelegate {
             DispatchQueue.main.async {
                 self.nowTick = Date()
             }
+        }
+    }
+
+    /// The SDK never raises the App Tracking Transparency prompt: the host app owns it.
+    /// Asked on `didBecomeActive` because iOS silently drops the request while another
+    /// system dialog (location, notifications) is on screen; once the user answers, later
+    /// calls return the stored decision with no UI.
+    private func setupTrackingPrompt() {
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(requestTrackingIfNeeded),
+            name: UIApplication.didBecomeActiveNotification,
+            object: nil
+        )
+    }
+
+    @objc private func requestTrackingIfNeeded() {
+        guard BeAroundSDK.trackingAuthorizationStatus() == "notDetermined" else { return }
+        BeAroundSDK.shared.requestTrackingAuthorization { status in
+            NSLog("[BeAroundScan] ATT: %@", status)
         }
     }
 
