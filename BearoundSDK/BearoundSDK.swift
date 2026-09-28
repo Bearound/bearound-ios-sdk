@@ -1357,48 +1357,42 @@ public class BeAroundSDK {
 
     /// One visit event is a normal `/ingest` payload: no beacons, `syncTrigger: "visit"`, the
     /// visit fix as `location` (real fix time, `source: "gnss"`) and the Wi-Fi the collector
-    /// already holds when the policy allows it. Delivered immediately, with the background
-    /// session as the durable fallback on transport failure.
+    /// already holds when the policy allows it.
+    ///
+    /// Durable: the event is persisted in `OfflineBatchStorage` with its captured context
+    /// (exempt from the count eviction) and delivered by the retry drain, which keeps
+    /// `syncTrigger: "visit"` and the captured location on every attempt (REQ-010).
     private func sendVisitEvent(_ event: VisitEvent) {
-        guard let apiClient, let sdkInfo else {
-            NSLog("[BeAroundSDK] Visit %@ dropped: SDK not configured", event.kind.rawValue)
+        let userDevice = Self.visitUserDevice(
+            for: event,
+            collected: deviceInfoCollector.collectDeviceInfo(
+                locationPermission: Self.authorizationStatus(),
+                bluetoothState: bluetoothManager.isPoweredOn ? "powered_on" : "powered_off",
+                appInForeground: !isInBackground
+            )
+        )
+        guard let batchId = offlineBatchStorage.saveBatchReturningId([], userDevice: userDevice,
+                                                                     syncTrigger: event.syncTrigger) else {
+            NSLog("[BeAroundSDK] Visit %@ dropped: could not persist it", event.kind.rawValue)
+            ErrorReporter.shared.report(
+                NSError(domain: "BeAroundSDK", code: BearoundErrorCode.storageFailure.rawValue,
+                        userInfo: [NSLocalizedDescriptionKey: "visit persist returned nil"]),
+                context: "visit.\(event.kind.rawValue)"
+            )
             return
         }
-        var userDevice = deviceInfoCollector.collectDeviceInfo(
-            locationPermission: Self.authorizationStatus(),
-            bluetoothState: bluetoothManager.isPoweredOn ? "powered_on" : "powered_off",
-            appInForeground: !isInBackground
-        )
-        userDevice.location = event.deviceLocation
+        NSLog("[BeAroundSDK] Visit %@ queued as %@ (fix at %@)", event.kind.rawValue, batchId, "\(event.timestamp)")
+        DetectionLogStore.append(type: "Visit", detail: "\(event.kind.rawValue) queued")
+        // The drain skips while a sync is in flight; that sync's completion drains the queue.
+        drainRetryQueue()
+    }
 
-        var taskId = UIBackgroundTaskIdentifier.invalid
-        taskId = UIApplication.shared.beginBackgroundTask(withName: "BeAroundVisitEvent") {
-            UIApplication.shared.endBackgroundTask(taskId)
-            taskId = .invalid
-        }
-        NSLog("[BeAroundSDK] Sending visit %@ (fix at %@)", event.kind.rawValue, "\(event.timestamp)")
-        apiClient.sendBeacons(
-            [],
-            sdkInfo: sdkInfo,
-            userDevice: userDevice,
-            userProperties: userProperties,
-            syncTrigger: event.syncTrigger,
-            delivery: .immediateFirst
-        ) { result in
-            switch result {
-            case .success:
-                DetectionLogStore.append(type: "Visit", detail: "\(event.kind.rawValue) sent")
-            case .failure(let error):
-                NSLog("[BeAroundSDK] Visit %@ failed: %@", event.kind.rawValue, error.localizedDescription)
-                ErrorReporter.shared.report(error, context: "visit.\(event.kind.rawValue)")
-            }
-            DispatchQueue.main.async {
-                if taskId != .invalid {
-                    UIApplication.shared.endBackgroundTask(taskId)
-                    taskId = .invalid
-                }
-            }
-        }
+    /// The captured context of a visit event: the device snapshot with the visit fix as its
+    /// location (the fix time, not the send time).
+    static func visitUserDevice(for event: VisitEvent, collected: UserDevice) -> UserDevice {
+        var userDevice = collected
+        userDevice.location = event.deviceLocation
+        return userDevice
     }
 
     // MARK: - Detection Log (internal diagnostic, not user-facing notifications)
@@ -1893,31 +1887,8 @@ public class BeAroundSDK {
                 self.syncDidFinishCoordination()
             }
 
-            // Fix 3 — Persist-before-send: durably store this batch BEFORE the upload so the
-            // detection survives app suspension/termination. On a SUCCESSFUL completion we
-            // remove exactly this batch; on failure we leave it for retry. This is the safety
-            // net that guarantees eventual delivery even if the completion arrives after the
-            // app has been relaunched. `persistedBatchId` is the on-disk filename of the batch.
-            let persistedBatchId = self.offlineBatchStorage.saveBatchReturningId(beaconsToSend)
-            // P20 — persist-before-send failed (disk full / data protection / no App
-            // Support dir): the upload still goes out — blocking it would guarantee
-            // the loss the persistence exists to prevent — but the durability gap is
-            // real (a crash mid-upload loses this batch), so make it VISIBLE.
-            if persistedBatchId == nil {
-                NSLog("[BeAroundSDK] WARNING: persist-before-send failed — batch flies without a durable copy")
-                DiagnosticsStore.shared.recordError("persist-before-send failed (\(beaconCount) beacons unprotected)")
-                ErrorReporter.shared.report(
-                    NSError(domain: "BeAroundSDK", code: BearoundErrorCode.storageFailure.rawValue,
-                            userInfo: [NSLocalizedDescriptionKey: "persist-before-send returned nil"]),
-                    context: "syncBeacons.persist"
-                )
-            }
-
-            // Notify delegate that sync is starting
-            DispatchQueue.main.async {
-                self.delegate?.willStartSync(beaconCount: beaconCount)
-            }
-
+            // Capture the send context BEFORE persisting: the batch is stored with it, so a
+            // retry replays this exact device state, location and trigger (REQ-018).
             let locationPermission = Self.authorizationStatus()
             let bluetoothState = bluetoothManager.isPoweredOn ? "powered_on" : "powered_off"
             let appInForeground = !isInBackground
@@ -1931,6 +1902,34 @@ public class BeAroundSDK {
 
             let trigger = self.syncTrigger
             self.syncTrigger = "unknown"
+
+            // Fix 3 — Persist-before-send: durably store this batch BEFORE the upload so the
+            // detection survives app suspension/termination. On a SUCCESSFUL completion we
+            // remove exactly this batch; on failure we leave it for retry. This is the safety
+            // net that guarantees eventual delivery even if the completion arrives after the
+            // app has been relaunched. `persistedBatchId` is the on-disk filename of the batch.
+            // A beacon-less upload (encounters / presence heartbeat) is not persisted, as before.
+            let persistedBatchId = beaconsToSend.isEmpty
+                ? nil
+                : self.offlineBatchStorage.saveBatchReturningId(beaconsToSend, userDevice: userDevice, syncTrigger: trigger)
+            // P20 — persist-before-send failed (disk full / data protection / no App
+            // Support dir): the upload still goes out — blocking it would guarantee
+            // the loss the persistence exists to prevent — but the durability gap is
+            // real (a crash mid-upload loses this batch), so make it VISIBLE.
+            if persistedBatchId == nil && !beaconsToSend.isEmpty {
+                NSLog("[BeAroundSDK] WARNING: persist-before-send failed — batch flies without a durable copy")
+                DiagnosticsStore.shared.recordError("persist-before-send failed (\(beaconCount) beacons unprotected)")
+                ErrorReporter.shared.report(
+                    NSError(domain: "BeAroundSDK", code: BearoundErrorCode.storageFailure.rawValue,
+                            userInfo: [NSLocalizedDescriptionKey: "persist-before-send returned nil"]),
+                    context: "syncBeacons.persist"
+                )
+            }
+
+            // Notify delegate that sync is starting
+            DispatchQueue.main.async {
+                self.delegate?.willStartSync(beaconCount: beaconCount)
+            }
 
             apiClient.sendBeacons(
                 beaconsToSend,
@@ -2074,11 +2073,56 @@ public class BeAroundSDK {
 
     // MARK: - Retry Queue Drain (chunked)
 
-    /// Maximum number of batches to merge per retry API call
+    /// Maximum number of batches loaded per drain step (merged only when their captured
+    /// context is identical, see `retryGroup`).
     private static let retryChunkSize = 5
 
-    /// Drains the retry queue by sending batches in chunks of 5, sequentially.
-    /// On success of each chunk, immediately sends the next until the queue is empty.
+    /// Trigger of a legacy batch (persisted before the trigger was stored with it).
+    static let legacyRetryTrigger = "retry_drain"
+
+    /// The batches one retry request carries: the oldest record plus the records right
+    /// behind it with an IDENTICAL captured context (same device snapshot and trigger).
+    /// Batches captured at different moments never share a request, so each keeps its own
+    /// location, device state and `syncTrigger` (REQ-018). Legacy batches (no captured
+    /// context) group with each other, as the drain did before.
+    static func retryGroup(from records: [OfflineBatchStorage.StoredBatchRecord]) -> [OfflineBatchStorage.StoredBatchRecord] {
+        guard let head = records.first else { return [] }
+        var group = [head]
+        for record in records.dropFirst() {
+            guard record.userDevice == head.userDevice, record.syncTrigger == head.syncTrigger else { break }
+            group.append(record)
+        }
+        return group
+    }
+
+    /// The context a retry request is sent with: the persisted one when the batch has it;
+    /// for a legacy batch only, a context collected now (`fallbackDevice`) with
+    /// `legacyRetryTrigger`. `fallbackDevice` is not called for a captured batch.
+    static func retryContext(
+        for record: OfflineBatchStorage.StoredBatchRecord,
+        fallbackDevice: () -> UserDevice
+    ) -> (userDevice: UserDevice, syncTrigger: String) {
+        let trigger = record.syncTrigger ?? legacyRetryTrigger
+        if let captured = record.userDevice { return (captured, trigger) }
+        return (fallbackDevice(), trigger)
+    }
+
+    /// Whether a retry group still has something the ingest accepts: beacons, or (for a
+    /// captured beacon-less batch such as a visit) the location/Wi-Fi/encounters it carries.
+    static func retryGroupIsSendable(_ beacons: [Beacon], head: OfflineBatchStorage.StoredBatchRecord) -> Bool {
+        if !beacons.isEmpty { return true }
+        guard let captured = head.userDevice else { return false }
+        return APIClient.acceptsEmptyBeacons(
+            syncTrigger: head.syncTrigger ?? legacyRetryTrigger,
+            hasEncounters: !captured.encounters.isEmpty,
+            hasLocation: captured.location != nil,
+            hasWifis: !captured.wifis.isEmpty
+        )
+    }
+
+    /// Drains the retry queue one request per batch (or per run of batches with identical
+    /// captured context), sequentially, each with its own persisted context and trigger.
+    /// On success of each request, immediately sends the next until the queue is empty.
     /// On failure, stops draining (will retry on next sync cycle).
     /// - Parameter singleBatchMode: send ONE batch per request. Entered after a chunk is
     ///   rejected with a permanent HTTP status: the chunk mixes several persisted batches,
@@ -2107,13 +2151,14 @@ public class BeAroundSDK {
             // P7 — id-addressed drain: remove EXACTLY the batches this chunk sent,
             // not "the N oldest at removal time" (a save/expiry between load and
             // remove used to shift the window onto unsent batches).
-            let chunkRecords = self.offlineBatchStorage.loadOldestBatchesWithIds(singleBatchMode ? 1 : Self.retryChunkSize)
+            let loadedRecords = self.offlineBatchStorage.loadOldestBatchesWithIds(singleBatchMode ? 1 : Self.retryChunkSize)
+            let chunkRecords = Self.retryGroup(from: loadedRecords)
             let chunkIds = chunkRecords.map { $0.id }
             let chunkCount = chunkRecords.count
             let beaconsToSend = chunkRecords.flatMap { $0.beacons }.filter { $0.rssi != 0 || $0.discoverySources.contains(.coreLocation) }
 
-            guard !beaconsToSend.isEmpty else {
-                // All beacons in this chunk had rssi=0, skip and try next
+            guard let head = chunkRecords.first, Self.retryGroupIsSendable(beaconsToSend, head: head) else {
+                // All beacons in this chunk had rssi=0 (or it was unreadable), skip and try next
                 self.offlineBatchStorage.removeBatches(ids: chunkIds)
                 NSLog("[BeAroundSDK] Skipped %d empty retry batches", chunkCount)
                 self.drainRetryQueue()
@@ -2145,23 +2190,23 @@ public class BeAroundSDK {
                 self.delegate?.willStartSync(beaconCount: beaconCount)
             }
 
-            let locationPermission = Self.authorizationStatus()
-            let bluetoothState = self.bluetoothManager.isPoweredOn ? "powered_on" : "powered_off"
-            let appInForeground = !self.isInBackground
-
-            var userDevice = self.deviceInfoCollector.collectDeviceInfo(
-                locationPermission: locationPermission,
-                bluetoothState: bluetoothState,
-                appInForeground: appInForeground
-            )
-            self.attachEncounterData(to: &userDevice)
+            // Persisted context and trigger; a context is collected now ONLY for a legacy batch.
+            let (userDevice, retryTrigger) = Self.retryContext(for: head) {
+                var fresh = self.deviceInfoCollector.collectDeviceInfo(
+                    locationPermission: Self.authorizationStatus(),
+                    bluetoothState: self.bluetoothManager.isPoweredOn ? "powered_on" : "powered_off",
+                    appInForeground: !self.isInBackground
+                )
+                self.attachEncounterData(to: &fresh)
+                return fresh
+            }
 
             apiClient.sendBeacons(
                 beaconsToSend,
                 sdkInfo: sdkInfo,
                 userDevice: userDevice,
                 userProperties: self.userProperties,
-                syncTrigger: "retry_drain",
+                syncTrigger: retryTrigger,
                 delivery: .immediateFirst,
                 persistedBatchIds: chunkIds
             ) { [weak self] result in

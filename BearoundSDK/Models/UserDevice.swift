@@ -7,7 +7,7 @@
 
 import Foundation
 
-struct UserDevice {
+struct UserDevice: Codable, Equatable {
     let deviceId: String
     /// APNs push token — the address used to deliver push. Nil unless it still needs syncing.
     let pushToken: String?

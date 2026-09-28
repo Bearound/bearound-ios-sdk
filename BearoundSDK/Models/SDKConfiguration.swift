@@ -146,11 +146,9 @@ public struct SDKConfiguration {
     /// (`react-native` / `flutter`) so the backend can attribute traffic per integration.
     public let technology: String
 
+    /// The single SDK host: `/ingest`, `/sdk-errors` and `/sdk/places/*` (the ingest's load
+    /// balancer routes the places paths to the places service by path, REQ-004).
     let apiBaseURL: String
-
-    /// Control Hub API base URL: serves `GET /sdk/places/nearby` (visit detection config).
-    /// The ingest host (`apiBaseURL`) only carries `/ingest` and `/sdk-errors`.
-    let controlHubBaseURL: String
 
     /// Enables the periodic background reconciliation (`BGAppRefreshTask` layer).
     ///
@@ -270,7 +268,6 @@ public struct SDKConfiguration {
         self.maxQueuedPayloads = maxQueuedPayloads
         self.technology = technology
         self.apiBaseURL = "https://ingest.bearound.io"
-        self.controlHubBaseURL = "https://chapi.bearound.io"
         self.appId = Bundle.main.bundleIdentifier ?? "unknown"
         self.periodicReconciliationEnabled = periodicReconciliationEnabled
         self.periodicReconciliationInterval =

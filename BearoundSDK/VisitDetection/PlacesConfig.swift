@@ -101,8 +101,9 @@ protocol PlacesConfigFetching: AnyObject {
                completion: @escaping (PlacesConfigFetchResult) -> Void)
 }
 
-/// `GET {controlHubBaseURL}/sdk/places/nearby?lat=&lng=`, authenticated with the raw
-/// business token exactly like `/ingest` (`Authorization: <businessToken>`).
+/// `GET {apiBaseURL}/sdk/places/nearby?lat=&lng=` on the ingest host (the same one as
+/// `/ingest`), authenticated with the raw business token exactly like `/ingest`
+/// (`Authorization: <businessToken>`).
 ///
 /// One instance (and one `URLSession`) lives as long as the SDK: the configuration is read
 /// at every fetch, so a reconfigure never needs a new client.
@@ -157,7 +158,7 @@ final class PlacesConfigClient: PlacesConfigFetching {
             completion(.failed(ClientError.notConfigured))
             return
         }
-        guard let request = Self.makeRequest(baseURL: config.controlHubBaseURL, businessToken: config.businessToken,
+        guard let request = Self.makeRequest(baseURL: config.apiBaseURL, businessToken: config.businessToken,
                                              latitude: latitude, longitude: longitude, etag: etag) else {
             completion(.failed(APIError.invalidURL))
             return

@@ -6,7 +6,7 @@ import Foundation
 /// is no public API for scanning neighbouring networks, so `rssi` is usually `nil` and the
 /// list never grows past one entry. Android fills the same structure with the neighbours it
 /// can see; the backend consumes both shapes without caring which platform produced them.
-struct WifiObservation {
+struct WifiObservation: Codable, Equatable {
     /// Canonical hash of the BSSID (16 hex chars) — the identity the backend actually uses.
     let apId: String
     /// Human-readable network name, reported alongside `apId`.

@@ -5,7 +5,7 @@ import Foundation
 ///
 /// Always the **cached** fix that CoreLocation already holds — the SDK never starts a
 /// location request of its own, so this costs no extra battery and no GPS wake-up.
-struct DeviceLocation {
+struct DeviceLocation: Codable, Equatable {
     let latitude: Double
     let longitude: Double
     let accuracy: Double?
