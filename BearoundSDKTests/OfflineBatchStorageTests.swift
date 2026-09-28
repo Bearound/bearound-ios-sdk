@@ -209,7 +209,7 @@ struct OfflineBatchStorageTests {
     }
 }
 
-// MARK: - Captured context and retry drain (REQ-010, REQ-018)
+// MARK: - Captured context and retry drain
 
 @Suite("OfflineBatchStorage captured context")
 struct OfflineBatchCapturedContextTests {

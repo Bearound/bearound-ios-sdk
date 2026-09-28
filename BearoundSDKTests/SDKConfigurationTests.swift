@@ -175,7 +175,7 @@ struct PeriodicReconciliationConfigurationTests {
     }
 }
 
-// MARK: - Single SDK host (REQ-004)
+// MARK: - Single SDK host
 
 private final class PlacesHostCapturingProtocol: URLProtocol {
     private static let lock = NSLock()
@@ -212,12 +212,11 @@ private struct NoopBackgroundTasks: VisitBackgroundTasking {
 @Suite("SDKConfiguration single host")
 struct SDKConfigurationSingleHostTests {
 
-    @Test("The configuration has no controlHubBaseURL: apiBaseURL is the only host")
-    func noControlHubBaseURL() {
+    @Test("apiBaseURL is the only host in the configuration")
+    func apiBaseURLIsTheOnlyHost() {
         let config = SDKConfiguration(businessToken: "t")
         let labels = Mirror(reflecting: config).children.compactMap(\.label)
-        #expect(!labels.contains("controlHubBaseURL"))
-        #expect(labels.contains("apiBaseURL"))
+        #expect(labels.filter { $0.localizedCaseInsensitiveContains("url") } == ["apiBaseURL"])
     }
 
     @Test("The places client calls /sdk/places/nearby on apiBaseURL")

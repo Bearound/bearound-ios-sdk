@@ -7,7 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.12.0] - 2026-09-28
+
 ### Fixed
+- **O retry mantém o contexto capturado.** Lotes guardados offline passam a carregar a
+  localização, o Wi-Fi, os dados do device e o `syncTrigger` do momento da captura. Antes o
+  reenvio remontava esses dados na hora do retry e juntava lotes, então um evento reenviado
+  chegava com a posição de quando a rede voltou. Lotes gravados por versões anteriores
+  continuam sendo lidos. Eventos de visita nunca são descartados pelo limite da fila.
+
 - **`whenInUse` não é um despertador, e o SDK tratava como se fosse.** O olho BLE tem um
   ciclo ocioso (espiada de 10 s a cada 5 min) que só é seguro porque o region monitoring
   acorda o app na entrada da região. O gate que decidia isso aceitava qualquer autorização
@@ -31,6 +39,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   CoreLocation continuam passando intactos.
 
 ### Added
+- **Detecção de visita por GPS.** Com autorização `Always` e precisão total, o SDK passa a
+  detectar paradas também fora do alcance de beacon: combina `CLVisit` com regiões circulares
+  nos ambientes mais próximos, que ele obtém do backend da Bearound em
+  `GET {apiBaseURL}/sdk/places/nearby` e atualiza ao sair da cerca de atualização ou quando a
+  lista expira (a última lista boa fica guardada se a consulta falhar). Cada parada gera dois
+  eventos, chegada e saída, com `syncTrigger: "visit"`, `source: "gnss"` e o horário real do
+  fix. Não há API nova: a detecção liga sozinha, o backend pode desligá-la por conta, e ela
+  para no aparelho com `collectLocation: false` ou sem `Always`/precisão total. A detecção por
+  beacon não muda.
+- **Orçamento de regiões.** A detecção de visita usa no máximo 10 regiões de ambiente mais a
+  cerca de atualização, sempre deixa 5 das 20 regiões do iOS livres para o app, e nunca para
+  nem substitui regiões do app. O prefixo `bearound.visit.` é reservado ao SDK (ver README,
+  "Monitored regions and the 20-region limit").
 - **`BeAroundSDK.shared.detectionReadiness`**: o que esta instalação consegue de fato
   detectar, em um valor só: `full` (Sempre + precisão total: acorda o app até depois de
   force-quit), `backgroundBle` (sem despertador do CoreLocation, mas o app declara

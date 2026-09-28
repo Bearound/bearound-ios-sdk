@@ -3,7 +3,7 @@
 //  BearoundSDK
 //
 //  GPS visit detection on iOS: CLVisit plus CLCircularRegion geofences around the nearest
-//  target environments (REQ-014, REQ-016, REQ-021, REQ-023, D-09).
+//  target environments.
 //
 
 import CoreLocation
@@ -36,7 +36,7 @@ enum VisitEventKind: String {
 }
 
 /// One `/ingest` visit event. Carries the REAL time of the fix (CLVisit arrival/departure
-/// or the fix timestamp), never the send time (REQ-023, D-26).
+/// or the fix timestamp), never the send time.
 struct VisitEvent: Equatable {
     let kind: VisitEventKind
     let syncTrigger: String
@@ -242,14 +242,14 @@ final class VisitMonitor {
             tearDown()
             return
         }
-        // No list yet (first run without a successful fetch): no native geofence (D-22).
+        // No list yet (first run without a successful fetch): no native geofence.
         guard let cached = store.loadConfig() else { return }
         apply(cached.config)
     }
 
     private func apply(_ config: PlacesConfig) {
         guard config.visitDetectionEnabled else {
-            // Kill switch (REQ-014, D-14): only the visit part goes down.
+            // Kill switch: only the visit part goes down.
             tearDown()
             return
         }
@@ -299,7 +299,7 @@ final class VisitMonitor {
             .forEach { manager.stopMonitoring(identifier: $0) }
     }
 
-    // MARK: Refresh (REQ-021)
+    // MARK: Refresh
 
     private func refreshIfNeeded(fix: VisitFix?, forced: Bool) {
         guard isStarted, isEligible, !fetchInFlight else { return }
@@ -349,7 +349,7 @@ final class VisitMonitor {
                 self.store.lastFailedFetchAt = nil
                 self.applyCachedConfig()
             case .failed(let error):
-                // D-22: the last list and the last kill-switch value stay in force.
+                // The last list and the last kill-switch value stay in force.
                 self.store.lastFailedFetchAt = now
                 NSLog("[BeAroundSDK] Places config fetch failed, keeping the last list: %@",
                       error.localizedDescription)
@@ -357,7 +357,7 @@ final class VisitMonitor {
         }
     }
 
-    // MARK: Stops (REQ-023)
+    // MARK: Stops
 
     private func currentOpenStop() -> VisitStateStore.OpenStop? {
         guard let open = store.openStop else { return nil }
