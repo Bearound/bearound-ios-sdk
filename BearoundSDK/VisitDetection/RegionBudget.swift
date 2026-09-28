@@ -35,7 +35,7 @@ struct RegionBudget {
     /// arms a single `CLBeaconRegion` under this identifier (the cold-start
     /// "boot region" reuses it, so iOS keeps one entry). The mesh virtual
     /// beacon region is only an advertising payload and is never monitored.
-    static let sdkBeaconRegionIdentifiers: Set<String> = ["BeAroundRegion"]
+    static let sdkBeaconRegionIdentifiers: Set<String> = [BeaconConstants.regionIdentifier]
 
     /// Namespace of every region this planner owns. Anything outside it (and
     /// outside the beacon identifiers) belongs to the host app.

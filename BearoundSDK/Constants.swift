@@ -2,6 +2,9 @@ import Foundation
 
 enum BeaconConstants {
     static let uuid = UUID(uuidString: "E25B8D3C-947A-452F-A13F-589CB706D2E5")!
+    /// Identifier of the single `CLBeaconRegion` the SDK monitors (`BeaconManager`). Shared
+    /// with `RegionBudget`, which must reserve its slot in the 20-region budget.
+    static let regionIdentifier = "BeAroundRegion"
 }
 
 /// SDK version resolution — automatic first, compiled constant as last resort.

@@ -201,6 +201,9 @@ public class BeAroundSDK {
 
     private let deviceInfoCollector = DeviceInfoCollector(isColdStart: true)
     private let beaconManager = BeaconManager()
+    /// GPS visit detection (CLVisit + environment geofences). Created on main next to the
+    /// beacon eye; it gates itself on the kill switch, Always authorization and the policy.
+    private var visitMonitor: VisitMonitor?
     private let bluetoothManager = BluetoothManager()
     private var apiClient: APIClient?
 
@@ -405,6 +408,9 @@ public class BeAroundSDK {
                 beaconManager.startScanning()
             }
         }
+
+        // Created during the relaunch so a pending CLVisit / geofence event has a delegate.
+        startVisitMonitor()
 
         // At least one must be available
         if bluetoothAuthorized || locationCanRangeBeacons {
@@ -1070,6 +1076,9 @@ public class BeAroundSDK {
             beaconManager.stopScanning()
         }
 
+        // 3b. Visit detection: independent of the beacon eye, self-gated (REQ-014).
+        startVisitMonitor()
+
         // 4. Always: sync timer, persist, BGTasks
         startSyncTimer()
         DispatchQueue.main.async { self.delegate?.didChangeScanning(isScanning: true) }
@@ -1096,6 +1105,7 @@ public class BeAroundSDK {
         if beaconManager.isScanning {
             beaconManager.stopScanning()
         }
+        stopVisitMonitor()
 
         stopSyncTimer()
         syncTrigger = "stop_scanning"
@@ -1267,6 +1277,78 @@ public class BeAroundSDK {
                 // device never appeared in the Control Hub, with no programmatic signal.
                 DispatchQueue.main.async {
                     self?.delegate?.didFailWithError(error)
+                }
+            }
+        }
+    }
+
+    // MARK: - Visit detection
+
+    private func startVisitMonitor() {
+        let work = { [weak self] in
+            guard let self, let config = self.configuration else { return }
+            let fetcher = PlacesConfigClient(configuration: config)
+            if let monitor = self.visitMonitor {
+                monitor.fetcher = fetcher
+            } else {
+                self.visitMonitor = VisitMonitor(
+                    locationManager: CoreLocationVisitManager(),
+                    fetcher: fetcher,
+                    sender: VisitEventForwarder { [weak self] event in self?.sendVisitEvent(event) }
+                )
+            }
+            self.visitMonitor?.start()
+        }
+        // CLLocationManager delivers callbacks on the thread that created it.
+        if Thread.isMainThread { work() } else { DispatchQueue.main.async(execute: work) }
+    }
+
+    private func stopVisitMonitor() {
+        let work: () -> Void = { [weak self] in self?.visitMonitor?.stop() }
+        if Thread.isMainThread { work() } else { DispatchQueue.main.async(execute: work) }
+    }
+
+    /// One visit event is a normal `/ingest` payload: no beacons, `syncTrigger: "visit"`, the
+    /// visit fix as `location` (real fix time, `source: "gnss"`) and the Wi-Fi the collector
+    /// already holds when the policy allows it. Delivered immediately, with the background
+    /// session as the durable fallback on transport failure.
+    private func sendVisitEvent(_ event: VisitEvent) {
+        guard let apiClient, let sdkInfo else {
+            NSLog("[BeAroundSDK] Visit %@ dropped: SDK not configured", event.kind.rawValue)
+            return
+        }
+        var userDevice = deviceInfoCollector.collectDeviceInfo(
+            locationPermission: Self.authorizationStatus(),
+            bluetoothState: bluetoothManager.isPoweredOn ? "powered_on" : "powered_off",
+            appInForeground: !isInBackground
+        )
+        userDevice.location = event.deviceLocation
+
+        var taskId = UIBackgroundTaskIdentifier.invalid
+        taskId = UIApplication.shared.beginBackgroundTask(withName: "BeAroundVisitEvent") {
+            UIApplication.shared.endBackgroundTask(taskId)
+            taskId = .invalid
+        }
+        NSLog("[BeAroundSDK] Sending visit %@ (fix at %@)", event.kind.rawValue, "\(event.timestamp)")
+        apiClient.sendBeacons(
+            [],
+            sdkInfo: sdkInfo,
+            userDevice: userDevice,
+            userProperties: userProperties,
+            syncTrigger: event.syncTrigger,
+            delivery: .immediateFirst
+        ) { result in
+            switch result {
+            case .success:
+                DetectionLogStore.append(type: "Visit", detail: "\(event.kind.rawValue) sent")
+            case .failure(let error):
+                NSLog("[BeAroundSDK] Visit %@ failed: %@", event.kind.rawValue, error.localizedDescription)
+                ErrorReporter.shared.report(error, context: "visit.\(event.kind.rawValue)")
+            }
+            DispatchQueue.main.async {
+                if taskId != .invalid {
+                    UIApplication.shared.endBackgroundTask(taskId)
+                    taskId = .invalid
                 }
             }
         }

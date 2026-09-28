@@ -148,6 +148,10 @@ public struct SDKConfiguration {
 
     let apiBaseURL: String
 
+    /// Control Hub API base URL: serves `GET /sdk/places/nearby` (visit detection config).
+    /// The ingest host (`apiBaseURL`) only carries `/ingest` and `/sdk-errors`.
+    let controlHubBaseURL: String
+
     /// Enables the periodic background reconciliation (`BGAppRefreshTask` layer).
     ///
     /// A best-effort safety net that periodically checks scan health, collects for a
@@ -266,6 +270,7 @@ public struct SDKConfiguration {
         self.maxQueuedPayloads = maxQueuedPayloads
         self.technology = technology
         self.apiBaseURL = "https://ingest.bearound.io"
+        self.controlHubBaseURL = "https://chapi.bearound.io"
         self.appId = Bundle.main.bundleIdentifier ?? "unknown"
         self.periodicReconciliationEnabled = periodicReconciliationEnabled
         self.periodicReconciliationInterval =
