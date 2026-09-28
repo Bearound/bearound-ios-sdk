@@ -7,6 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.13.0] - 2026-09-29
+
+### Added
+- **Push rico: imagem, duas imagens, carrossel e play.** Dois subspecs novos, para os
+  targets de extensão do app hospedeiro: `BearoundSDK/NotificationService`
+  (`BearoundNotificationService`, uma Notification Service Extension) e
+  `BearoundSDK/NotificationContent` (`BearoundNotificationViewController`, uma Notification
+  Content Extension). Nenhum dos dois depende do core: só usam APIs seguras para extensão
+  (`APPLICATION_EXTENSION_API_ONLY`), sem BLE, localização nem background modes. O
+  hospedeiro cria os dois targets e subclassifica as classes em uma linha cada.
+  - A Service Extension lê `bearound_rich` (contrato v1), baixa o card 0 (ou a capa do
+    PLAY) e o anexa à notificação. Com o marcador `bearound { d, tr }`, o download passa pelo
+    tracker (`/v1/push:view?d=&r=&idx=`) e conta como visualização do card. A extensão do
+    arquivo vem do `Content-Type` (com a assinatura dos bytes como reserva); WebP é
+    recodificado como JPEG, que o `UNNotificationAttachment` aceita.
+  - Sem `bearound_rich`, a Service Extension anexa o `image_url` legado do topo do payload:
+    a imagem de fallback passa a aparecer também nos pushes antigos.
+  - A Content Extension desenha os cards por código (sem storyboard) conforme a categoria:
+    `BEAROUND_IMAGE`, `BEAROUND_TWO_IMAGES` (dois cards lado a lado com legenda),
+    `BEAROUND_CAROUSEL` (páginas horizontais com anterior/próximo, imagem carregada ao
+    aparecer) e `BEAROUND_PLAY` (capa com `play.circle.fill`). O toque num card abre a URL:
+    http(s) pelo clique do tracker com `idx`, deep link direto. Card sem URL abre o app,
+    como um toque comum. Os ids ficam em `BearoundPushCategory`.
+  - Sem as extensões instaladas, o aparelho continua recebendo a notificação padrão.
+- **`sdkVersion` junto do push token.** O bloco `userDevice` do payload leva a versão
+  nativa do SDK (até 32 caracteres), para o backend saber quais aparelhos já têm as
+  extensões de push rico.
+
 ## [3.12.0] - 2026-09-28
 
 ### Fixed

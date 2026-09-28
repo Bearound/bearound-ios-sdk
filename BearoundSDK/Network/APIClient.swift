@@ -592,6 +592,9 @@ class APIClient {
         if let pushToken = device.pushToken {
             payload["pushToken"] = pushToken
         }
+        // Native SDK version next to the token: the backend gates rich push (which needs the
+        // notification extensions shipped from 3.12.0) on it. Capped at the API's 32 chars.
+        payload["sdkVersion"] = String(SDKVersion.resolved.prefix(32))
         // Which APNs endpoint the token targets (sandbox vs production) — so the backend routes right.
         payload["apnsEnvironment"] = device.apnsEnvironment
 

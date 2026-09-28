@@ -405,6 +405,116 @@ BeAroundSDK.shared.trackNotificationOpened(userInfo: userInfo)
 A `userInfo`/response with no `bearound.sid` (a non-Bearound push, or a sync silent push) is
 a no-op.
 
+### Rich push (images, carousel, play)
+
+From 3.12.0 a push can carry images: one image (`IMAGE`), two side-by-side cards
+(`TWO_IMAGES`), a paged carousel of 2 to 5 cards (`CAROUSEL`) or a cover with a play button
+that opens a video URL (`PLAY`). iOS only draws these through **app extensions that your app
+ships**, so the SDK provides two ready-made classes and you add two small targets.
+
+**Without these extensions nothing breaks:** the device still gets the standard notification
+(title and body). The rich formats and the attached image appear once the extensions are in.
+
+#### 1. Add the two extension targets
+
+In Xcode: **File > New > Target**:
+
+- **Notification Service Extension** (e.g. `NotificationService`): downloads the image and
+  attaches it to the notification. It also shows the fallback image of older pushes.
+- **Notification Content Extension** (e.g. `NotificationContent`): draws the two-card,
+  carousel and play layouts when the user expands the notification.
+
+Set both targets to iOS 13.0 or later.
+
+#### 2. Add the pods per target
+
+```ruby
+target 'YourApp' do
+  use_frameworks!                      # keep whatever your app already uses
+  pod 'BearoundSDK', '~> 3.12'
+end
+
+target 'NotificationService' do
+  use_frameworks! :linkage => :static  # needed only if your app uses use_frameworks!
+  pod 'BearoundSDK/NotificationService', '~> 3.12'
+end
+
+target 'NotificationContent' do
+  use_frameworks! :linkage => :static  # needed only if your app uses use_frameworks!
+  pod 'BearoundSDK/NotificationContent', '~> 3.12'
+end
+```
+
+`pod 'BearoundSDK'` alone still installs exactly the core SDK. The two extension subspecs
+do **not** include the core (no Bluetooth, location or background modes inside an
+extension) and only use extension-safe APIs.
+
+> **Why `:linkage => :static` on the extension targets:** all three subspecs build a module
+> named `BearoundSDK`. With dynamic frameworks, the app would embed one `BearoundSDK.framework`
+> for itself and its extensions, and one of them would overwrite the other. Linking the
+> extension subspecs statically puts their code inside each extension binary instead. Apps
+> without `use_frameworks!` (static libraries, the React Native default) need nothing extra.
+
+#### 3. Subclass the two classes
+
+`NotificationService/NotificationService.swift`, the whole file:
+
+```swift
+import BearoundSDK
+
+class NotificationService: BearoundNotificationService {}
+```
+
+`NotificationContent/NotificationViewController.swift`, the whole file:
+
+```swift
+import BearoundSDK
+
+class NotificationViewController: BearoundNotificationViewController {}
+```
+
+Delete the storyboard Xcode generated for the content extension (the view is drawn in
+code), and in its Info.plist replace `NSExtensionMainStoryboard` with
+`NSExtensionPrincipalClass` = `$(PRODUCT_MODULE_NAME).NotificationViewController`.
+
+#### 4. Declare the categories in the content extension's Info.plist
+
+```xml
+<key>NSExtension</key>
+<dict>
+    <key>NSExtensionAttributes</key>
+    <dict>
+        <key>UNNotificationExtensionCategory</key>
+        <array>
+            <string>BEAROUND_IMAGE</string>
+            <string>BEAROUND_TWO_IMAGES</string>
+            <string>BEAROUND_CAROUSEL</string>
+            <string>BEAROUND_PLAY</string>
+        </array>
+        <key>UNNotificationExtensionInitialContentSizeRatio</key>
+        <real>0.75</real>
+        <key>UNNotificationExtensionUserInteractionEnabled</key>
+        <true/>
+    </dict>
+    <key>NSExtensionPointIdentifier</key>
+    <string>com.apple.usernotifications.content-extension</string>
+    <key>NSExtensionPrincipalClass</key>
+    <string>$(PRODUCT_MODULE_NAME).NotificationViewController</string>
+</dict>
+```
+
+The same ids are available in code as `BearoundPushCategory.all`.
+`UNNotificationExtensionUserInteractionEnabled` is what makes the cards tappable.
+
+#### What happens on a tap
+
+- A card with an `http(s)` link opens it through the Bearound tracker, which records the
+  click for that card and redirects.
+- A card with a deep link (`yourapp://...`) opens it directly.
+- A card without a link opens your app, like tapping a regular notification.
+
+Opens keep being measured as described in [Push Receipt & Open Measurement](#push-receipt--open-measurement).
+
 ### Advanced Background Integration
 
 For maximum reliability when the app is completely closed, implement the following in your `AppDelegate`:
