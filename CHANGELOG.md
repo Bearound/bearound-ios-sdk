@@ -5,7 +5,7 @@ All notable changes to BearoundSDK for iOS will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [3.10.0] - 2026-09-28
 
 ### Changed
 - **O SDK deixa de levantar sozinho o prompt de App Tracking Transparency.** Até a 3.9.x,
@@ -24,6 +24,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `configure(requestTrackingOnStart:)`: o parâmetro é ignorado e existe só para não quebrar
   a compilação de quem o passa. `SDKConfiguration.requestTrackingOnStart` foi removido, e o
   valor persistido pela 3.9.x é apagado no próximo `configure()`.
+
+### Fixed
+- **A janela de encontros não era reiniciada após o envio.** `snapshotEncounters()` não era
+  destrutivo e `evictStalePeers` só rodava dentro do desvio de capacidade
+  (`guard peers.count < maxTrackedPeers`, 64): um aparelho que vê um ou dois peers nunca
+  chega lá. O agregado vivia enquanto o processo vivesse: cada payload repetia as leituras
+  anteriores e `firstSeen` nunca avançava. Como um RPI rotaciona a cada 15 minutos, uma
+  leitura repetida é irresolvível por construção.
+
+  O método passa a se chamar `drainEncounters()`: emite uma janela por peer identificado,
+  reinicia o acumulador e remove os peers ociosos incondicionalmente, fora do desvio de
+  capacidade. `maxTrackedPeers` e `peerStaleEviction` não mudaram; o defeito era **onde** a
+  remoção rodava. Um encontro que atravessa N sincronizações agora chega como N janelas
+  adjacentes, o mesmo contrato que as estatísticas de beacon físico já têm.
+
+  `hasFreshEncounters(since:)` passa a exigir `sampleCount > 0`: um peer já drenado ainda
+  carrega o `lastSeen` antigo e abriria envios de encontro vazios.
+
+  Corrigido de passagem: quando o desvio de capacidade liberava um slot, o código inseria um
+  agregado vazio e retornava, descartando a própria amostra que abriu o slot.
+
+- **Uma instância criada por relaunch em background não entrava na malha.** A malha só era
+  iniciada pelo `startScanning()` público; `autoConfigureFromStorage()` iniciava o olho de
+  beacon e nunca a malha, então o aparelho voltava escaneando beacons sem anunciar nem
+  reconhecer peers; e, com `encounterMesh` nulo, o filtro de scan em background também saía
+  sem o service UUID da malha. Os dois caminhos passam por
+  `BluetoothManager.startScanSurfaces(bluetoothAuthorized:)`, que sobe o olho de beacon e a
+  malha juntos sob a mesma condição de autorização de Bluetooth. Um único ponto de entrada,
+  para que os dois caminhos não voltem a divergir.
+
+  Estas correções estavam preparadas como 3.9.1, que não chegou a ser publicada.
 
 ## [3.9.0] - 2026-08-19
 
