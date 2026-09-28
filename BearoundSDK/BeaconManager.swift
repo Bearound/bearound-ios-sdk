@@ -492,7 +492,7 @@ class BeaconManager: NSObject {
         let constraint = CLBeaconIdentityConstraint(uuid: beaconUUID)
         let region = CLBeaconRegion(
             beaconIdentityConstraint: constraint,
-            identifier: "BeAroundRegion"
+            identifier: BeaconConstants.regionIdentifier
         )
 
         // CRITICAL: These settings enable iOS to wake terminated app
@@ -943,7 +943,7 @@ extension BeaconManager: CLLocationManagerDelegate {
             let constraint = CLBeaconIdentityConstraint(uuid: beaconUUID)
             let bootRegion = CLBeaconRegion(
                 beaconIdentityConstraint: constraint,
-                identifier: "BeAroundRegion"
+                identifier: BeaconConstants.regionIdentifier
             )
             bootRegion.notifyOnEntry = true
             bootRegion.notifyOnExit = true
@@ -1095,6 +1095,13 @@ extension BeaconManager: CLLocationManagerDelegate {
     /// host app can see the eye is down.
     func locationManager(_ manager: CLLocationManager, monitoringDidFailFor region: CLRegion?, withError error: Error) {
         let regionId = region?.identifier ?? "nil"
+        // Region events are delivered to every CLLocationManager in the process. A visit
+        // geofence failing (usually the shared 20-region cap) is owned by VisitMonitor and
+        // must not surface as a beacon-eye error to the host.
+        if RegionBudget.isSDKVisitIdentifier(regionId) {
+            NSLog("[BeAroundSDK] Visit region monitoring failed for %@: %@", regionId, error.localizedDescription)
+            return
+        }
         NSLog("[BeAroundSDK] REGION MONITORING FAILED for %@: %@", regionId, error.localizedDescription)
         DiagnosticsStore.shared.recordError("monitoringDidFail(\(regionId)): \(error.localizedDescription)")
         onError?(Self.translatedMonitoringFailure(error, manager: manager))

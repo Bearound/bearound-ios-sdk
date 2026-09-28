@@ -6,6 +6,7 @@
 //
 import Testing
 import Foundation
+import UIKit
 @testable import BearoundSDK
 
 @Suite("SDKConfiguration Tests")
@@ -171,5 +172,73 @@ struct PeriodicReconciliationConfigurationTests {
     func disabled() {
         let config = SDKConfiguration(businessToken: "t", periodicReconciliationEnabled: false)
         #expect(config.periodicReconciliationEnabled == false)
+    }
+}
+
+// MARK: - Single SDK host (REQ-004)
+
+private final class PlacesHostCapturingProtocol: URLProtocol {
+    private static let lock = NSLock()
+    private static var captured: [URLRequest] = []
+
+    static var requests: [URLRequest] {
+        lock.lock(); defer { lock.unlock() }
+        return captured
+    }
+
+    override class func canInit(with _: URLRequest) -> Bool { true }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+
+    override func startLoading() {
+        Self.lock.lock()
+        Self.captured.append(request)
+        Self.lock.unlock()
+        let response = HTTPURLResponse(url: request.url!, statusCode: 304, httpVersion: nil, headerFields: nil)!
+        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+        client?.urlProtocolDidFinishLoading(self)
+    }
+
+    override func stopLoading() {}
+}
+
+private struct NoopBackgroundTasks: VisitBackgroundTasking {
+    func begin(name _: String, expiration _: @escaping () -> Void) -> UIBackgroundTaskIdentifier {
+        UIBackgroundTaskIdentifier(rawValue: 1)
+    }
+
+    func end(_: UIBackgroundTaskIdentifier) {}
+}
+
+@Suite("SDKConfiguration single host")
+struct SDKConfigurationSingleHostTests {
+
+    @Test("The configuration has no controlHubBaseURL: apiBaseURL is the only host")
+    func noControlHubBaseURL() {
+        let config = SDKConfiguration(businessToken: "t")
+        let labels = Mirror(reflecting: config).children.compactMap(\.label)
+        #expect(!labels.contains("controlHubBaseURL"))
+        #expect(labels.contains("apiBaseURL"))
+    }
+
+    @Test("The places client calls /sdk/places/nearby on apiBaseURL")
+    func placesClientUsesApiBaseURL() async throws {
+        let sessionConfig = URLSessionConfiguration.ephemeral
+        sessionConfig.protocolClasses = [PlacesHostCapturingProtocol.self]
+        let token = "places-host-\(UUID().uuidString)"
+        let config = SDKConfiguration(businessToken: token)
+        let client = PlacesConfigClient(configuration: { config }, session: URLSession(configuration: sessionConfig),
+                                        backgroundTasks: NoopBackgroundTasks())
+
+        _ = await withCheckedContinuation { continuation in
+            client.fetch(latitude: -23.5611, longitude: -46.6561, etag: nil) { continuation.resume(returning: $0) }
+        }
+
+        let request = try #require(PlacesHostCapturingProtocol.requests.first {
+            $0.value(forHTTPHeaderField: "Authorization") == token
+        })
+        let apiHost = URL(string: config.apiBaseURL)?.host
+        #expect(apiHost == "ingest.bearound.io")
+        #expect(request.url?.host == apiHost)
+        #expect(request.url?.path == "/sdk/places/nearby")
     }
 }

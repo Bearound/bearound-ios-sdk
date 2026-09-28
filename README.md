@@ -888,6 +888,26 @@ Uses iBeacon region monitoring. **Requires "Always" Location permission.**
 - When a beacon region is entered, iOS wakes the app and provides `launchOptions[.location]`
 - The SDK has ~30 seconds to scan, sync, and then may be suspended again
 
+#### Monitored regions and the 20-region limit
+
+iOS allows at most 20 monitored regions per app, shared by the host app and the SDK. The SDK
+only ever touches regions it owns, identified as follows:
+
+| Identifier | What it is |
+|------------|------------|
+| `BeAroundRegion` | The beacon region (always reserved, even before it is armed) |
+| `bearound.visit.refresh` | Visit detection: the fence that triggers a refresh of the nearby places |
+| `bearound.visit.env.<environmentId>` | Visit detection: one circular region per nearby environment |
+
+Every identifier starting with `bearound.visit.` belongs to the SDK: do not reuse that prefix
+for your own regions, because the SDK stops them when it re-plans or when visit detection is
+turned off (`stopScanning()`, `collectLocation: false`, "Always" or Precise Location revoked).
+Your own regions are never stopped or replaced.
+
+Budget: visit detection uses at most 10 environment regions plus the refresh fence, and it
+always leaves 5 slots free for your app. With `H` host regions it registers
+`min(10, 20 - H - 1 - 1 - 5)` environments (never fewer than 0), nearest first.
+
 #### Host app integration checklist
 
 For wake-up to work reliably, your AppDelegate must look like this:

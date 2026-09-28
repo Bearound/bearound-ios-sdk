@@ -146,6 +146,8 @@ public struct SDKConfiguration {
     /// (`react-native` / `flutter`) so the backend can attribute traffic per integration.
     public let technology: String
 
+    /// The single SDK host: `/ingest`, `/sdk-errors` and `/sdk/places/*` (the ingest's load
+    /// balancer routes the places paths to the places service by path, REQ-004).
     let apiBaseURL: String
 
     /// Enables the periodic background reconciliation (`BGAppRefreshTask` layer).

@@ -41,6 +41,33 @@ class OfflineBatchStorage {
         let id: String
         let timestamp: Date
         let beacons: [StoredBeacon]
+        /// The `syncTrigger` of the original send, persisted so a retry keeps it (a retried
+        /// `visit` stays `visit`). Optional: batches written before this field existed have none.
+        let syncTrigger: String?
+        /// The device context captured at save time (device state, location, Wi-Fi,
+        /// encounters, capture timestamp), sent as-is on retry instead of a context collected
+        /// at retry time. Optional for the same reason as `syncTrigger`.
+        let userDevice: UserDevice?
+
+        init(id: String, timestamp: Date, beacons: [StoredBeacon], syncTrigger: String?, userDevice: UserDevice?) {
+            self.id = id
+            self.timestamp = timestamp
+            self.beacons = beacons
+            self.syncTrigger = syncTrigger
+            self.userDevice = userDevice
+        }
+
+        /// The captured fields decode leniently: a legacy batch (fields absent) or a context
+        /// written by a different model version decodes as `nil` and takes the legacy retry
+        /// path, instead of failing the whole batch (which would delete it).
+        init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            id = try container.decode(String.self, forKey: .id)
+            timestamp = try container.decode(Date.self, forKey: .timestamp)
+            beacons = try container.decode([StoredBeacon].self, forKey: .beacons)
+            syncTrigger = (try? container.decodeIfPresent(String.self, forKey: .syncTrigger)) ?? nil
+            userDevice = (try? container.decodeIfPresent(UserDevice.self, forKey: .userDevice)) ?? nil
+        }
     }
 
     private struct StoredBeacon: Codable {
@@ -137,6 +164,22 @@ class OfflineBatchStorage {
     struct StoredBatchRecord {
         let id: String
         let beacons: [Beacon]
+        /// Persisted trigger of the original send; nil for a legacy batch.
+        var syncTrigger: String? = nil
+        /// Persisted captured context; nil for a legacy batch (the retry collects one).
+        var userDevice: UserDevice? = nil
+    }
+
+    /// Filename suffix of a batch exempt from the max-count eviction (a `visit` event).
+    /// Derived from the persisted `syncTrigger` at save time and kept in the filename so the
+    /// eviction pass does not have to decode every file to find the exempt ones.
+    static let evictionExemptSuffix = ".visit.json"
+
+    /// A batch whose persisted trigger includes `visit` is never evicted by the count cap
+    /// (it still expires after 7 days like any batch).
+    static func isEvictionExempt(syncTrigger: String?) -> Bool {
+        guard let syncTrigger else { return false }
+        return syncTrigger.split(separator: "+").contains { $0 == Substring(VisitMonitor.syncTrigger) }
     }
 
     /// Process-wide instance over the default directory. All production code MUST
@@ -184,17 +227,19 @@ class OfflineBatchStorage {
         storageQueue.sync { _batchCount() }
     }
 
-    /// Saves a batch of beacons to persistent storage
+    /// Saves a batch of beacons to persistent storage, with the context captured for it
+    /// (`userDevice` and `syncTrigger`, both replayed as-is by the retry drain). A batch with
+    /// no beacons is accepted only when it carries a captured context (a `visit` event).
     @discardableResult
-    func saveBatch(_ beacons: [Beacon]) -> Bool {
-        storageQueue.sync { _save(beacons) != nil }
+    func saveBatch(_ beacons: [Beacon], userDevice: UserDevice? = nil, syncTrigger: String? = nil) -> Bool {
+        storageQueue.sync { _save(beacons, userDevice: userDevice, syncTrigger: syncTrigger) != nil }
     }
 
     /// Saves a batch and returns its persistent identifier (the on-disk filename), so the
     /// caller can remove exactly this batch later (used by persist-before-send: persist
     /// before the upload starts, remove THIS batch on success, leave it on failure).
-    func saveBatchReturningId(_ beacons: [Beacon]) -> String? {
-        storageQueue.sync { _save(beacons) }
+    func saveBatchReturningId(_ beacons: [Beacon], userDevice: UserDevice? = nil, syncTrigger: String? = nil) -> String? {
+        storageQueue.sync { _save(beacons, userDevice: userDevice, syncTrigger: syncTrigger) }
     }
 
     /// Removes a specific batch by its identifier (filename). Call after the batch was
@@ -279,19 +324,22 @@ class OfflineBatchStorage {
         return files.filter { $0.hasSuffix(".json") }.count
     }
 
-    private func _save(_ beacons: [Beacon]) -> String? {
+    private func _save(_ beacons: [Beacon], userDevice: UserDevice?, syncTrigger: String?) -> String? {
         guard let directory = storageDirectory else { return nil }
-        guard !beacons.isEmpty else { return nil }
+        guard !beacons.isEmpty || userDevice != nil else { return nil }
 
         let batchId = UUID().uuidString
         let timestamp = Date()
 
         let storedBeacons = beacons.map { StoredBeacon(from: $0) }
-        let batch = StoredBatch(id: batchId, timestamp: timestamp, beacons: storedBeacons)
+        let batch = StoredBatch(id: batchId, timestamp: timestamp, beacons: storedBeacons,
+                                syncTrigger: syncTrigger, userDevice: userDevice)
 
-        // Filename format: timestamp_uuid.json for sorting
+        // Filename format: timestamp_uuid.json (or timestamp_uuid.visit.json for an
+        // eviction-exempt batch); the timestamp prefix keeps FIFO sorting.
         let timestampInt = Int(timestamp.timeIntervalSince1970)
-        let filename = "\(timestampInt)_\(batchId).json"
+        let suffix = Self.isEvictionExempt(syncTrigger: syncTrigger) ? Self.evictionExemptSuffix : ".json"
+        let filename = "\(timestampInt)_\(batchId)\(suffix)"
         let fileURL = directory.appendingPathComponent(filename)
 
         do {
@@ -353,11 +401,14 @@ class OfflineBatchStorage {
                     NSLog("[BeAroundSDK] Dropped %d corrupted beacon(s) from batch %@", dropped, filename)
                     DiagnosticsStore.shared.recordError("Corrupted beacon(s) dropped from stored batch \(filename)")
                 }
-                guard !beacons.isEmpty else {
+                // A batch saved with no beacons (a visit event) is its captured context.
+                let isContextOnly = batch.beacons.isEmpty && batch.userDevice != nil
+                guard !beacons.isEmpty || isContextOnly else {
                     try? fileManager.removeItem(at: fileURL)
                     continue
                 }
-                records.append(StoredBatchRecord(id: filename, beacons: beacons))
+                records.append(StoredBatchRecord(id: filename, beacons: beacons,
+                                                 syncTrigger: batch.syncTrigger, userDevice: batch.userDevice))
             } catch {
                 NSLog("[BeAroundSDK] Failed to load batch %@: %@", filename, error.localizedDescription)
                 try? fileManager.removeItem(at: fileURL)
@@ -463,14 +514,17 @@ class OfflineBatchStorage {
             return
         }
 
-        var jsonFiles = files.filter { $0.hasSuffix(".json") }.sorted()
+        // Only regular batches count toward the cap and are evicted; a visit batch is exempt.
+        var evictable = files
+            .filter { $0.hasSuffix(".json") && !$0.hasSuffix(Self.evictionExemptSuffix) }
+            .sorted()
 
-        while jsonFiles.count > _maxBatchCount {
+        while evictable.count > _maxBatchCount {
             // Remove oldest file (first in sorted list)
-            if let oldestFile = jsonFiles.first {
+            if let oldestFile = evictable.first {
                 let fileURL = directory.appendingPathComponent(oldestFile)
                 try? fileManager.removeItem(at: fileURL)
-                jsonFiles.removeFirst()
+                evictable.removeFirst()
                 NSLog("[BeAroundSDK] Removed oldest batch due to max count exceeded: %@", oldestFile)
             }
         }
