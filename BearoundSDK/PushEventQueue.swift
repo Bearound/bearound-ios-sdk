@@ -2,15 +2,18 @@
 //  PushEventQueue.swift
 //  BearoundSDK
 //
-//  Persisted queue for push receipt/open events (REQ-025, REQ-026). Separate from
-//  `OfflineBatchStorage` (which only ever carries beacon batches): this queue carries
-//  `{sid, type, occurredAt}` entries reported to `POST {ingest}/push-events`.
+//  Persisted queue for push receipt/open hits (REQ-025, REQ-026). Separate from
+//  `OfflineBatchStorage` (which only ever carries beacon batches). Each entry is one
+//  tracker hit, `GET {tr}/v1/push:{received|open}?d={d}`, where `d` and `tr` come from
+//  the push's `bearound` marker (spec push-delivery-open-measurement, design section 13).
+//  The hit carries no credential: `d` is the delivery context the API sealed for this
+//  device, so the queue does not need the business token and can flush at any time.
 //
 //  Golden rules (parity with ErrorReporter's transport):
 //    1. Fire-and-forget best-effort delivery; NEVER throw, NEVER block the host.
 //    2. Own isolated transport, short timeout.
 //    3. Survives cold launch (a notification tap can launch the app before `configure()`
-//       runs) via UserDefaults persistence, drained once the business token is known.
+//       runs) via UserDefaults persistence.
 //
 
 import Foundation
@@ -19,23 +22,50 @@ import Foundation
 enum PushEventType: String, Codable {
     case received
     case opened
+
+    /// The tracker verb: `/v1/push:received`, `/v1/push:open`.
+    var verb: String {
+        switch self {
+        case .received: return "received"
+        case .opened: return "open"
+        }
+    }
 }
 
-/// A single push event pending delivery to `/push-events`.
+/// A measurable Bearound marker: the send id, the delivery context and the tracker base.
+struct PushMarkerValue: Equatable {
+    let sid: String
+    let d: String
+    let tr: String
+}
+
+/// A single tracker hit pending delivery.
 struct PushEventEntry: Codable, Equatable {
     let sid: String
     let type: PushEventType
     let occurredAt: Date
     var attempt: Int
+    let d: String
+    let tr: String
 }
 
 /// Parses the `bearound` marker out of a remote-notification `userInfo` dictionary.
 /// Tolerates both the object shape (APNs top-level `bearound: {...}`) and a JSON-string
 /// shape (some bridges/legacy paths stringify it), matching the FCM `data.bearound` convention.
 enum PushMarker {
-    /// Returns the marker's `sid`, or nil if the marker is absent, malformed, or has no `sid`.
-    /// No `sid` means nothing is reported (REQ-018/REQ-019: sync/silent pushes have no `sid`).
-    static func extractSid(from userInfo: [AnyHashable: Any]) -> String? {
+    /// Returns the marker when it is measurable: `sid`, `d` and an https `tr` all present.
+    /// Anything else (sync pushes carry only `t`, a server without the proof key sends no
+    /// `d`) reports nothing.
+    static func extract(from userInfo: [AnyHashable: Any]) -> PushMarkerValue? {
+        guard let marker = markerDictionary(from: userInfo),
+              let sid = marker["sid"] as? String, !sid.isEmpty,
+              let d = marker["d"] as? String, !d.isEmpty,
+              let tr = marker["tr"] as? String, tr.lowercased().hasPrefix("https://")
+        else { return nil }
+        return PushMarkerValue(sid: sid, d: d, tr: tr)
+    }
+
+    private static func markerDictionary(from userInfo: [AnyHashable: Any]) -> [String: Any]? {
         guard let raw = userInfo["bearound"] else { return nil }
 
         let marker: [String: Any]?
@@ -48,17 +78,15 @@ enum PushMarker {
         } else {
             marker = nil
         }
-
-        guard let sid = marker?["sid"] as? String, !sid.isEmpty else { return nil }
-        return sid
+        return marker
     }
 }
 
-/// Delivery outcome for one push-events request (REQ-026).
+/// Delivery outcome for one tracker hit (REQ-026).
 enum PushEventDeliveryOutcome {
-    /// 202 or any 4xx other than 429: drop the batch, do not retry.
+    /// 2xx or any 4xx other than 429: drop the entry, do not retry.
     case drain
-    /// 5xx, 429, or a transport error: keep the batch, retry with backoff.
+    /// 5xx, 429, or a transport error: keep the entry, retry with backoff.
     case keep
 }
 
@@ -122,9 +150,9 @@ final class PushEventQueue {
 
     private static let maxEntries = 200
     private static let maxAge: TimeInterval = 7 * 24 * 60 * 60
+    /// Hits sent per flush; the rest wait for the next one.
     private static let maxBatchSize = 50
     private static let requestTimeout: TimeInterval = 5
-    private static let path = "/push-events"
     private static let defaultSuiteName = "com.bearound.sdk.pushevents"
     private static let storageKey = "queue"
     private static let baseRetryDelay: TimeInterval = 2
@@ -136,13 +164,6 @@ final class PushEventQueue {
 
     private let lock = NSLock()
 
-    /// Business token used as the `Authorization` header. Empty until `install(...)` runs;
-    /// a cold-launch tap enqueues before that and the entries simply wait for install.
-    private var businessToken: String = ""
-    private var apiBaseURL: String = "https://ingest.bearound.io"
-    private var sdkVersion: String = BeAroundSDK.version
-    private var appId: String = Bundle.main.bundleIdentifier ?? "unknown"
-
     /// Local dedupe of `(sid, type)` seen in this process, so a delegate double-fire
     /// (e.g. willPresent + didReceive, or two lifecycle callbacks) never enqueues twice
     /// even across a flush that already drained the persisted entry.
@@ -151,13 +172,6 @@ final class PushEventQueue {
     /// Injectable so tests can fake each response class (202/4xx/429/5xx/transport error)
     /// without a real network call. Production uses `URLSessionPushEventTransport`.
     var transport: PushEventTransport
-
-    private let iso: ISO8601DateFormatter = {
-        let f = ISO8601DateFormatter()
-        f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        f.timeZone = TimeZone(identifier: "UTC")
-        return f
-    }()
 
     private var defaults: UserDefaults? {
         UserDefaults(suiteName: suiteName)
@@ -168,28 +182,12 @@ final class PushEventQueue {
         self.suiteName = suiteName
     }
 
-    // MARK: - Install
-
-    /// Wires the business token/base URL used to deliver queued events. Safe to call
-    /// repeatedly (configure() and autoConfigureFromStorage() both call it); each call
-    /// also attempts to flush whatever is already queued (e.g. a cold-launch tap that
-    /// enqueued before the token was known).
-    func install(businessToken: String, apiBaseURL: String? = nil, sdkVersion: String? = nil) {
-        lock.lock()
-        self.businessToken = businessToken
-        if let apiBaseURL, !apiBaseURL.isEmpty { self.apiBaseURL = apiBaseURL }
-        if let sdkVersion, !sdkVersion.isEmpty { self.sdkVersion = sdkVersion }
-        self.appId = Bundle.main.bundleIdentifier ?? "unknown"
-        lock.unlock()
-
-        flush()
-    }
-
     // MARK: - Enqueue (REQ-018, REQ-019)
 
-    /// Enqueues a push event and attempts immediate delivery. No-op if `(sid, type)`
+    /// Enqueues a tracker hit and attempts immediate delivery. No-op if `(sid, type)`
     /// was already enqueued (or drained) in this process.
-    func enqueue(sid: String, type: PushEventType, occurredAt: Date = Date()) {
+    func enqueue(marker: PushMarkerValue, type: PushEventType, occurredAt: Date = Date()) {
+        let sid = marker.sid
         let dedupeKey = "\(sid)|\(type.rawValue)"
 
         lock.lock()
@@ -202,7 +200,7 @@ final class PushEventQueue {
         var entries = loadEntries()
         let alreadyPersisted = entries.contains { $0.sid == sid && $0.type == type }
         if !alreadyPersisted {
-            entries.append(PushEventEntry(sid: sid, type: type, occurredAt: occurredAt, attempt: 0))
+            entries.append(PushEventEntry(sid: sid, type: type, occurredAt: occurredAt, attempt: 0, d: marker.d, tr: marker.tr))
         }
         entries = PushEventQueue.evictStale(entries)
         saveEntries(entries)
@@ -225,36 +223,32 @@ final class PushEventQueue {
 
     // MARK: - Flush / transport (REQ-026)
 
-    /// Attempts to deliver the persisted queue in batches of at most 50 events.
+    /// Attempts to deliver up to 50 persisted hits, one request each.
     /// Best-effort: never throws, never blocks the caller (network calls are async).
     func flush() {
         lock.lock()
-        let token = businessToken
-        guard !token.isEmpty else {
-            // Not configured yet (cold-launch tap before `configure()`); entries stay
-            // persisted and will flush on the next `install(...)` or `enqueue(...)`.
-            lock.unlock()
-            return
-        }
         let entries = loadEntries()
         lock.unlock()
 
-        guard !entries.isEmpty else { return }
-
-        let batch = Array(entries.prefix(PushEventQueue.maxBatchSize))
-        send(batch: batch, token: token)
+        for entry in entries.prefix(PushEventQueue.maxBatchSize) {
+            send(entry)
+        }
     }
 
-    private func send(batch: [PushEventEntry], token: String) {
-        guard let request = makeRequest(batch: batch, token: token) else { return }
+    private func send(_ entry: PushEventEntry) {
+        guard let request = makeRequest(entry) else {
+            // A malformed tracker base can never succeed: drop it instead of retrying.
+            drain([entry])
+            return
+        }
 
         transport.send(request: request) { [weak self] outcome in
             guard let self else { return }
             switch outcome {
             case .drain:
-                self.drain(batch)
+                self.drain([entry])
             case .keep:
-                self.keepAndBackoff(batch)
+                self.keepAndBackoff([entry])
             }
         }
     }
@@ -288,47 +282,18 @@ final class PushEventQueue {
 
     // MARK: - Request building
 
-    private func makeRequest(batch: [PushEventEntry], token: String) -> URLRequest? {
-        lock.lock()
-        let base = apiBaseURL
-        let version = sdkVersion
-        let app = appId
-        lock.unlock()
-
-        guard let url = URL(string: "\(base)\(PushEventQueue.path)") else { return nil }
-
-        let events = batch.map { entry -> [String: Any] in
-            [
-                "sid": entry.sid,
-                "type": entry.type.rawValue,
-                "occurredAt": iso.string(from: entry.occurredAt),
-            ]
-        }
-
-        let payload: [String: Any] = [
-            "events": events,
-            "device": [
-                "deviceId": DeviceIdentifier.getDeviceId(),
-                "platform": "ios",
-            ],
-            "sdk": [
-                "version": version,
-                "platform": "ios",
-                "appId": app,
-            ],
-        ]
-
-        guard JSONSerialization.isValidJSONObject(payload),
-              let body = try? JSONSerialization.data(withJSONObject: payload) else {
-            return nil
-        }
+    /// `GET {tr}/v1/push:{verb}?d={d}`. No body and no Authorization: the sealed `d` is
+    /// the whole proof.
+    func makeRequest(_ entry: PushEventEntry) -> URLRequest? {
+        let base = entry.tr.hasSuffix("/") ? String(entry.tr.dropLast()) : entry.tr
+        guard var components = URLComponents(string: "\(base)/v1/push:\(entry.type.verb)") else { return nil }
+        components.queryItems = [URLQueryItem(name: "d", value: entry.d)]
+        guard let url = components.url, url.scheme?.lowercased() == "https" else { return nil }
 
         var request = URLRequest(url: url)
-        request.httpMethod = "POST"
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.setValue(token, forHTTPHeaderField: "Authorization")
-        request.httpBody = body
+        request.httpMethod = "GET"
         request.timeoutInterval = PushEventQueue.requestTimeout
+        request.cachePolicy = .reloadIgnoringLocalCacheData
         return request
     }
 
@@ -352,7 +317,6 @@ final class PushEventQueue {
         lock.lock()
         seen.removeAll()
         defaults?.removeObject(forKey: PushEventQueue.storageKey)
-        businessToken = ""
         lock.unlock()
     }
 

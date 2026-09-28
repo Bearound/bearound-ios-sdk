@@ -363,8 +363,10 @@ The capture lives in the native `configure()`, so it works **automatically** in 
 
 ### Push Receipt & Open Measurement
 
-For pushes the backend sends with a `bearound: { sid, ... }` marker (measurable sends, as
-opposed to the sync scheduler's plain silent pushes), the SDK reports two events back:
+For pushes the backend sends with a `bearound: { sid, d, tr }` marker (measurable sends, as
+opposed to the sync scheduler's plain silent pushes), the SDK reports two events back to the
+Bearound tracker, as `GET {tr}/v1/push:received?d=…` and `GET {tr}/v1/push:open?d=…`. `d` is a
+delivery context the backend sealed for this device, so the request carries no credential:
 
 - **`received`**: the notification reached the device. Reuses the same silent-push handling
   described above; no extra code required.
@@ -376,7 +378,7 @@ opposed to the sync scheduler's plain silent pushes), the SDK reports two events
 
 Both events go through a small persisted queue (separate from the beacon batch queue),
 delivered best-effort with retry, so a tap that cold-launches the app before `configure()`
-runs is not lost: it flushes once the business token is known.
+runs is not lost.
 
 You do **not** need to write any code for this to work, **unless** you opted out via
 `BearoundAppDelegateProxyEnabled = NO` above. In that case, call these from your own

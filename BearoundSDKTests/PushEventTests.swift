@@ -15,38 +15,51 @@ import UserNotifications
 
 // MARK: - Marker parsing (REQ-018)
 
+private let trackerBase = "https://track.bearound.io"
+
+private func measurableMarker(_ sid: String) -> [String: Any] {
+    ["t": "hot_campaign", "sid": sid, "d": "ctx-\(sid)", "tr": trackerBase]
+}
+
+private func marker(_ sid: String) -> PushMarkerValue {
+    PushMarkerValue(sid: sid, d: "ctx-\(sid)", tr: trackerBase)
+}
+
 @Suite("PushMarker parsing")
 struct PushMarkerTests {
 
-    @Test("Object-shaped marker with sid is extracted")
-    func objectMarkerWithSid() {
-        let userInfo: [AnyHashable: Any] = ["bearound": ["t": "hot_campaign", "sid": "abc-123"]]
-        #expect(PushMarker.extractSid(from: userInfo) == "abc-123")
+    @Test("Object-shaped measurable marker is extracted")
+    func objectMarker() {
+        let userInfo: [AnyHashable: Any] = ["bearound": measurableMarker("abc-123")]
+        #expect(PushMarker.extract(from: userInfo) == PushMarkerValue(sid: "abc-123", d: "ctx-abc-123", tr: trackerBase))
     }
 
-    @Test("JSON-string-shaped marker with sid is extracted")
-    func stringMarkerWithSid() {
-        let json = "{\"t\":\"cold_campaign\",\"sid\":\"xyz-789\"}"
+    @Test("JSON-string-shaped marker is extracted")
+    func stringMarker() {
+        let json = "{\"t\":\"cold_campaign\",\"sid\":\"xyz-789\",\"d\":\"ctx\",\"tr\":\"https://track.bearound.io\"}"
         let userInfo: [AnyHashable: Any] = ["bearound": json]
-        #expect(PushMarker.extractSid(from: userInfo) == "xyz-789")
+        #expect(PushMarker.extract(from: userInfo)?.sid == "xyz-789")
     }
 
-    @Test("Marker with no sid (sync push) yields nothing")
-    func markerWithoutSid() {
-        let userInfo: [AnyHashable: Any] = ["bearound": ["t": "sync"]]
-        #expect(PushMarker.extractSid(from: userInfo) == nil)
+    @Test("Sync push (only t) yields nothing")
+    func syncMarker() {
+        #expect(PushMarker.extract(from: ["bearound": ["t": "sync"]]) == nil)
+    }
+
+    @Test("Missing d, missing tr, non-https tr or empty sid yield nothing")
+    func incompleteMarkers() {
+        var noD = measurableMarker("s"); noD.removeValue(forKey: "d")
+        var noTr = measurableMarker("s"); noTr.removeValue(forKey: "tr")
+        var http = measurableMarker("s"); http["tr"] = "http://track.bearound.io"
+        var emptySid = measurableMarker("s"); emptySid["sid"] = ""
+        for candidate in [noD, noTr, http, emptySid] {
+            #expect(PushMarker.extract(from: ["bearound": candidate]) == nil)
+        }
     }
 
     @Test("Missing bearound key yields nothing")
     func noMarkerAtAll() {
-        let userInfo: [AnyHashable: Any] = ["aps": ["alert": "hi"]]
-        #expect(PushMarker.extractSid(from: userInfo) == nil)
-    }
-
-    @Test("Empty sid is treated as absent")
-    func emptySidIsAbsent() {
-        let userInfo: [AnyHashable: Any] = ["bearound": ["sid": ""]]
-        #expect(PushMarker.extractSid(from: userInfo) == nil)
+        #expect(PushMarker.extract(from: ["aps": ["alert": "hi"]]) == nil)
     }
 }
 
@@ -56,12 +69,13 @@ struct PushMarkerTests {
 /// request it was asked to send.
 final class FakePushEventTransport: PushEventTransport {
     var scriptedOutcome: PushEventDeliveryOutcome = .drain
-    private(set) var sendCount = 0
+    private(set) var requests: [URLRequest] = []
+    var sendCount: Int { lock.lock(); defer { lock.unlock() }; return requests.count }
     private let lock = NSLock()
 
     func send(request: URLRequest, completion: @escaping (PushEventDeliveryOutcome) -> Void) {
         lock.lock()
-        sendCount += 1
+        requests.append(request)
         lock.unlock()
         completion(scriptedOutcome)
     }
@@ -76,14 +90,35 @@ struct PushEventQueueTests {
         let transport = FakePushEventTransport()
         transport.scriptedOutcome = outcome
         let queue = PushEventQueue(transport: transport, suiteName: "com.bearound.sdk.test.pushevents.\(UUID().uuidString)")
-        queue.install(businessToken: "test-token")
         return (queue, transport)
     }
 
-    @Test("Enqueue then successful drain empties the persisted queue")
+    private func entry(_ sid: String, at date: Date) -> PushEventEntry {
+        PushEventEntry(sid: sid, type: .received, occurredAt: date, attempt: 0, d: "ctx-\(sid)", tr: trackerBase)
+    }
+
+    @Test("A hit is a GET to {tr}/v1/push:{verb}?d= with no credential and no body")
+    func hitShape() {
+        let (queue, transport) = makeQueue(outcome: .drain)
+        queue.enqueue(marker: PushMarkerValue(sid: "s1", d: "eyJ2Ijox-_", tr: trackerBase), type: .opened)
+        queue.enqueue(marker: PushMarkerValue(sid: "s1", d: "eyJ2Ijox-_", tr: trackerBase), type: .received)
+
+        let urls = transport.requests.map { $0.url?.absoluteString }
+        #expect(urls == [
+            "https://track.bearound.io/v1/push:open?d=eyJ2Ijox-_",
+            "https://track.bearound.io/v1/push:received?d=eyJ2Ijox-_",
+        ])
+        for request in transport.requests {
+            #expect(request.httpMethod == "GET")
+            #expect(request.value(forHTTPHeaderField: "Authorization") == nil)
+            #expect(request.httpBody == nil)
+        }
+    }
+
+    @Test("Enqueue then successful drain empties the persisted queue, with no configuration")
     func enqueueThenDrainOnSuccess() {
         let (queue, _) = makeQueue(outcome: .drain)
-        queue.enqueue(sid: "sid-1", type: .received)
+        queue.enqueue(marker: marker("sid-1"), type: .received)
 
         #expect(queue.entriesForTesting().isEmpty)
     }
@@ -91,7 +126,7 @@ struct PushEventQueueTests {
     @Test("Enqueue with a keep outcome (5xx) leaves the entry queued")
     func enqueueKeepsOnServerError() {
         let (queue, _) = makeQueue(outcome: .keep)
-        queue.enqueue(sid: "sid-2", type: .received)
+        queue.enqueue(marker: marker("sid-2"), type: .received)
 
         let entries = queue.entriesForTesting()
         #expect(entries.count == 1)
@@ -99,26 +134,25 @@ struct PushEventQueueTests {
         #expect(entries.first?.attempt == 1)
     }
 
-    @Test("202 drains, any non-429 4xx drains, 429 and 5xx keep")
+    @Test("2xx and non-429 4xx drain, 429 and 5xx keep")
     func drainVsKeepByResponseClass() {
         let cases: [(PushEventDeliveryOutcome, Bool)] = [
-            (.drain, true),   // 202 or non-429 4xx
-            (.keep, false),   // 429 or 5xx or transport error
+            (.drain, true),
+            (.keep, false),
         ]
         for (outcome, expectDrained) in cases {
             let (queue, _) = makeQueue(outcome: outcome)
-            queue.enqueue(sid: UUID().uuidString, type: .received)
-            let isEmpty = queue.entriesForTesting().isEmpty
-            #expect(isEmpty == expectDrained)
+            queue.enqueue(marker: marker(UUID().uuidString), type: .received)
+            #expect(queue.entriesForTesting().isEmpty == expectDrained)
         }
     }
 
-    @Test("Duplicate (sid, type) is deduped locally, only one entry is sent")
+    @Test("Duplicate (sid, type) is deduped locally, only one hit is sent")
     func dedupePerSidAndType() {
         let (queue, transport) = makeQueue(outcome: .keep)
-        queue.enqueue(sid: "sid-dup", type: .received)
-        queue.enqueue(sid: "sid-dup", type: .received)
-        queue.enqueue(sid: "sid-dup", type: .received)
+        queue.enqueue(marker: marker("sid-dup"), type: .received)
+        queue.enqueue(marker: marker("sid-dup"), type: .received)
+        queue.enqueue(marker: marker("sid-dup"), type: .received)
 
         #expect(queue.entriesForTesting().count == 1)
         #expect(transport.sendCount == 1)
@@ -127,8 +161,8 @@ struct PushEventQueueTests {
     @Test("Different types for the same sid are NOT deduped against each other")
     func receivedAndOpenedAreDistinctEvents() {
         let (queue, _) = makeQueue(outcome: .keep)
-        queue.enqueue(sid: "sid-both", type: .received)
-        queue.enqueue(sid: "sid-both", type: .opened)
+        queue.enqueue(marker: marker("sid-both"), type: .received)
+        queue.enqueue(marker: marker("sid-both"), type: .opened)
 
         let entries = queue.entriesForTesting()
         #expect(entries.count == 2)
@@ -139,14 +173,10 @@ struct PushEventQueueTests {
     func capEviction() {
         let (queue, _) = makeQueue(outcome: .keep)
         let now = Date()
-        let entries = (0..<210).map { i in
-            PushEventEntry(sid: "sid-\(i)", type: .received, occurredAt: now.addingTimeInterval(Double(i)), attempt: 0)
-        }
-        queue.seedForTesting(entries)
+        queue.seedForTesting((0..<210).map { entry("sid-\($0)", at: now.addingTimeInterval(Double($0))) })
 
         let stored = queue.entriesForTesting()
         #expect(stored.count == 200)
-        // Oldest 10 (sid-0...sid-9) must have been dropped; the newest must remain.
         #expect(!stored.contains { $0.sid == "sid-0" })
         #expect(stored.contains { $0.sid == "sid-209" })
     }
@@ -155,9 +185,7 @@ struct PushEventQueueTests {
     func ageEviction() {
         let (queue, _) = makeQueue(outcome: .keep)
         let now = Date()
-        let old = PushEventEntry(sid: "sid-old", type: .received, occurredAt: now.addingTimeInterval(-8 * 24 * 60 * 60), attempt: 0)
-        let fresh = PushEventEntry(sid: "sid-fresh", type: .received, occurredAt: now, attempt: 0)
-        queue.seedForTesting([old, fresh])
+        queue.seedForTesting([entry("sid-old", at: now.addingTimeInterval(-8 * 24 * 60 * 60)), entry("sid-fresh", at: now)])
 
         let stored = queue.entriesForTesting()
         #expect(stored.count == 1)
@@ -169,34 +197,25 @@ struct PushEventQueueTests {
         let (queue, _) = makeQueue(outcome: .keep)
         let now = Date()
 
-        // Age-only case: one old entry among otherwise-fresh entries, well under the cap.
-        let ageOnly = (0..<5).map { i in
-            PushEventEntry(sid: "age-\(i)", type: .received, occurredAt: now, attempt: 0)
-        } + [PushEventEntry(sid: "age-stale", type: .received, occurredAt: now.addingTimeInterval(-10 * 24 * 60 * 60), attempt: 0)]
+        let ageOnly = (0..<5).map { entry("age-\($0)", at: now) }
+            + [entry("age-stale", at: now.addingTimeInterval(-10 * 24 * 60 * 60))]
         queue.seedForTesting(ageOnly)
         #expect(queue.entriesForTesting().count == 5)
 
-        // Cap-only case: all fresh, but over 200.
-        let capOnly = (0..<205).map { i in
-            PushEventEntry(sid: "cap-\(i)", type: .received, occurredAt: now, attempt: 0)
-        }
-        queue.seedForTesting(capOnly)
+        queue.seedForTesting((0..<205).map { entry("cap-\($0)", at: now) })
         #expect(queue.entriesForTesting().count == 200)
     }
 
-    @Test("An event enqueued before install() persists and flushes once the token is known")
-    func coldLaunchBeforeInstallFlushesLater() {
+    @Test("Persisted hits from a previous launch are sent on flush")
+    func persistedHitsFlushLater() {
         let transport = FakePushEventTransport()
         transport.scriptedOutcome = .drain
-        let queue = PushEventQueue(transport: transport, suiteName: "com.bearound.sdk.test.pushevents.\(UUID().uuidString)")
-
-        // No install() yet (business token unknown): a tap that cold-launches the app
-        // before configure() runs lands here.
-        queue.enqueue(sid: "cold-launch-sid", type: .opened)
+        let suite = "com.bearound.sdk.test.pushevents.\(UUID().uuidString)"
+        let queue = PushEventQueue(transport: transport, suiteName: suite)
+        queue.seedForTesting([entry("cold-launch-sid", at: Date())])
         #expect(transport.sendCount == 0)
-        #expect(queue.entriesForTesting().count == 1)
 
-        queue.install(businessToken: "late-token")
+        queue.flush()
         #expect(transport.sendCount == 1)
         #expect(queue.entriesForTesting().isEmpty)
     }

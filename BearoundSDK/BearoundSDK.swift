@@ -336,13 +336,9 @@ public class BeAroundSDK {
             sdkVersion: Self.version
         )
 
-        // Push receipt/open queue: rewire the token so a cold-launch relaunch can flush
-        // anything a notification tap enqueued before `configure()` ran.
-        PushEventQueue.shared.install(
-            businessToken: savedConfig.businessToken,
-            apiBaseURL: savedConfig.apiBaseURL,
-            sdkVersion: Self.version
-        )
+        // Push receipt/open queue: flush whatever a notification tap enqueued while the
+        // app was not running (hits carry no credential, so no configuration is needed).
+        PushEventQueue.shared.flush()
 
         // Periodic reconciliation settings must survive background relaunches too —
         // handleSyncTask/scheduleSync read them from the manager, not from the SDK.
@@ -909,13 +905,8 @@ public class BeAroundSDK {
             sdkVersion: Self.version
         )
 
-        // Push receipt/open queue: wires the token and flushes anything a cold-launch tap
-        // enqueued before this call.
-        PushEventQueue.shared.install(
-            businessToken: config.businessToken,
-            apiBaseURL: config.apiBaseURL,
-            sdkVersion: Self.version
-        )
+        // Push receipt/open queue: flush anything a cold-launch tap enqueued before this call.
+        PushEventQueue.shared.flush()
 
         // No App Tracking Transparency prompt here: the host app decides when (and whether)
         // to ask, via requestTrackingAuthorization(). The SDK only reads the outcome.
@@ -2185,7 +2176,7 @@ public class BeAroundSDK {
 
         // Same reasoning for the UN delegate swizzle: a notification tap can cold-launch the
         // app (and deliver the response) before configure() runs. The resulting `opened`
-        // event persists in PushEventQueue and flushes once the business token is known.
+        // event persists in PushEventQueue and is sent as soon as the network allows.
         PushDelegateSwizzle.enableIfPossible()
     }
 
@@ -2312,8 +2303,8 @@ public class BeAroundSDK {
     /// Native's Expo plugin `didReceiveRemoteNotification` override) that need to report
     /// receipt explicitly. A `userInfo` with no `bearound.sid` is a no-op.
     public func trackNotificationReceived(userInfo: [AnyHashable: Any]) {
-        guard let sid = PushMarker.extractSid(from: userInfo) else { return }
-        PushEventQueue.shared.enqueue(sid: sid, type: .received)
+        guard let marker = PushMarker.extract(from: userInfo) else { return }
+        PushEventQueue.shared.enqueue(marker: marker, type: .received)
     }
 
     /// Records a push `opened` event (which also records `received`) for a Bearound
@@ -2322,9 +2313,9 @@ public class BeAroundSDK {
     /// out and want to report a tap explicitly. A `userInfo` with no `bearound.sid` is a
     /// no-op.
     public func trackNotificationOpened(userInfo: [AnyHashable: Any]) {
-        guard let sid = PushMarker.extractSid(from: userInfo) else { return }
-        PushEventQueue.shared.enqueue(sid: sid, type: .opened)
-        PushEventQueue.shared.enqueue(sid: sid, type: .received)
+        guard let marker = PushMarker.extract(from: userInfo) else { return }
+        PushEventQueue.shared.enqueue(marker: marker, type: .opened)
+        PushEventQueue.shared.enqueue(marker: marker, type: .received)
     }
 
     /// Convenience for hosts that opt out of the UN delegate swizzle

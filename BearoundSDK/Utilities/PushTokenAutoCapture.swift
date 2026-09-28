@@ -91,8 +91,8 @@ enum PushTokenAutoCapture {
 
                 // REQ-018: report receipt for measurable (sid-bearing) sends. Sync/silent
                 // pushes with no sid are not reported, matching D2/D9 scope.
-                if let sid = PushMarker.extractSid(from: (userInfo as? [AnyHashable: Any]) ?? [:]) {
-                    PushEventQueue.shared.enqueue(sid: sid, type: .received)
+                if let marker = PushMarker.extract(from: (userInfo as? [AnyHashable: Any]) ?? [:]) {
+                    PushEventQueue.shared.enqueue(marker: marker, type: .received)
                 }
 
                 BeAroundSDK.shared.performBackgroundBLERefreshAndSync(bleScanDuration: 10.0, trigger: "silent_push") { ingestStarted in

@@ -9,7 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 - **Medição de recebimento e abertura de push.** O SDK passa a reportar dois eventos por
-  envio mensurável (marcador `bearound.sid` presente): `received`, quando a notificação
+  envio mensurável (marcador `bearound: { sid, d, tr }`) ao tracker da Bearound, em
+  `GET {tr}/v1/push:received?d=` e `GET {tr}/v1/push:open?d=`, sem credencial (o `d` é o
+  contexto de entrega que o backend selou para o aparelho): `received`, quando a notificação
   chega (reaproveita o `didReceiveRemoteNotification` já existente), e `opened`, quando o
   usuário toca nela. A abertura é detectada por um swizzle de
   `UNUserNotificationCenter.setDelegate:`, que remenda o delegate do host (ou instala um

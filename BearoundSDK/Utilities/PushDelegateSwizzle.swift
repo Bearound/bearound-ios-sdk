@@ -114,10 +114,10 @@ enum PushDelegateSwizzle {
                 receiver, center, response, completionHandler in
 
                 let userInfo = response.notification.request.content.userInfo
-                if let sid = PushMarker.extractSid(from: userInfo) {
+                if let marker = PushMarker.extract(from: userInfo) {
                     NSLog("[BeAroundSDK] Bearound notification opened")
-                    PushEventQueue.shared.enqueue(sid: sid, type: .opened)
-                    PushEventQueue.shared.enqueue(sid: sid, type: .received)
+                    PushEventQueue.shared.enqueue(marker: marker, type: .opened)
+                    PushEventQueue.shared.enqueue(marker: marker, type: .received)
                 }
 
                 if hadOwnImplementation, let originalIMP {
@@ -182,9 +182,9 @@ final class BearoundNotificationDelegate: NSObject, UNUserNotificationCenterDele
         withCompletionHandler completionHandler: @escaping () -> Void
     ) {
         let userInfo = response.notification.request.content.userInfo
-        if let sid = PushMarker.extractSid(from: userInfo) {
-            PushEventQueue.shared.enqueue(sid: sid, type: .opened)
-            PushEventQueue.shared.enqueue(sid: sid, type: .received)
+        if let marker = PushMarker.extract(from: userInfo) {
+            PushEventQueue.shared.enqueue(marker: marker, type: .opened)
+            PushEventQueue.shared.enqueue(marker: marker, type: .received)
         }
         completionHandler()
     }
