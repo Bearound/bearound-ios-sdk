@@ -357,6 +357,9 @@ public class BeAroundSDK {
             // Fix 1 — re-instantiate the background session with the same identifier so any
             // pending background-upload delegate callbacks from before termination are delivered.
             apiClient?.ensureBackgroundSessionAlive()
+            // Scanning stays off: CLVisit and the visit geofences a previous launch armed
+            // survive the process and would keep relaunching the app. Disarm them.
+            stopVisitMonitor()
             // Scanning stays off — no cold-start ranging will run, so nothing else
             // would ever close this assertion. Release it now.
             endRelaunchWindowTask()
@@ -651,6 +654,9 @@ public class BeAroundSDK {
             // authorized) and nothing re-armed it — the eye stayed dead until the
             // host called startScanning() again. Arm it here.
             self.startLocationEyeIfAuthorizedAndWanted()
+            // A running VisitMonitor re-checks eligibility on its own manager. Without one,
+            // visit monitoring a previous launch armed must still go down when eligibility is lost.
+            self.tearDownVisitLeftoversIfIneligible()
         }
 
         bluetoothManager.delegate = self
@@ -905,6 +911,9 @@ public class BeAroundSDK {
 
         // No App Tracking Transparency prompt here: the host app decides when (and whether)
         // to ask, via requestTrackingAuthorization(). The SDK only reads the outcome.
+
+        // collectLocation may have changed: re-apply it to visit detection right away.
+        reapplyVisitMonitorAfterConfigure()
 
         if isScanning {
             startSyncTimer()
@@ -1286,14 +1295,13 @@ public class BeAroundSDK {
 
     private func startVisitMonitor() {
         let work = { [weak self] in
-            guard let self, let config = self.configuration else { return }
-            let fetcher = PlacesConfigClient(configuration: config)
-            if let monitor = self.visitMonitor {
-                monitor.fetcher = fetcher
-            } else {
+            guard let self, self.configuration != nil else { return }
+            if self.visitMonitor == nil {
+                // One monitor and one config client for the SDK lifetime: the client reads
+                // the current configuration at each fetch.
                 self.visitMonitor = VisitMonitor(
                     locationManager: CoreLocationVisitManager(),
-                    fetcher: fetcher,
+                    fetcher: PlacesConfigClient(configuration: { [weak self] in self?.configuration }),
                     sender: VisitEventForwarder { [weak self] event in self?.sendVisitEvent(event) }
                 )
             }
@@ -1303,8 +1311,47 @@ public class BeAroundSDK {
         if Thread.isMainThread { work() } else { DispatchQueue.main.async(execute: work) }
     }
 
+    /// Stops visit detection. Without a monitor in this process (opt-out before any start,
+    /// a relaunch with scanning off) it still disarms CLVisit and the `bearound.visit.`
+    /// regions a previous launch registered, through a throwaway manager.
     private func stopVisitMonitor() {
-        let work: () -> Void = { [weak self] in self?.visitMonitor?.stop() }
+        let work: () -> Void = { [weak self] in
+            guard let self else { return }
+            if let monitor = self.visitMonitor {
+                monitor.stop()
+            } else {
+                VisitMonitor.tearDownVisitMonitoring(on: CoreLocationVisitManager())
+            }
+        }
+        if Thread.isMainThread { work() } else { DispatchQueue.main.async(execute: work) }
+    }
+
+    /// A running monitor re-applies the new policy (and tears itself down when location was
+    /// switched off); without one, an opt-out still disarms what a previous launch left.
+    private func reapplyVisitMonitorAfterConfigure() {
+        let work: () -> Void = { [weak self] in
+            guard let self else { return }
+            if self.visitMonitor?.isStarted == true {
+                self.startVisitMonitor()
+            } else if !DataCollectionPolicyStore.current.location {
+                self.stopVisitMonitor()
+            }
+        }
+        if Thread.isMainThread { work() } else { DispatchQueue.main.async(execute: work) }
+    }
+
+    private func tearDownVisitLeftoversIfIneligible() {
+        let work: () -> Void = { [weak self] in
+            guard let self, self.visitMonitor == nil else { return }
+            var fullAccuracy = true
+            if #available(iOS 14.0, *) {
+                fullAccuracy = Self.authQueryManager.accuracyAuthorization == .fullAccuracy
+            }
+            let eligible = VisitMonitor.isEligible(policyAllowsLocation: DataCollectionPolicyStore.current.location,
+                                                   authorization: Self.authorizationStatus(),
+                                                   hasFullAccuracy: fullAccuracy)
+            if !eligible { self.stopVisitMonitor() }
+        }
         if Thread.isMainThread { work() } else { DispatchQueue.main.async(execute: work) }
     }
 

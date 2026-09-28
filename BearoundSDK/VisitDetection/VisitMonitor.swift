@@ -8,6 +8,7 @@
 
 import CoreLocation
 import Foundation
+import UIKit
 
 // MARK: - Plain values crossing the CoreLocation boundary
 
@@ -67,6 +68,52 @@ struct SystemVisitClock: VisitClock {
     var now: Date { Date() }
 }
 
+/// `UIApplication` background assertions behind a seam: unit tests run host-less, where
+/// `UIApplication.shared` is not available.
+protocol VisitBackgroundTasking {
+    func begin(name: String, expiration: @escaping () -> Void) -> UIBackgroundTaskIdentifier
+    func end(_ identifier: UIBackgroundTaskIdentifier)
+}
+
+struct UIApplicationBackgroundTasks: VisitBackgroundTasking {
+    func begin(name: String, expiration: @escaping () -> Void) -> UIBackgroundTaskIdentifier {
+        UIApplication.shared.beginBackgroundTask(withName: name, expirationHandler: expiration)
+    }
+
+    func end(_ identifier: UIBackgroundTaskIdentifier) {
+        UIApplication.shared.endBackgroundTask(identifier)
+    }
+}
+
+/// One background assertion held while a one-shot location request is in flight. `begin`
+/// is idempotent while one is held and `end` is idempotent once released, so the request,
+/// its answer (fix or failure) and the expiration handler can each call them freely and the
+/// begin/end pair stays balanced. Main-thread only.
+final class VisitBackgroundAssertion {
+    private let tasks: VisitBackgroundTasking
+    private let name: String
+    private(set) var identifier: UIBackgroundTaskIdentifier = .invalid
+
+    init(name: String, tasks: VisitBackgroundTasking) {
+        self.name = name
+        self.tasks = tasks
+    }
+
+    var isHeld: Bool { identifier != .invalid }
+
+    func begin() {
+        guard !isHeld else { return }
+        identifier = tasks.begin(name: name) { [weak self] in self?.end() }
+    }
+
+    func end() {
+        guard isHeld else { return }
+        let held = identifier
+        identifier = .invalid
+        tasks.end(held)
+    }
+}
+
 protocol VisitLocationManagerDelegate: AnyObject {
     func visitLocationManager(didEnterRegion identifier: String)
     func visitLocationManager(didExitRegion identifier: String)
@@ -80,6 +127,8 @@ protocol VisitLocationManagerDelegate: AnyObject {
 protocol VisitLocationManaging: AnyObject {
     var delegate: VisitLocationManagerDelegate? { get set }
     var authorizationStatus: CLAuthorizationStatus { get }
+    /// Precise Location granted (always true before iOS 14).
+    var hasFullAccuracy: Bool { get }
     /// The fix CoreLocation already holds, if any. Never starts a request.
     var lastKnownFix: VisitFix? { get }
     /// Snapshot of every region monitored by the app (host, beacon and visit).
@@ -112,9 +161,14 @@ final class VisitMonitor {
     static let openStopMaxAge: TimeInterval = 24 * 60 * 60
     /// A visit this close to the open stop (plus its accuracy) is the same stop.
     static let sameStopRadiusMeters: Double = 500
+    /// Dwell assumed for an environment whose `minDwellMinutes` is null.
+    static let defaultMinDwellMinutes = 5
+    /// A stop opened by a geofence entry (no CLVisit yet) is dropped when no CLVisit confirms
+    /// it within its environment's minDwellMinutes plus this grace: it was a drive-by.
+    static let fenceStopGrace: TimeInterval = 30 * 60
 
     private let locationManager: VisitLocationManaging
-    var fetcher: PlacesConfigFetching
+    private let fetcher: PlacesConfigFetching
     private let sender: VisitEventSending
     private let store: VisitStateStore
     private let clock: VisitClock
@@ -162,10 +216,18 @@ final class VisitMonitor {
 
     // MARK: Eligibility
 
-    /// Visit detection runs only with Always authorization and the host allowing location.
-    /// The fetch itself sends coordinates, so it is gated the same way.
+    /// Visit detection runs only with Always authorization, Precise Location and the host
+    /// allowing location. Reduced accuracy tears it down, like `BeaconManager` does for
+    /// beacons. The fetch itself sends coordinates, so it is gated the same way.
+    static func isEligible(policyAllowsLocation: Bool, authorization: CLAuthorizationStatus,
+                           hasFullAccuracy: Bool) -> Bool {
+        policyAllowsLocation && authorization == .authorizedAlways && hasFullAccuracy
+    }
+
     private var isEligible: Bool {
-        policy().location && locationManager.authorizationStatus == .authorizedAlways
+        Self.isEligible(policyAllowsLocation: policy().location,
+                        authorization: locationManager.authorizationStatus,
+                        hasFullAccuracy: locationManager.hasFullAccuracy)
     }
 
     private var cachedConfigEnabled: Bool {
@@ -222,11 +284,19 @@ final class VisitMonitor {
         pendingArrivalEnvironmentId = nil
         pendingRefresh = false
         pendingRefreshForced = false
-        locationManager.stopMonitoringVisits()
-        locationManager.monitoredRegions
+        Self.tearDownVisitMonitoring(on: locationManager)
+    }
+
+    /// Stops CLVisit and every `bearound.visit.` region, host and beacon regions untouched.
+    /// Both survive the process, so this also runs without a `VisitMonitor` (opt-out,
+    /// a relaunch with scanning off) against a throwaway manager to disarm what a previous
+    /// launch registered.
+    static func tearDownVisitMonitoring(on manager: VisitLocationManaging) {
+        manager.stopMonitoringVisits()
+        manager.monitoredRegions
             .map(\.identifier)
             .filter(RegionBudget.isSDKVisitIdentifier)
-            .forEach { locationManager.stopMonitoring(identifier: $0) }
+            .forEach { manager.stopMonitoring(identifier: $0) }
     }
 
     // MARK: Refresh (REQ-021)
@@ -295,7 +365,34 @@ final class VisitMonitor {
             store.openStop = nil
             return nil
         }
+        if let expiresAt = open.fenceExpiresAt, clock.now > expiresAt {
+            // Drive-by: the fence fired but iOS never saw a dwell. No departure is invented;
+            // the lone arrival is a short session on the server.
+            store.openStop = nil
+            NSLog("[BeAroundSDK] Visit stop opened by a geofence (%@) expired without a CLVisit, dropped",
+                  open.environmentId ?? "?")
+            return nil
+        }
         return open
+    }
+
+    private func place(_ environmentId: String) -> PlacesConfig.Place? {
+        store.loadConfig()?.config.places.first { $0.environmentId == environmentId }
+    }
+
+    /// A fence entry adds nothing when the open stop is that environment or lies within
+    /// `sameStopRadiusMeters` of the fence center. Any other open stop is replaced.
+    private func isFenceArrivalCovered(environmentId: String) -> Bool {
+        guard let open = currentOpenStop() else { return false }
+        if open.environmentId == environmentId { return true }
+        guard let center = place(environmentId)?.geometry.circleCenter else { return false }
+        return Self.distanceMeters(open.latitude, open.longitude, center.lat, center.lng)
+            <= Self.sameStopRadiusMeters
+    }
+
+    private func fenceStopExpiry(environmentId: String, arrivalAt: Date) -> Date {
+        let dwellMinutes = place(environmentId)?.minDwellMinutes ?? Self.defaultMinDwellMinutes
+        return arrivalAt.addingTimeInterval(TimeInterval(dwellMinutes) * 60 + Self.fenceStopGrace)
     }
 
     private func belongs(_ visit: VisitObservation, to open: VisitStateStore.OpenStop) -> Bool {
@@ -303,10 +400,14 @@ final class VisitMonitor {
             <= Self.sameStopRadiusMeters + (visit.accuracy ?? 0)
     }
 
+    /// Opens a stop and sends its arrival. An open stop at another place is overwritten
+    /// without any event for it: its arrival stays an orphan, which the server accepts as a
+    /// short session.
     private func sendArrival(latitude: Double, longitude: Double, accuracy: Double?,
-                             at timestamp: Date, environmentId: String?) {
+                             at timestamp: Date, environmentId: String?, fenceExpiresAt: Date? = nil) {
         store.openStop = VisitStateStore.OpenStop(latitude: latitude, longitude: longitude,
-                                                  arrivalAt: timestamp, environmentId: environmentId)
+                                                  arrivalAt: timestamp, environmentId: environmentId,
+                                                  fenceExpiresAt: fenceExpiresAt)
         send(.arrival, latitude: latitude, longitude: longitude, accuracy: accuracy,
              at: timestamp, environmentId: environmentId)
     }
@@ -337,18 +438,17 @@ final class VisitMonitor {
 extension VisitMonitor: VisitLocationManagerDelegate {
 
     func visitLocationManager(didEnterRegion identifier: String) {
-        guard RegionBudget.isSDKVisitIdentifier(identifier),
-              identifier != RegionBudget.refreshFenceIdentifier,
+        guard let environmentId = RegionBudget.environmentId(fromIdentifier: identifier),
               canReportVisits
         else { return }
         // Arrival already sent for this stop (CLVisit or an earlier fence).
-        guard currentOpenStop() == nil else { return }
-        pendingArrivalEnvironmentId = String(identifier.dropFirst(RegionBudget.visitIdentifierPrefix.count))
+        guard !isFenceArrivalCovered(environmentId: environmentId) else { return }
+        pendingArrivalEnvironmentId = environmentId
         locationManager.requestLocation()
     }
 
     func visitLocationManager(didExitRegion identifier: String) {
-        guard identifier == RegionBudget.refreshFenceIdentifier, isStarted else { return }
+        guard identifier == RegionBudget.refreshFenceIdentifier, isStarted, isEligible else { return }
         pendingRefresh = true
         pendingRefreshForced = true
         locationManager.requestLocation()
@@ -377,7 +477,17 @@ extension VisitMonitor: VisitLocationManagerDelegate {
 
         guard let arrival = visit.arrivalDate else { return }
         if let lastDeparture, arrival <= lastDeparture { return }
-        if let open = currentOpenStop(), belongs(visit, to: open) { return }
+        if let open = currentOpenStop(), belongs(visit, to: open) {
+            // iOS confirmed the dwell of a stop a fence opened: it now waits for the CLVisit
+            // departure instead of expiring as a drive-by.
+            if open.fenceExpiresAt != nil {
+                store.openStop = VisitStateStore.OpenStop(latitude: open.latitude, longitude: open.longitude,
+                                                          arrivalAt: open.arrivalAt,
+                                                          environmentId: open.environmentId,
+                                                          fenceExpiresAt: nil)
+            }
+            return
+        }
         pendingArrivalEnvironmentId = nil
         sendArrival(latitude: visit.latitude, longitude: visit.longitude,
                     accuracy: visit.accuracy, at: arrival, environmentId: nil)
@@ -386,9 +496,10 @@ extension VisitMonitor: VisitLocationManagerDelegate {
     func visitLocationManager(didUpdateFix fix: VisitFix) {
         if let environmentId = pendingArrivalEnvironmentId {
             pendingArrivalEnvironmentId = nil
-            if canReportVisits, currentOpenStop() == nil {
+            if canReportVisits, !isFenceArrivalCovered(environmentId: environmentId) {
                 sendArrival(latitude: fix.latitude, longitude: fix.longitude, accuracy: fix.accuracy,
-                            at: fix.timestamp, environmentId: environmentId)
+                            at: fix.timestamp, environmentId: environmentId,
+                            fenceExpiresAt: fenceStopExpiry(environmentId: environmentId, arrivalAt: fix.timestamp))
             }
         }
         let forced = pendingRefresh && pendingRefreshForced
@@ -418,8 +529,12 @@ final class CoreLocationVisitManager: NSObject, VisitLocationManaging, CLLocatio
 
     weak var delegate: VisitLocationManagerDelegate?
     private let manager = CLLocationManager()
+    /// Held from `requestLocation` until its fix or failure: a geofence entry relaunches the
+    /// app for ~10 s, and a cold GPS fix can take longer than that.
+    let locationRequestAssertion: VisitBackgroundAssertion
 
-    override init() {
+    init(backgroundTasks: VisitBackgroundTasking = UIApplicationBackgroundTasks()) {
+        locationRequestAssertion = VisitBackgroundAssertion(name: "BeAroundVisitLocation", tasks: backgroundTasks)
         super.init()
         manager.delegate = self
         manager.desiredAccuracy = kCLLocationAccuracyNearestTenMeters
@@ -430,6 +545,13 @@ final class CoreLocationVisitManager: NSObject, VisitLocationManaging, CLLocatio
             return manager.authorizationStatus
         }
         return CLLocationManager.authorizationStatus()
+    }
+
+    var hasFullAccuracy: Bool {
+        if #available(iOS 14.0, *) {
+            return manager.accuracyAuthorization == .fullAccuracy
+        }
+        return true
     }
 
     var lastKnownFix: VisitFix? {
@@ -478,6 +600,7 @@ final class CoreLocationVisitManager: NSObject, VisitLocationManaging, CLLocatio
     }
 
     func requestLocation() {
+        locationRequestAssertion.begin()
         manager.requestLocation()
     }
 
@@ -515,11 +638,14 @@ final class CoreLocationVisitManager: NSObject, VisitLocationManaging, CLLocatio
     }
 
     func locationManager(_: CLLocationManager, didUpdateLocations locations: [CLLocation]) {
+        // Released after the delegate ran, so work it starts (a config fetch) can take its own.
+        defer { locationRequestAssertion.end() }
         guard let location = locations.last, CLLocationCoordinate2DIsValid(location.coordinate) else { return }
         delegate?.visitLocationManager(didUpdateFix: Self.fix(location))
     }
 
     func locationManager(_: CLLocationManager, didFailWithError error: Error) {
+        defer { locationRequestAssertion.end() }
         NSLog("[BeAroundSDK] Visit location request failed: %@", error.localizedDescription)
         delegate?.visitLocationManagerDidFailToLocate()
     }

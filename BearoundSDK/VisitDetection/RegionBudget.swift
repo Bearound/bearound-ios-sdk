@@ -19,8 +19,14 @@ import Foundation
 /// 1. host regions: never touched, never removed, always counted;
 /// 2. SDK beacon regions: always reserved, even when not armed yet, because
 ///    `BeaconManager` may arm them at any moment;
-/// 3. the refresh fence: kept ahead of every environment region;
-/// 4. environment regions, nearest first; the farthest are dropped.
+/// 3. a headroom of `reservedHeadroom` slots left free for the host app to arm
+///    its own regions later: the SDK never takes the last free slots;
+/// 4. the refresh fence: kept ahead of every environment region;
+/// 5. environment regions, nearest first, at most `maxEnvironmentRegions`; the
+///    farthest are dropped.
+///
+/// Environment slots: `min(maxEnvironmentRegions, cap - host - beacon - 1 - headroom)`,
+/// floored at 0 (the `1` is the refresh fence slot).
 ///
 /// The planner performs no CoreLocation call: the caller injects a snapshot of
 /// `CLLocationManager.monitoredRegions` and applies the returned plan. When the
@@ -30,6 +36,10 @@ struct RegionBudget {
 
     /// iOS limit of monitored regions per app.
     static let iosRegionCap = 20
+    /// Fixed ceiling of SDK environment regions, whatever the host leaves free.
+    static let defaultMaxEnvironmentRegions = 10
+    /// Slots always left free for the host app.
+    static let defaultReservedHeadroom = 5
 
     /// Identifiers the SDK uses for beacon region monitoring. `BeaconManager`
     /// arms a single `CLBeaconRegion` under this identifier (the cold-start
@@ -41,9 +51,20 @@ struct RegionBudget {
     /// outside the beacon identifiers) belongs to the host app.
     static let visitIdentifierPrefix = "bearound.visit."
     static let refreshFenceIdentifier = "bearound.visit.refresh"
+    /// Environment regions live in their own sub-namespace, so no environment id
+    /// (not even "refresh") can collide with the refresh fence.
+    static let environmentIdentifierPrefix = "bearound.visit.env."
 
     static func environmentIdentifier(_ environmentId: String) -> String {
-        visitIdentifierPrefix + environmentId
+        environmentIdentifierPrefix + environmentId
+    }
+
+    /// The environment id of an environment region identifier, nil for anything else
+    /// (the refresh fence, a host region, a legacy identifier).
+    static func environmentId(fromIdentifier identifier: String) -> String? {
+        guard identifier.hasPrefix(environmentIdentifierPrefix) else { return nil }
+        let id = String(identifier.dropFirst(environmentIdentifierPrefix.count))
+        return id.isEmpty ? nil : id
     }
 
     static func isSDKVisitIdentifier(_ identifier: String) -> Bool {
@@ -124,11 +145,17 @@ struct RegionBudget {
 
     let cap: Int
     let beaconIdentifiers: Set<String>
+    let maxEnvironmentRegions: Int
+    let reservedHeadroom: Int
 
     init(cap: Int = RegionBudget.iosRegionCap,
-         beaconIdentifiers: Set<String> = RegionBudget.sdkBeaconRegionIdentifiers) {
+         beaconIdentifiers: Set<String> = RegionBudget.sdkBeaconRegionIdentifiers,
+         maxEnvironmentRegions: Int = RegionBudget.defaultMaxEnvironmentRegions,
+         reservedHeadroom: Int = RegionBudget.defaultReservedHeadroom) {
         self.cap = cap
         self.beaconIdentifiers = beaconIdentifiers
+        self.maxEnvironmentRegions = maxEnvironmentRegions
+        self.reservedHeadroom = reservedHeadroom
     }
 
     func plan(monitored: [MonitoredRegion], refreshFence: RefreshFence?, targets: [Target]) -> Plan {
@@ -136,18 +163,21 @@ struct RegionBudget {
             !Self.isSDKVisitIdentifier($0) && !beaconIdentifiers.contains($0)
         }.count
         let beaconCount = beaconIdentifiers.count
-        var free = max(0, cap - hostCount - beaconCount)
+        // Slots the SDK may take for visits once the host headroom is set aside.
+        let sdkSlots = max(0, cap - hostCount - beaconCount - reservedHeadroom)
 
         var regions: [PlannedRegion] = []
-        if let fence = refreshFence, free > 0 {
+        if let fence = refreshFence, sdkSlots > 0 {
             regions.append(PlannedRegion(
                 identifier: Self.refreshFenceIdentifier,
                 center: fence.origin,
                 radiusMeters: fence.radiusMeters,
                 environmentId: nil
             ))
-            free -= 1
         }
+        // The fence slot is reserved even when there is no fence, so the environment count
+        // does not depend on refreshAfterMeters.
+        var free = min(maxEnvironmentRegions, max(0, sdkSlots - 1))
 
         // Nearest first; the stable sort keeps the server order on ties.
         // Duplicated environments keep their nearest occurrence.

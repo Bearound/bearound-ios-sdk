@@ -103,15 +103,23 @@ protocol PlacesConfigFetching: AnyObject {
 
 /// `GET {controlHubBaseURL}/sdk/places/nearby?lat=&lng=`, authenticated with the raw
 /// business token exactly like `/ingest` (`Authorization: <businessToken>`).
+///
+/// One instance (and one `URLSession`) lives as long as the SDK: the configuration is read
+/// at every fetch, so a reconfigure never needs a new client.
 final class PlacesConfigClient: PlacesConfigFetching {
 
-    private let baseURL: String
-    private let businessToken: String
-    private let session: URLSession
+    enum ClientError: Error {
+        case notConfigured
+    }
 
-    init(configuration: SDKConfiguration, session: URLSession? = nil) {
-        baseURL = configuration.controlHubBaseURL
-        businessToken = configuration.businessToken
+    private let configuration: () -> SDKConfiguration?
+    private let session: URLSession
+    private let backgroundTasks: VisitBackgroundTasking
+
+    init(configuration: @escaping () -> SDKConfiguration?, session: URLSession? = nil,
+         backgroundTasks: VisitBackgroundTasking = UIApplicationBackgroundTasks()) {
+        self.configuration = configuration
+        self.backgroundTasks = backgroundTasks
         self.session = session ?? {
             let config = URLSessionConfiguration.ephemeral
             config.timeoutIntervalForRequest = 8
@@ -145,25 +153,23 @@ final class PlacesConfigClient: PlacesConfigFetching {
 
     func fetch(latitude: Double, longitude: Double, etag: String?,
                completion: @escaping (PlacesConfigFetchResult) -> Void) {
-        guard let request = Self.makeRequest(baseURL: baseURL, businessToken: businessToken,
+        guard let config = configuration() else {
+            completion(.failed(ClientError.notConfigured))
+            return
+        }
+        guard let request = Self.makeRequest(baseURL: config.controlHubBaseURL, businessToken: config.businessToken,
                                              latitude: latitude, longitude: longitude, etag: etag) else {
             completion(.failed(APIError.invalidURL))
             return
         }
 
         // A fence exit relaunches the app for ~10 s; hold an assertion so the request can land.
-        var taskId = UIBackgroundTaskIdentifier.invalid
-        taskId = UIApplication.shared.beginBackgroundTask(withName: "BeAroundPlacesConfig") {
-            UIApplication.shared.endBackgroundTask(taskId)
-            taskId = .invalid
-        }
+        let assertion = VisitBackgroundAssertion(name: "BeAroundPlacesConfig", tasks: backgroundTasks)
+        assertion.begin()
         let finish: (PlacesConfigFetchResult) -> Void = { result in
             DispatchQueue.main.async {
                 completion(result)
-                if taskId != .invalid {
-                    UIApplication.shared.endBackgroundTask(taskId)
-                    taskId = .invalid
-                }
+                assertion.end()
             }
         }
 
@@ -255,6 +261,18 @@ final class VisitStateStore {
         let longitude: Double
         let arrivalAt: Date
         let environmentId: String?
+        /// Set only for a stop a geofence entry opened: past this instant, with no CLVisit
+        /// confirming the dwell, the stop is dropped (drive-by). nil for a CLVisit stop.
+        let fenceExpiresAt: Date?
+
+        init(latitude: Double, longitude: Double, arrivalAt: Date, environmentId: String?,
+             fenceExpiresAt: Date? = nil) {
+            self.latitude = latitude
+            self.longitude = longitude
+            self.arrivalAt = arrivalAt
+            self.environmentId = environmentId
+            self.fenceExpiresAt = fenceExpiresAt
+        }
     }
 
     var openStop: OpenStop? {

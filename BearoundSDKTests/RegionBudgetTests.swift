@@ -34,20 +34,21 @@ struct RegionBudgetTests {
         RegionBudget.RefreshFence(origin: origin, radiusMeters: 2500)
     }
 
-    @Test("Beacon, visit and host regions never exceed the 20-region cap")
-    func neverExceedsCap() {
+    @Test("SDK regions stop at 10 environments plus the fence and always leave 5 slots to the host")
+    func neverExceedsCapAndKeepsHeadroom() {
         for hostCount in 0...22 {
             let monitored = hostRegions(hostCount) + [RegionBudget.MonitoredRegion(identifier: "BeAroundRegion")]
             let plan = RegionBudget().plan(monitored: monitored, refreshFence: fence, targets: targets(40))
             #expect(plan.hostRegionCount == hostCount)
             #expect(plan.beaconRegionCount == 1)
-            if hostCount <= 19 {
-                #expect(plan.totalRegionCount == 20)
-            } else {
-                // Host plus beacon already fill the cap: the SDK adds nothing.
-                #expect(plan.regions.isEmpty)
+            let environments = plan.regions.filter { $0.environmentId != nil }.count
+            #expect(environments == min(10, max(0, 20 - hostCount - 1 - 1 - 5)))
+            #expect(plan.refreshFenceKept == (20 - hostCount - 1 - 5 > 0))
+            if !plan.regions.isEmpty {
+                // The SDK never takes the last 5 free slots.
+                #expect(plan.totalRegionCount <= 20 - 5)
             }
-            #expect(plan.regions.count == max(0, 20 - hostCount - 1))
+            #expect(plan.totalRegionCount <= 20 || plan.regions.isEmpty)
         }
     }
 
@@ -56,24 +57,45 @@ struct RegionBudgetTests {
         let plan = RegionBudget().plan(monitored: [], refreshFence: fence, targets: targets(40))
         #expect(plan.beaconRegionCount == 1)
         #expect(plan.hostRegionCount == 0)
-        #expect(plan.regions.count == 19)
-        #expect(plan.totalRegionCount == 20)
+        // Fixed ceiling: 10 environments plus the fence, even with 18 slots free.
+        #expect(plan.regions.count == 11)
+        #expect(plan.totalRegionCount == 12)
+    }
+
+    @Test("Without a refresh fence the environment count does not grow into the fence slot")
+    func noFenceKeepsEnvironmentCount() {
+        let plan = RegionBudget().plan(monitored: hostRegions(8), refreshFence: nil, targets: targets(40))
+        // 20 - 8 host - 1 beacon - 1 fence slot - 5 headroom = 5 environments.
+        #expect(plan.regions.map(\.environmentId) == (0..<5).map { "env-\($0)" })
+        #expect(!plan.refreshFenceKept)
     }
 
     @Test("Excess targets drop the farthest environments, nearest are kept in order")
     func excessDropsFarthest() {
         let shuffled = targets(25).reversed()
-        let plan = RegionBudget().plan(monitored: hostRegions(4), refreshFence: fence, targets: Array(shuffled))
-        // 20 - 4 host - 1 beacon - 1 fence = 14 environments.
+        let plan = RegionBudget().plan(monitored: hostRegions(6), refreshFence: fence, targets: Array(shuffled))
+        // 20 - 6 host - 1 beacon - 1 fence - 5 headroom = 7 environments.
         let kept = plan.regions.compactMap(\.environmentId)
-        #expect(kept == (0..<14).map { "env-\($0)" })
-        #expect(plan.droppedEnvironmentIds == (14..<25).map { "env-\($0)" })
-        #expect(plan.regions.dropFirst().map(\.identifier) == kept.map { "bearound.visit.\($0)" })
+        #expect(kept == (0..<7).map { "env-\($0)" })
+        #expect(plan.droppedEnvironmentIds == (7..<25).map { "env-\($0)" })
+        #expect(plan.regions.dropFirst().map(\.identifier) == kept.map { "bearound.visit.env.\($0)" })
+    }
+
+    @Test("Environment identifiers cannot collide with the refresh fence")
+    func identifiersAreCollisionProof() {
+        #expect(RegionBudget.environmentIdentifier("refresh") == "bearound.visit.env.refresh")
+        #expect(RegionBudget.environmentIdentifier("refresh") != RegionBudget.refreshFenceIdentifier)
+        #expect(RegionBudget.environmentId(fromIdentifier: "bearound.visit.env.refresh") == "refresh")
+        #expect(RegionBudget.environmentId(fromIdentifier: RegionBudget.refreshFenceIdentifier) == nil)
+        #expect(RegionBudget.environmentId(fromIdentifier: "bearound.visit.env-legacy") == nil)
+        #expect(RegionBudget.environmentId(fromIdentifier: "host.region") == nil)
+        // Legacy-format identifiers are still SDK-owned, so a re-plan or a teardown stops them.
+        #expect(RegionBudget.isSDKVisitIdentifier("bearound.visit.env-legacy"))
     }
 
     @Test("Refresh fence is always kept ahead of every environment")
     func refreshFenceAlwaysKept() {
-        for hostCount in 0...18 {
+        for hostCount in 0...13 {
             let plan = RegionBudget().plan(monitored: hostRegions(hostCount), refreshFence: fence, targets: targets(40))
             #expect(plan.refreshFenceKept)
             #expect(plan.regions.first == RegionBudget.PlannedRegion(
@@ -83,21 +105,24 @@ struct RegionBudgetTests {
                 environmentId: nil
             ))
         }
-        // One slot left: it goes to the fence, not to the nearest environment.
-        let tight = RegionBudget().plan(monitored: hostRegions(18), refreshFence: fence, targets: targets(5))
+        // One slot left above the headroom: it goes to the fence, not to the nearest environment.
+        let tight = RegionBudget().plan(monitored: hostRegions(13), refreshFence: fence, targets: targets(5))
         #expect(tight.regions.map(\.identifier) == ["bearound.visit.refresh"])
         #expect(tight.droppedEnvironmentIds.count == 5)
+        // No slot left above the headroom: nothing at all, not even the fence.
+        let full = RegionBudget().plan(monitored: hostRegions(14), refreshFence: fence, targets: targets(5))
+        #expect(full.regions.isEmpty)
     }
 
     @Test("Host regions are never stopped, only stale SDK visit regions are")
     func hostRegionsNeverTouched() {
         let monitored = hostRegions(3) + [
             RegionBudget.MonitoredRegion(identifier: "BeAroundRegion"),
-            RegionBudget.MonitoredRegion(identifier: "bearound.visit.env-old"),
-            RegionBudget.MonitoredRegion(identifier: "bearound.visit.env-0"),
+            RegionBudget.MonitoredRegion(identifier: "bearound.visit.env.env-old"),
+            RegionBudget.MonitoredRegion(identifier: "bearound.visit.env.env-0"),
         ]
         let plan = RegionBudget().plan(monitored: monitored, refreshFence: fence, targets: targets(3))
-        #expect(plan.identifiersToStop == ["bearound.visit.env-old"])
+        #expect(plan.identifiersToStop == ["bearound.visit.env.env-old"])
         let touched = Set(plan.identifiersToStop + plan.regionsToStart.map(\.identifier))
         #expect(touched.allSatisfy { $0.hasPrefix("bearound.visit.") })
         #expect(plan.hostRegionCount == 3)
@@ -107,12 +132,12 @@ struct RegionBudgetTests {
     func unchangedRegionsNotRestarted() {
         let first = targets(2)[0]
         let monitored = [
-            RegionBudget.MonitoredRegion(identifier: "bearound.visit.env-0", center: first.center, radiusMeters: 100),
+            RegionBudget.MonitoredRegion(identifier: "bearound.visit.env.env-0", center: first.center, radiusMeters: 100),
             RegionBudget.MonitoredRegion(identifier: "bearound.visit.refresh", center: origin, radiusMeters: 1000),
         ]
         let plan = RegionBudget().plan(monitored: monitored, refreshFence: fence, targets: targets(2))
         // The fence moved radius, env-1 is new, env-0 is unchanged.
-        #expect(plan.regionsToStart.map(\.identifier) == ["bearound.visit.refresh", "bearound.visit.env-1"])
+        #expect(plan.regionsToStart.map(\.identifier) == ["bearound.visit.refresh", "bearound.visit.env.env-1"])
         #expect(plan.identifiersToStop.isEmpty)
     }
 }
