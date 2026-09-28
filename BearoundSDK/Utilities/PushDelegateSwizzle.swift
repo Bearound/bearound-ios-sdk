@@ -128,12 +128,16 @@ enum PushDelegateSwizzle {
             }
         let newIMP = imp_implementationWithBlock(block)
 
-        if let existingMethod {
+        // Add on the class itself first. This succeeds when the class does not define the
+        // method (absent, or only inherited): the interceptor then calls the inherited IMP,
+        // and the superclass stays untouched. Only a method the class defines itself gets
+        // its implementation replaced; `method_setImplementation` on an inherited Method
+        // would rewrite the superclass for every sibling subclass.
+        // Objective-C signature: void (id, SEL, UNUserNotificationCenter*,
+        // UNNotificationResponse*, void (^)(void))
+        let types = existingMethod.flatMap { method_getTypeEncoding($0) }.map { String(cString: $0) } ?? "v@:@@@?"
+        if !class_addMethod(delegateClass, didReceiveResponseSelector, newIMP, types), let existingMethod {
             method_setImplementation(existingMethod, newIMP)
-        } else {
-            // Objective-C method signature: void (id, SEL, UNUserNotificationCenter*,
-            // UNNotificationResponse*, void (^)(void))
-            class_addMethod(delegateClass, didReceiveResponseSelector, newIMP, "v@:@@@?")
         }
     }
 

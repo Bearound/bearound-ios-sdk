@@ -270,6 +270,23 @@ private func invokeDidReceive(
     }
 }
 
+/// Base class defines the method; the subclass only inherits it. Patching the subclass
+/// must not rewrite the base class (other subclasses of it would change behavior too).
+@objc private class InheritingBaseDelegate: NSObject, UNUserNotificationCenterDelegate {
+    var baseCalled = false
+
+    func userNotificationCenter(
+        _ center: UNUserNotificationCenter,
+        didReceive response: UNNotificationResponse,
+        withCompletionHandler completionHandler: @escaping () -> Void
+    ) {
+        baseCalled = true
+        completionHandler()
+    }
+}
+
+@objc private class InheritingChildDelegate: InheritingBaseDelegate {}
+
 @Suite("PushDelegateSwizzle")
 struct PushDelegateSwizzleTests {
 
@@ -323,5 +340,26 @@ struct PushDelegateSwizzleTests {
         #expect(delegate.originalCalled)
         #expect(completionCalled)
         #expect((delegate.lastUserInfo?["bearound"] as? [String: Any]) == nil)
+    }
+
+    @Test("Patching a subclass that only inherits the method leaves the base class untouched")
+    func inheritedMethodPatchesSubclassOnly() {
+        let baseIMPBefore = method_getImplementation(
+            class_getInstanceMethod(InheritingBaseDelegate.self, didReceiveResponseSelector)!
+        )
+        PushDelegateSwizzle.patchIfNeededForTesting(delegateClass: InheritingChildDelegate.self)
+        let baseIMPAfter = method_getImplementation(
+            class_getInstanceMethod(InheritingBaseDelegate.self, didReceiveResponseSelector)!
+        )
+        #expect(baseIMPBefore == baseIMPAfter)
+
+        let child = InheritingChildDelegate()
+        var completionCalled = false
+        let response = makeNotificationResponse(userInfo: ["bearound": ["sid": "swizzle-inherited"]])
+        invokeDidReceive(on: child, response: response) {
+            completionCalled = true
+        }
+        #expect(child.baseCalled)
+        #expect(completionCalled)
     }
 }
