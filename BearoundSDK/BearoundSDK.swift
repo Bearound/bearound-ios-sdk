@@ -836,7 +836,6 @@ public class BeAroundSDK {
         periodicReconciliationEnabled: Bool = true,
         periodicReconciliationInterval: TimeInterval = PeriodicReconciliationDefaults.interval,
         periodicScanDuration: TimeInterval = PeriodicReconciliationDefaults.scanDuration,
-        requestTrackingOnStart: Bool = true,
         presenceHeartbeatInterval: TimeInterval = PresenceHeartbeatDefaults.interval,
         collectAdvertisingId: Bool = true,
         collectLocation: Bool = true,
@@ -850,7 +849,6 @@ public class BeAroundSDK {
             periodicReconciliationEnabled: periodicReconciliationEnabled,
             periodicReconciliationInterval: periodicReconciliationInterval,
             periodicScanDuration: periodicScanDuration,
-            requestTrackingOnStart: requestTrackingOnStart,
             presenceHeartbeatInterval: presenceHeartbeatInterval,
             collectAdvertisingId: collectAdvertisingId,
             collectLocation: collectLocation,
@@ -858,8 +856,8 @@ public class BeAroundSDK {
         )
 
         configuration = config
-        // Applied FIRST: everything below (telemetry install, the ATT prompt, an in-flight
-        // sync) can reach a collector, and a collector that runs before the policy lands
+        // Applied FIRST: everything below (telemetry install, an in-flight sync) can reach a
+        // collector, and a collector that runs before the policy lands
         // would read a signal the host just turned off.
         DataCollectionPolicyStore.apply(config.dataCollectionPolicy)
         apiClient = APIClient(configuration: config)
@@ -899,18 +897,47 @@ public class BeAroundSDK {
             sdkVersion: Self.version
         )
 
-        // App Tracking Transparency, raised by the SDK so the IDFA arrives without the host
-        // wiring up a call. Waits for the app to be on screen, and stays silent entirely
-        // unless the host declared NSUserTrackingUsageDescription.
-        // `collectAdvertisingId: false` means the identifier is not ours to ask for — raising
-        // the prompt would spend the host's one-shot ATT dialog on data the SDK will never read.
-        if config.requestTrackingOnStart && config.collectAdvertisingId {
-            AdvertisingIdCollector.requestAuthorizationOnStart()
-        }
+        // No App Tracking Transparency prompt here: the host app decides when (and whether)
+        // to ask, via requestTrackingAuthorization(). The SDK only reads the outcome.
 
         if isScanning {
             startSyncTimer()
         }
+    }
+
+    /// Kept so integrations that still pass `requestTrackingOnStart` keep compiling.
+    ///
+    /// The flag has no effect: the SDK no longer raises the App Tracking Transparency prompt
+    /// by itself, whatever its value. Call ``requestTrackingAuthorization(completion:)`` at
+    /// the moment your app chooses.
+    @available(*, deprecated, message: "The SDK never shows the ATT prompt by itself; drop requestTrackingOnStart and call requestTrackingAuthorization() when your app is ready.")
+    public func configure(
+        businessToken: String,
+        scanPrecision: ScanPrecision = .high,
+        maxQueuedPayloads: MaxQueuedPayloads = .medium,
+        technology: String = "ios-native",
+        periodicReconciliationEnabled: Bool = true,
+        periodicReconciliationInterval: TimeInterval = PeriodicReconciliationDefaults.interval,
+        periodicScanDuration: TimeInterval = PeriodicReconciliationDefaults.scanDuration,
+        requestTrackingOnStart: Bool,
+        presenceHeartbeatInterval: TimeInterval = PresenceHeartbeatDefaults.interval,
+        collectAdvertisingId: Bool = true,
+        collectLocation: Bool = true,
+        collectWifi: Bool = true
+    ) {
+        configure(
+            businessToken: businessToken,
+            scanPrecision: scanPrecision,
+            maxQueuedPayloads: maxQueuedPayloads,
+            technology: technology,
+            periodicReconciliationEnabled: periodicReconciliationEnabled,
+            periodicReconciliationInterval: periodicReconciliationInterval,
+            periodicScanDuration: periodicScanDuration,
+            presenceHeartbeatInterval: presenceHeartbeatInterval,
+            collectAdvertisingId: collectAdvertisingId,
+            collectLocation: collectLocation,
+            collectWifi: collectWifi
+        )
     }
 
     /// Enables or disables first-party SDK error telemetry (crash/error reports sent to
@@ -1137,10 +1164,11 @@ public class BeAroundSDK {
     /// Shows the App Tracking Transparency prompt and, once authorised, starts reporting the
     /// IDFA with every payload.
     ///
-    /// **You usually do not need to call this.** The SDK raises the prompt by itself shortly
-    /// after `configure()`. Call it only when you opted out with
-    /// `configure(requestTrackingOnStart: false)` to control the moment — for example, after
-    /// your own screen explaining why you are asking.
+    /// **The SDK never shows this prompt on its own.** Your app owns the moment: call this
+    /// when it makes sense in your flow (for example, after your own screen explaining why you
+    /// are asking). Until tracking is authorised, payloads carry no IDFA. If your app already
+    /// asks through `ATTrackingManager` directly, you do not need this method: the SDK reads
+    /// the resulting status either way.
     ///
     /// Requires `NSUserTrackingUsageDescription` in your `Info.plist`; without that key iOS
     /// does not show the dialog and the status stays `notDetermined` forever. Only call it

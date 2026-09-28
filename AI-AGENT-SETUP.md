@@ -110,20 +110,19 @@ Start; the steps below refine it).
    before requesting .always purely for Wi-Fi — it is a real prompt with a real refusal
    rate.
    - NSUserTrackingUsageDescription — add it ONLY if I ask for the advertising
-     identifier (IDFA). ASK ME before adding it: the key alone makes the SDK show the
-     App Tracking Transparency prompt, and prompting for tracking obliges the app to
-     declare Tracking in its App Store privacy label — so it is my call, not yours.
-     If I say yes, adding the key is ALL that is needed: the SDK raises the prompt by
-     itself once the app is on screen after configure(). Do NOT write a
-     requestTrackingAuthorization call — it is only for apps that opt out via
-     configure(requestTrackingOnStart: false) to control the timing themselves.
-     Without the key nothing is shown and no IDFA is collected.
+     identifier (IDFA). ASK ME before adding it: prompting for tracking obliges the app
+     to declare Tracking in its App Store privacy label, so it is my call, not yours.
+     The SDK NEVER shows the App Tracking Transparency prompt by itself. If I say yes,
+     add the key AND ask me where in the app flow the prompt belongs, then call
+     BeAroundSDK.shared.requestTrackingAuthorization() there, with the app in the
+     foreground. Do NOT pass requestTrackingOnStart to configure(): it is deprecated and
+     ignored. Without the key and the call nothing is shown and no IDFA is collected.
      Data-collection switches — leave them OUT of configure(). The defaults collect
      everything (collectAdvertisingId, collectLocation and collectWifi are all true)
      and that is what you ship. Do NOT ask me what to collect and do NOT write these
      arguments. Only if I tell you, unprompted, to stop sending one of them, pass
-     false for that ONE switch: collectAdvertisingId: false also stops the ATT prompt
-     entirely; collectLocation: false drops the device's coordinates from the payload
+     false for that ONE switch: collectAdvertisingId: false also makes
+     requestTrackingAuthorization() skip the ATT prompt; collectLocation: false drops the device's coordinates from the payload
      (beacon detection is UNAFFECTED — region monitoring is the wake-up mechanism,
      not a data source); collectWifi: false drops the access points.
 

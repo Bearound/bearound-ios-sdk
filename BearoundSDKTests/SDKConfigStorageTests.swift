@@ -165,31 +165,17 @@ struct SDKConfigStorageTests {
         #expect(loaded?.periodicScanDuration == PeriodicReconciliationDefaults.scanDuration)
     }
 
-    @Test("Tracking opt-out survives a background relaunch")
-    func persistRequestTrackingOnStart() {
-        // The opt-out has to be persisted, not just held in memory: iOS relaunches the app
-        // in the background from the stored config, and an opt-out that did not survive
-        // would put the prompt back on screen the next time the user opened the app.
-        SDKConfigStorage.save(
-            SDKConfiguration(businessToken: "opt-out-token", requestTrackingOnStart: false)
-        )
-        #expect(SDKConfigStorage.load()?.requestTrackingOnStart == false)
+    @Test("Saving drops the tracking flag persisted by 3.9.x")
+    func saveClearsLegacyTrackingFlag() {
+        // 3.9.x persisted `request_tracking_on_start`. The SDK no longer raises the ATT
+        // prompt, so the value is dead; the next save must not leave it behind.
+        let defaults = UserDefaults(suiteName: "com.bearound.sdk.config")
+        defaults?.set(false, forKey: "request_tracking_on_start")
 
-        SDKConfigStorage.save(
-            SDKConfiguration(businessToken: "opt-in-token", requestTrackingOnStart: true)
-        )
-        #expect(SDKConfigStorage.load()?.requestTrackingOnStart == true)
-    }
+        SDKConfigStorage.save(SDKConfiguration(businessToken: "upgraded-token"))
 
-    @Test("Legacy stored config without the tracking flag restores it enabled")
-    func legacyConfigRestoresTrackingDefault() {
-        SDKConfigStorage.save(
-            SDKConfiguration(businessToken: "legacy-token", requestTrackingOnStart: false)
-        )
-        UserDefaults(suiteName: "com.bearound.sdk.config")?
-            .removeObject(forKey: "request_tracking_on_start")
-
-        #expect(SDKConfigStorage.load()?.requestTrackingOnStart == true)
+        #expect(defaults?.object(forKey: "request_tracking_on_start") == nil)
+        #expect(SDKConfigStorage.load()?.businessToken == "upgraded-token")
     }
 
     // The opt-out has to survive a background relaunch: iOS revives the process, the SDK

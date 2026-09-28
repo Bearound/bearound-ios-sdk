@@ -204,54 +204,51 @@ Android.
 The SDK can report the **IDFA**, the identifier iOS provides for advertising attribution,
 which lets a visit be tied to the same person across apps.
 
-**One step: add the usage description** to your `Info.plist`.
+**The SDK never shows the App Tracking Transparency prompt by itself.** When (and whether)
+to ask is your app's decision. Two steps:
+
+1. Add the usage description to your `Info.plist`:
 
 ```xml
 <key>NSUserTrackingUsageDescription</key>
 <string>We use this identifier to measure visits and show you more relevant offers.</string>
 ```
 
-That key is the whole opt-in. **With it present, the SDK raises the App Tracking
-Transparency prompt itself**, once, as soon as the app is on screen after `configure()` —
-you do not have to call anything. **Without it, nothing happens**: no dialog, no IDFA in
-the payload, every other feature unchanged. The SDK never prompts for an app that has not
-declared a tracking purpose.
-
-The prompt waits for the app to be `active`, because iOS silently discards the request in
-any other state — so configuring inside `didFinishLaunching`, or being relaunched in the
-background, does not burn the one chance to ask.
-
-**To control the moment yourself** — to show your own explainer first, or to ask deeper into
-onboarding — opt out and call it when you are ready:
+2. Ask at the moment your flow chooses, with the app in the foreground (iOS silently ignores
+   the request in any other state):
 
 ```swift
-BeAroundSDK.shared.configure(businessToken: "…", requestTrackingOnStart: false)
-
-// later, with the app in the foreground
 BeAroundSDK.shared.requestTrackingAuthorization { status in
     // "authorized" | "denied" | "restricted" | "notDetermined" | "unavailable" (iOS < 14)
     print("ATT: \(status)")
 }
 ```
 
+If your app already asks through `ATTrackingManager.requestTrackingAuthorization` directly,
+skip step 2: the SDK reads the resulting status either way. Until tracking is authorised,
+payloads carry no IDFA; every other feature is unchanged.
+
 Safe to call on every launch: iOS shows the dialog only once per install, and later calls
 return the stored decision with no UI. To read the state without prompting, use
-`BeAroundSDK.trackingAuthorizationStatus()`. The opt-out is remembered across background
-relaunches.
+`BeAroundSDK.trackingAuthorizationStatus()`.
+
+> **Upgrading from 3.9.x**: earlier versions raised the prompt automatically after
+> `configure()` whenever the key was present. That no longer happens, so an app that relied
+> on it must now call `requestTrackingAuthorization()` itself. `requestTrackingOnStart` is
+> deprecated and ignored.
 
 The payload carries `device.permissions.advertisingId` only while authorised, plus
 `trackingAuthorization` always — so a refusal is distinguishable from a prompt that was never
 shown.
 
-> **App Store**: adding the key means the prompt will appear, and prompting for tracking
-> obliges you to declare it in your **privacy label** (App Privacy → Tracking). Add the key
-> only when you intend to collect the IDFA.
+> **App Store**: prompting for tracking obliges you to declare it in your **privacy label**
+> (App Privacy → Tracking). Add the key and the call only when you intend to collect the IDFA.
 
 If your app collects the IDFA for its own purposes but you do not want it sent to Bearound,
 pass `collectAdvertisingId: false` — see
-[Controlling what the SDK collects](#controlling-what-the-sdk-collects). That is stronger
-than `requestTrackingOnStart: false`: it stops the prompt *and* keeps the identifier out of
-every payload, even if your app authorises tracking on its own.
+[Controlling what the SDK collects](#controlling-what-the-sdk-collects). It keeps the
+identifier out of every payload even if your app authorises tracking on its own, and turns
+`requestTrackingAuthorization()` into a call that only reports the current status.
 
 For background mode support, add:
 
@@ -671,7 +668,7 @@ read from the platform in the first place.
 
 | Switch | What disappears from the payload | Also |
 |--------|----------------------------------|------|
-| `collectAdvertisingId: false` | `device.permissions.advertisingId`, `device.permissions.trackingAuthorization` | The SDK never raises the App Tracking Transparency prompt — not on start, and `requestTrackingAuthorization()` becomes a no-op that just reports the current status |
+| `collectAdvertisingId: false` | `device.permissions.advertisingId`, `device.permissions.trackingAuthorization` | `requestTrackingAuthorization()` does not show the App Tracking Transparency prompt; it only reports the current status |
 | `collectLocation: false` | the top-level `location` block | `device.permissions.location` / `locationAccuracy` **stay** — they report the authorisation the user granted, not where they are |
 | `collectWifi: false` | the top-level `wifis` array, `device.network.apId`, `device.network.wifiSSID` | No Wi-Fi read is issued at all |
 

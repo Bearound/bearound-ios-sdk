@@ -23,7 +23,9 @@ public class SDKConfigStorage {
     private static let keyPeriodicEnabled = "periodic_reconciliation_enabled"
     private static let keyPeriodicInterval = "periodic_reconciliation_interval"
     private static let keyPeriodicScanDuration = "periodic_scan_duration"
-    private static let keyRequestTrackingOnStart = "request_tracking_on_start"
+    /// No longer written: the SDK stopped raising the ATT prompt itself. Only removed, so
+    /// installs upgraded from 3.9.x do not keep a dead value around.
+    private static let legacyKeyRequestTrackingOnStart = "request_tracking_on_start"
     private static let keyCollectAdvertisingId = "collect_advertising_id"
     private static let keyCollectLocation = "collect_location"
     private static let keyCollectWifi = "collect_wifi"
@@ -46,7 +48,7 @@ public class SDKConfigStorage {
         defaults.set(config.periodicReconciliationEnabled, forKey: keyPeriodicEnabled)
         defaults.set(config.periodicReconciliationInterval, forKey: keyPeriodicInterval)
         defaults.set(config.periodicScanDuration, forKey: keyPeriodicScanDuration)
-        defaults.set(config.requestTrackingOnStart, forKey: keyRequestTrackingOnStart)
+        defaults.removeObject(forKey: legacyKeyRequestTrackingOnStart)
         defaults.set(config.collectAdvertisingId, forKey: keyCollectAdvertisingId)
         defaults.set(config.collectLocation, forKey: keyCollectLocation)
         defaults.set(config.collectWifi, forKey: keyCollectWifi)
@@ -91,11 +93,6 @@ public class SDKConfigStorage {
         let periodicScanDuration = defaults.object(forKey: keyPeriodicScanDuration) as? TimeInterval
             ?? PeriodicReconciliationDefaults.scanDuration
 
-        // Backward-compatible: configs persisted before the flag existed restore the
-        // default (ON). An app that opted out keeps its choice across background
-        // relaunches — otherwise the prompt would reappear the next time iOS revives us.
-        let requestTrackingOnStart = defaults.object(forKey: keyRequestTrackingOnStart) as? Bool ?? true
-
         // Same backward-compatible shape: a config persisted before these switches existed
         // restores everything ON, which is what that install was already doing. An app that
         // opted out keeps the opt-out across every background relaunch — the alternative is a
@@ -114,7 +111,6 @@ public class SDKConfigStorage {
             periodicReconciliationEnabled: periodicEnabled,
             periodicReconciliationInterval: periodicInterval,
             periodicScanDuration: periodicScanDuration,
-            requestTrackingOnStart: requestTrackingOnStart,
             collectAdvertisingId: collectAdvertisingId,
             collectLocation: collectLocation,
             collectWifi: collectWifi
@@ -128,7 +124,7 @@ public class SDKConfigStorage {
         defaults.removeObject(forKey: keyScanPrecision)
         defaults.removeObject(forKey: keyMaxQueuedPayloads)
         defaults.removeObject(forKey: keyTechnology)
-        defaults.removeObject(forKey: keyRequestTrackingOnStart)
+        defaults.removeObject(forKey: legacyKeyRequestTrackingOnStart)
         defaults.removeObject(forKey: keyCollectAdvertisingId)
         defaults.removeObject(forKey: keyCollectLocation)
         defaults.removeObject(forKey: keyCollectWifi)
