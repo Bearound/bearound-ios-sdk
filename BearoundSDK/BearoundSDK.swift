@@ -905,7 +905,7 @@ public class BeAroundSDK {
         // so clients get push targeting without writing any token-forwarding code.
         PushTokenAutoCapture.enableIfPossible()
 
-        // Reports push opens (taps) via the UN delegate swizzle (REQ-019/REQ-020).
+        // Reports push opens (taps) via the UN delegate swizzle.
         PushDelegateSwizzle.enableIfPossible()
 
         // First-party error telemetry — chains the uncaught-exception handler (idempotent) and
@@ -2353,7 +2353,7 @@ public class BeAroundSDK {
         }
     }
 
-    // MARK: - Push receipt / open measurement (REQ-018...REQ-021)
+    // MARK: - Push receipt / open measurement
 
     /// Records a push `received` event for a Bearound notification's `userInfo` (the
     /// `bearound` marker with a `sid`). Called automatically by the swizzled

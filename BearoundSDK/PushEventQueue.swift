@@ -2,10 +2,10 @@
 //  PushEventQueue.swift
 //  BearoundSDK
 //
-//  Persisted queue for push receipt/open hits (REQ-025, REQ-026). Separate from
+//  Persisted queue for push receipt/open hits. Separate from
 //  `OfflineBatchStorage` (which only ever carries beacon batches). Each entry is one
 //  tracker hit, `GET {tr}/v1/push:{received|open}?d={d}`, where `d` and `tr` come from
-//  the push's `bearound` marker (spec push-delivery-open-measurement, design section 13).
+//  the push's `bearound` marker.
 //  The hit carries no credential: `d` is the delivery context the API sealed for this
 //  device, so the queue does not need the business token and can flush at any time.
 //
@@ -84,7 +84,7 @@ enum PushMarker {
     }
 }
 
-/// Delivery outcome for one tracker hit (REQ-026).
+/// Delivery outcome for one tracker hit.
 enum PushEventDeliveryOutcome {
     /// 2xx or any 4xx other than 429: drop the entry, do not retry.
     case drain
@@ -94,7 +94,7 @@ enum PushEventDeliveryOutcome {
 
 /// Isolated transport used by `PushEventQueue`. Abstracted so tests can inject a fake
 /// without a real network round trip (parity with the "test doubles for each response
-/// class" requirement, REQ-026).
+/// class" requirement).
 protocol PushEventTransport {
     func send(request: URLRequest, completion: @escaping (PushEventDeliveryOutcome) -> Void)
 }
@@ -129,7 +129,7 @@ final class URLSessionPushEventTransport: PushEventTransport {
             case 429:
                 completion(.keep)
             case 400..<500:
-                // Any 4xx other than 429: drop, do not retry (REQ-026).
+                // Any 4xx other than 429: drop, do not retry.
                 completion(.drain)
             default:
                 // 5xx and anything else unexpected: keep for retry.
@@ -148,7 +148,7 @@ final class PushEventQueue {
 
     static let shared = PushEventQueue()
 
-    // MARK: - Configuration (REQ-025)
+    // MARK: - Configuration
 
     private static let maxEntries = 200
     private static let maxAge: TimeInterval = 7 * 24 * 60 * 60
@@ -193,7 +193,7 @@ final class PushEventQueue {
         self.suiteName = suiteName
     }
 
-    // MARK: - Enqueue (REQ-018, REQ-019)
+    // MARK: - Enqueue
 
     /// Enqueues a tracker hit and attempts immediate delivery. No-op if `(sid, type)`
     /// was already enqueued (or drained) in this process.
@@ -220,7 +220,7 @@ final class PushEventQueue {
         flush()
     }
 
-    // MARK: - Eviction (REQ-025)
+    // MARK: - Eviction
 
     /// Applies the 7-day age cap, then the 200-entry cap (oldest dropped first).
     private static func evictStale(_ entries: [PushEventEntry]) -> [PushEventEntry] {
@@ -232,7 +232,7 @@ final class PushEventQueue {
         return result
     }
 
-    // MARK: - Flush / transport (REQ-026)
+    // MARK: - Flush / transport
 
     /// Attempts to deliver up to 50 persisted hits, one request each.
     /// Best-effort: never throws, never blocks the caller (network calls are async).

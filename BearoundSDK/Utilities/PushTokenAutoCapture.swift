@@ -89,7 +89,7 @@ enum PushTokenAutoCapture {
                 NSLog("[BeAroundSDK] Bearound silent push received, refreshing scan + sync")
                 DiagnosticsStore.shared.recordPushReceived()
 
-                // REQ-018: report receipt for measurable (sid-bearing) sends. Sync/silent
+                // report receipt for measurable (sid-bearing) sends. Sync/silent
                 // pushes with no sid are not reported, matching D2/D9 scope.
                 if let marker = PushMarker.extract(from: (userInfo as? [AnyHashable: Any]) ?? [:]) {
                     PushEventQueue.shared.enqueue(marker: marker, type: .received)
