@@ -26,7 +26,6 @@ private typealias DidReceiveResponseIMP = @convention(c)
 
 enum PushDelegateSwizzle {
     private static var installed = false
-    private static var originalSetDelegateIMP: SetDelegateIMP?
 
     /// Classes already patched for `didReceive:withCompletionHandler:`, so a class handed to
     /// `setDelegate:` more than once (or shared across instances) is only patched once.
@@ -51,18 +50,22 @@ enum PushDelegateSwizzle {
 
         installed = true
 
-        DispatchQueue.main.async {
+        // Synchronous when already on the main thread (didFinishLaunching,
+        // configure): the tap that cold-launches the app is delivered right after
+        // launch finishes, so an async hop could miss it.
+        let install = {
             let center = UNUserNotificationCenter.current()
             installSetDelegateSwizzle(on: type(of: center))
 
             if let existing = center.delegate {
-                patchIfNeeded(delegateClass: type(of: existing))
+                patchIfNeeded(delegate: existing)
             } else {
                 let fallback = BearoundNotificationDelegate.shared
                 center.delegate = fallback
                 NSLog("[BeAroundSDK] No UNUserNotificationCenterDelegate set, installed a minimal SDK delegate")
             }
         }
+        if Thread.isMainThread { install() } else { DispatchQueue.main.async(execute: install) }
     }
 
     // MARK: - setDelegate: swizzle
@@ -71,14 +74,16 @@ enum PushDelegateSwizzle {
         let selector = #selector(setter: UNUserNotificationCenter.delegate)
         guard let method = class_getInstanceMethod(cls, selector) else { return }
 
+        // Capture the original BEFORE the swap: a setDelegate: on another thread
+        // right after the swap must find it, or the host's delegate is dropped.
+        let original = unsafeBitCast(method_getImplementation(method), to: SetDelegateIMP.self)
         let block: @convention(block) (Any, AnyObject?) -> Void = { receiver, newDelegate in
             if let newDelegate {
-                patchIfNeeded(delegateClass: type(of: newDelegate))
+                patchIfNeeded(delegate: newDelegate)
             }
-            originalSetDelegateIMP?(receiver, selector, newDelegate)
+            original(receiver, selector, newDelegate)
         }
-        let newIMP = imp_implementationWithBlock(block)
-        originalSetDelegateIMP = unsafeBitCast(method_setImplementation(method, newIMP), to: SetDelegateIMP.self)
+        method_setImplementation(method, imp_implementationWithBlock(block))
     }
 
     // MARK: - Per-class didReceive:withCompletionHandler: patch
@@ -87,6 +92,21 @@ enum PushDelegateSwizzle {
     /// once per class. Reports `opened` (+ `received`) for Bearound responses, then always
     /// calls through: the original implementation if the class had one, or the completion
     /// handler otherwise.
+    /// Patches the delegate's class. Skipped when the class has no implementation of
+    /// its own (not even inherited) but the instance still answers the selector:
+    /// that is a forwarding delegate (NSProxy, `forwardingTarget(for:)`, multicast),
+    /// and adding a method would shadow the forward and swallow every tap of the
+    /// host. Those hosts report opens with `handleNotificationResponse(_:)`.
+    private static func patchIfNeeded(delegate: AnyObject) {
+        let delegateClass: AnyClass = object_getClass(delegate) ?? type(of: delegate)
+        if class_getInstanceMethod(delegateClass, didReceiveResponseSelector) == nil,
+           delegate.responds(to: didReceiveResponseSelector) {
+            NSLog("[BeAroundSDK] UN delegate forwards didReceive, not patched: call handleNotificationResponse(_:) to report opens")
+            return
+        }
+        patchIfNeeded(delegateClass: delegateClass)
+    }
+
     private static func patchIfNeeded(delegateClass: AnyClass) {
         let key = ObjectIdentifier(delegateClass)
 
@@ -157,24 +177,22 @@ enum PushDelegateSwizzle {
     static func patchIfNeededForTesting(delegateClass: AnyClass) {
         patchIfNeeded(delegateClass: delegateClass)
     }
+
+    /// The instance-aware entry point, as `setDelegate:` uses it. Test-only.
+    static func patchIfNeededForTesting(delegate: AnyObject) {
+        patchIfNeeded(delegate: delegate)
+    }
 }
 
 /// Minimal SDK-owned `UNUserNotificationCenterDelegate` installed only when the host has
-/// none at SDK install time (REQ-020). `willPresent` returns `[]` for non-Bearound
-/// notifications, preserving default iOS foreground behavior (no banner is shown by
-/// default without a delegate either, so this matches the no-delegate baseline).
+/// none at SDK install time (REQ-020). It deliberately does NOT implement `willPresent`:
+/// a delegate without it presents like no delegate at all (no foreground banner), and
+/// libraries that chain to a delegate they find (firebase_messaging, for one) fall back
+/// to their own presentation options instead of inheriting an empty set from us.
 final class BearoundNotificationDelegate: NSObject, UNUserNotificationCenterDelegate {
     static let shared = BearoundNotificationDelegate()
 
     private override init() {}
-
-    func userNotificationCenter(
-        _ center: UNUserNotificationCenter,
-        willPresent notification: UNNotification,
-        withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void
-    ) {
-        completionHandler([])
-    }
 
     func userNotificationCenter(
         _ center: UNUserNotificationCenter,

@@ -47,6 +47,8 @@ struct PushEventEntry: Codable, Equatable {
     var attempt: Int
     let d: String
     let tr: String
+    /// Not before this instant after a failed attempt (backoff). Nil = due now.
+    var nextAttemptAt: Date? = nil
 }
 
 /// Parses the `bearound` marker out of a remote-notification `userInfo` dictionary.
@@ -169,6 +171,15 @@ final class PushEventQueue {
     /// even across a flush that already drained the persisted entry.
     private var seen = Set<String>()
 
+    /// Keys `(sid|type)` with a request on the wire. `flush()` skips them, so two
+    /// flushes close together (enqueue of `opened` then `received`, or configure)
+    /// never send the same hit twice.
+    private var inFlight = Set<String>()
+
+    /// At most one pending backoff flush at any time: failed entries carry their
+    /// own `nextAttemptAt`, and one timer wakes up for the earliest of them.
+    private var retryScheduled = false
+
     /// Injectable so tests can fake each response class (202/4xx/429/5xx/transport error)
     /// without a real network call. Production uses `URLSessionPushEventTransport`.
     var transport: PushEventTransport
@@ -226,11 +237,19 @@ final class PushEventQueue {
     /// Attempts to deliver up to 50 persisted hits, one request each.
     /// Best-effort: never throws, never blocks the caller (network calls are async).
     func flush() {
+        let now = Date()
         lock.lock()
-        let entries = loadEntries()
+        // Age and cap apply on every flush too, not only on enqueue: a relaunch
+        // must not send an entry older than 7 days.
+        let entries = PushEventQueue.evictStale(loadEntries())
+        saveEntries(entries)
+        let due = entries
+            .filter { !inFlight.contains(PushEventQueue.key($0)) && ($0.nextAttemptAt ?? .distantPast) <= now }
+            .prefix(PushEventQueue.maxBatchSize)
+        due.forEach { inFlight.insert(PushEventQueue.key($0)) }
         lock.unlock()
 
-        for entry in entries.prefix(PushEventQueue.maxBatchSize) {
+        for entry in due {
             send(entry)
         }
     }
@@ -259,25 +278,41 @@ final class PushEventQueue {
         let drainedKeys = Set(batch.map { "\($0.sid)|\($0.type.rawValue)" })
         entries.removeAll { drainedKeys.contains("\($0.sid)|\($0.type.rawValue)") }
         saveEntries(entries)
+        batch.forEach { inFlight.remove(PushEventQueue.key($0)) }
         lock.unlock()
     }
 
     private func keepAndBackoff(_ batch: [PushEventEntry]) {
         lock.lock()
         var entries = loadEntries()
+        var earliest: Date?
         for sent in batch {
+            inFlight.remove(PushEventQueue.key(sent))
             if let idx = entries.firstIndex(where: { $0.sid == sent.sid && $0.type == sent.type }) {
                 entries[idx].attempt += 1
+                let delay = min(PushEventQueue.baseRetryDelay * pow(2, Double(entries[idx].attempt - 1)), 300)
+                let due = Date().addingTimeInterval(delay)
+                entries[idx].nextAttemptAt = due
+                earliest = min(earliest ?? due, due)
             }
         }
         saveEntries(entries)
-        let nextAttempt = batch.map { $0.attempt + 1 }.max() ?? 1
+        let shouldSchedule = earliest != nil && !retryScheduled
+        if shouldSchedule { retryScheduled = true }
         lock.unlock()
 
-        let delay = min(PushEventQueue.baseRetryDelay * pow(2, Double(nextAttempt - 1)), 300)
-        DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
-            self?.flush()
+        guard shouldSchedule, let earliest else { return }
+        DispatchQueue.main.asyncAfter(deadline: .now() + max(earliest.timeIntervalSinceNow, 0)) { [weak self] in
+            guard let self else { return }
+            self.lock.lock()
+            self.retryScheduled = false
+            self.lock.unlock()
+            self.flush()
         }
+    }
+
+    private static func key(_ entry: PushEventEntry) -> String {
+        "\(entry.sid)|\(entry.type.rawValue)"
     }
 
     // MARK: - Request building
@@ -316,6 +351,8 @@ final class PushEventQueue {
     func resetForTesting() {
         lock.lock()
         seen.removeAll()
+        inFlight.removeAll()
+        retryScheduled = false
         defaults?.removeObject(forKey: PushEventQueue.storageKey)
         lock.unlock()
     }
@@ -325,6 +362,14 @@ final class PushEventQueue {
         lock.lock()
         defer { lock.unlock() }
         return loadEntries()
+    }
+
+    /// Appends raw entries with NO eviction, as a queue persisted by an older run
+    /// would look. Test-only.
+    func injectRawForTesting(_ entries: [PushEventEntry]) {
+        lock.lock()
+        saveEntries(loadEntries() + entries)
+        lock.unlock()
     }
 
     /// Directly persists raw entries (bypassing enqueue/dedupe), then applies eviction,

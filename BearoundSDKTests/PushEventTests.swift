@@ -81,6 +81,28 @@ final class FakePushEventTransport: PushEventTransport {
     }
 }
 
+/// Holds completions until the test releases them, like a real network call.
+final class DeferredPushEventTransport: PushEventTransport {
+    private(set) var requests: [URLRequest] = []
+    private var pending: [(PushEventDeliveryOutcome) -> Void] = []
+    private let lock = NSLock()
+
+    func send(request: URLRequest, completion: @escaping (PushEventDeliveryOutcome) -> Void) {
+        lock.lock()
+        requests.append(request)
+        pending.append(completion)
+        lock.unlock()
+    }
+
+    func completeAll(_ outcome: PushEventDeliveryOutcome) {
+        lock.lock()
+        let toRun = pending
+        pending.removeAll()
+        lock.unlock()
+        toRun.forEach { $0(outcome) }
+    }
+}
+
 // MARK: - Queue: cap / age / dedupe / drain-keep (REQ-025, REQ-026)
 
 @Suite("PushEventQueue")
@@ -206,6 +228,49 @@ struct PushEventQueueTests {
         #expect(queue.entriesForTesting().count == 200)
     }
 
+    @Test("Back-to-back flushes never resend a hit already on the wire")
+    func noDuplicateWhileInFlight() {
+        let transport = DeferredPushEventTransport()
+        let queue = PushEventQueue(transport: transport, suiteName: "com.bearound.sdk.test.pushevents.\(UUID().uuidString)")
+        queue.enqueue(marker: marker("tap"), type: .opened)
+        queue.enqueue(marker: marker("tap"), type: .received)
+        queue.flush()
+        queue.flush()
+
+        #expect(transport.requests.count == 2)
+        transport.completeAll(.drain)
+        #expect(queue.entriesForTesting().isEmpty)
+    }
+
+    @Test("A failed hit waits for its backoff: repeated flushes do not resend it")
+    func failedHitWaitsForBackoff() {
+        let transport = DeferredPushEventTransport()
+        let queue = PushEventQueue(transport: transport, suiteName: "com.bearound.sdk.test.pushevents.\(UUID().uuidString)")
+        queue.enqueue(marker: marker("offline"), type: .received)
+        transport.completeAll(.keep)
+
+        for _ in 0..<5 { queue.flush() }
+
+        #expect(transport.requests.count == 1)
+        let entry = queue.entriesForTesting().first
+        #expect(entry?.attempt == 1)
+        #expect((entry?.nextAttemptAt ?? .distantPast) > Date())
+    }
+
+    @Test("Entries older than 7 days are dropped on flush, not sent")
+    func ageEvictionOnFlush() {
+        let transport = FakePushEventTransport()
+        let queue = PushEventQueue(transport: transport, suiteName: "com.bearound.sdk.test.pushevents.\(UUID().uuidString)")
+        // seedForTesting evicts too, so write a stale entry the way an old install would have.
+        queue.seedForTesting([entry("fresh", at: Date())])
+        queue.injectRawForTesting([entry("stale", at: Date().addingTimeInterval(-8 * 24 * 60 * 60))])
+
+        queue.flush()
+
+        #expect(transport.requests.map { $0.url?.absoluteString } == ["https://track.bearound.io/v1/push:received?d=ctx-fresh"])
+        #expect(queue.entriesForTesting().isEmpty)
+    }
+
     @Test("Persisted hits from a previous launch are sent on flush")
     func persistedHitsFlushLater() {
         let transport = FakePushEventTransport()
@@ -306,7 +371,21 @@ private func invokeDidReceive(
 
 @objc private class InheritingChildDelegate: InheritingBaseDelegate {}
 
-@Suite("PushDelegateSwizzle")
+/// Implements nothing itself and forwards didReceive to an inner handler, like a
+/// multicast delegate or a proxy.
+@objc private class ForwardingDelegate: NSObject, UNUserNotificationCenterDelegate {
+    let inner = DelegateWithOwnMethod()
+    override func forwardingTarget(for aSelector: Selector!) -> Any? {
+        aSelector == didReceiveResponseSelector ? inner : super.forwardingTarget(for: aSelector)
+    }
+    override func responds(to aSelector: Selector!) -> Bool {
+        aSelector == didReceiveResponseSelector || super.responds(to: aSelector)
+    }
+}
+
+@objc private class MeasuringDelegate: NSObject, UNUserNotificationCenterDelegate {}
+
+@Suite("PushDelegateSwizzle", .serialized)
 struct PushDelegateSwizzleTests {
 
     @Test("A delegate class without the method gets it added, and the completion handler is called")
@@ -380,5 +459,36 @@ struct PushDelegateSwizzleTests {
         }
         #expect(child.baseCalled)
         #expect(completionCalled)
+    }
+
+    @Test("A forwarding delegate is left untouched so the host keeps handling its taps")
+    func forwardingDelegateNotPatched() {
+        let delegate = ForwardingDelegate()
+        PushDelegateSwizzle.patchIfNeededForTesting(delegate: delegate)
+
+        #expect(class_getInstanceMethod(ForwardingDelegate.self, didReceiveResponseSelector) == nil)
+    }
+
+    @Test("A tap on a measurable push through the patched delegate fires open and received hits")
+    func tapFiresTrackerHits() {
+        let transport = FakePushEventTransport()
+        PushEventQueue.shared.resetForTesting()
+        let previous = PushEventQueue.shared.transport
+        PushEventQueue.shared.transport = transport
+        defer {
+            PushEventQueue.shared.transport = previous
+            PushEventQueue.shared.resetForTesting()
+        }
+
+        PushDelegateSwizzle.patchIfNeededForTesting(delegate: MeasuringDelegate())
+        let response = makeNotificationResponse(userInfo: ["bearound": measurableMarker("tap-sid")])
+        var completed = false
+        invokeDidReceive(on: MeasuringDelegate(), response: response) { completed = true }
+
+        #expect(completed)
+        #expect(transport.requests.map { $0.url?.absoluteString } == [
+            "https://track.bearound.io/v1/push:open?d=ctx-tap-sid",
+            "https://track.bearound.io/v1/push:received?d=ctx-tap-sid",
+        ])
     }
 }
