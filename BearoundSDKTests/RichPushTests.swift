@@ -190,12 +190,12 @@ struct PushTokenVersionResendTests {
         let sentAt = Date()
         // Same token, sent a minute ago by the previous SDK version: re-send.
         #expect(PushTokenStore.shouldSend(token: "tok", lastSent: "tok", lastSentAt: sentAt,
-                                          lastSentVersion: "3.11.0", currentVersion: "3.12.0", now: sentAt + 60))
+                                          lastSentVersion: "3.12.0", currentVersion: "3.13.0", now: sentAt + 60))
         // Installs that predate the version key count as a different version.
         #expect(PushTokenStore.shouldSend(token: "tok", lastSent: "tok", lastSentAt: sentAt,
-                                          lastSentVersion: nil, currentVersion: "3.12.0", now: sentAt + 60))
+                                          lastSentVersion: nil, currentVersion: "3.13.0", now: sentAt + 60))
         // After the send is marked with the current version: nothing until rotation or TTL.
         #expect(!PushTokenStore.shouldSend(token: "tok", lastSent: "tok", lastSentAt: sentAt,
-                                           lastSentVersion: "3.12.0", currentVersion: "3.12.0", now: sentAt + 60))
+                                           lastSentVersion: "3.13.0", currentVersion: "3.13.0", now: sentAt + 60))
     }
 }

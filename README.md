@@ -407,7 +407,7 @@ a no-op.
 
 ### Rich push (images, carousel, play)
 
-From 3.12.0 a push can carry images: one image (`IMAGE`), two side-by-side cards
+From 3.13.0 a push can carry images: one image (`IMAGE`), two side-by-side cards
 (`TWO_IMAGES`), a paged carousel of 2 to 5 cards (`CAROUSEL`) or a cover with a play button
 that opens a video URL (`PLAY`). iOS only draws these through **app extensions that your app
 ships**, so the SDK provides two ready-made classes and you add two small targets.
@@ -431,17 +431,17 @@ Set both targets to iOS 13.0 or later.
 ```ruby
 target 'YourApp' do
   use_frameworks!                      # keep whatever your app already uses
-  pod 'BearoundSDK', '~> 3.12'
+  pod 'BearoundSDK', '~> 3.13'
 end
 
 target 'NotificationService' do
   use_frameworks! :linkage => :static  # needed only if your app uses use_frameworks!
-  pod 'BearoundSDK/NotificationService', '~> 3.12'
+  pod 'BearoundSDK/NotificationService', '~> 3.13'
 end
 
 target 'NotificationContent' do
   use_frameworks! :linkage => :static  # needed only if your app uses use_frameworks!
-  pod 'BearoundSDK/NotificationContent', '~> 3.12'
+  pod 'BearoundSDK/NotificationContent', '~> 3.13'
 end
 ```
 
