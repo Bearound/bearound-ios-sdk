@@ -405,12 +405,12 @@ BeAroundSDK.shared.trackNotificationOpened(userInfo: userInfo)
 A `userInfo`/response with no `bearound.sid` (a non-Bearound push, or a sync silent push) is
 a no-op.
 
-### Rich push (images, carousel, play)
+### Rich push (images, carousel, video)
 
 From 3.13.0 a push can carry images: one image (`IMAGE`), two side-by-side cards
-(`TWO_IMAGES`), a paged carousel of 2 to 5 cards (`CAROUSEL`) or a cover with a play button
-that opens a video URL (`PLAY`). iOS only draws these through **app extensions that your app
-ships**, so the SDK provides two ready-made classes and you add two small targets.
+(`TWO_IMAGES`), a paged carousel of 2 to 5 cards (`CAROUSEL`) or a real video (`PLAY`, an
+MP4 up to 15 MB). iOS only draws these through **app extensions that your app ships**, so
+the SDK provides two ready-made classes and you add two small targets.
 
 **Without these extensions nothing breaks:** the device still gets the standard notification
 (title and body). The rich formats and the attached image appear once the extensions are in.
@@ -420,9 +420,13 @@ ships**, so the SDK provides two ready-made classes and you add two small target
 In Xcode: **File > New > Target**:
 
 - **Notification Service Extension** (e.g. `NotificationService`): downloads the image and
-  attaches it to the notification. It also shows the fallback image of older pushes.
-- **Notification Content Extension** (e.g. `NotificationContent`): draws the two-card,
-  carousel and play layouts when the user expands the notification.
+  attaches it to the notification. For `PLAY` it downloads the MP4 and attaches the video,
+  so expanding the notification plays it in the system player; if the video fails or is
+  over 15 MB, it attaches the poster image instead. It also shows the fallback image of
+  older pushes.
+- **Notification Content Extension** (e.g. `NotificationContent`): draws the image,
+  two-card and carousel layouts when the user expands the notification. It does not handle
+  `PLAY`: the video relies only on the Service Extension attachment.
 
 Set both targets to iOS 13.0 or later.
 
@@ -489,7 +493,6 @@ code), and in its Info.plist replace `NSExtensionMainStoryboard` with
             <string>BEAROUND_IMAGE</string>
             <string>BEAROUND_TWO_IMAGES</string>
             <string>BEAROUND_CAROUSEL</string>
-            <string>BEAROUND_PLAY</string>
         </array>
         <key>UNNotificationExtensionInitialContentSizeRatio</key>
         <real>0.75</real>
@@ -503,8 +506,12 @@ code), and in its Info.plist replace `NSExtensionMainStoryboard` with
 </dict>
 ```
 
-The same ids are available in code as `BearoundPushCategory.all`.
+The same ids are available in code as `BearoundPushCategory.contentExtension`.
 `UNNotificationExtensionUserInteractionEnabled` is what makes the cards tappable.
+
+**Do not add `BEAROUND_PLAY` here.** A content extension that claims a category replaces
+the system view of that notification, and for `PLAY` the system view is the video player.
+Left out, the notification shows the attached video with the native player controls.
 
 #### What happens on a tap
 
@@ -512,6 +519,9 @@ The same ids are available in code as `BearoundPushCategory.all`.
   click for that card and redirects.
 - A card with a deep link (`yourapp://...`) opens it directly.
 - A card without a link opens your app, like tapping a regular notification.
+- A `PLAY` notification opens your app, like tapping a regular notification; your app
+  decides what to do (the video already played in the expanded notification, so no custom
+  player is needed).
 
 Opens keep being measured as described in [Push Receipt & Open Measurement](#push-receipt--open-measurement).
 

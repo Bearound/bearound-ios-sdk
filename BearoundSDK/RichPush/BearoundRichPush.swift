@@ -9,15 +9,18 @@
 
 import Foundation
 
-/// Notification category ids of the rich push formats. The host's Notification Content
-/// Extension declares these in its Info.plist (`UNNotificationExtensionCategory`).
+/// Notification category ids of the rich push formats (`aps.category`).
 public enum BearoundPushCategory {
     public static let image = "BEAROUND_IMAGE"
     public static let twoImages = "BEAROUND_TWO_IMAGES"
     public static let carousel = "BEAROUND_CAROUSEL"
+    /// A real video: the Service Extension attaches the MP4 and the system player shows it
+    /// on expand. The Content Extension must NOT claim it, or it would hide that player.
     public static let play = "BEAROUND_PLAY"
 
-    public static let all: [String] = [image, twoImages, carousel, play]
+    /// The categories the host's Notification Content Extension declares in its Info.plist
+    /// (`UNNotificationExtensionCategory`). `play` is deliberately absent.
+    public static let contentExtension: [String] = [image, twoImages, carousel]
 }
 
 /// Rich push display format (`bearound_rich.f`).
@@ -52,8 +55,18 @@ struct RichPushCard: Equatable {
     let mediaId: String
     /// Optional caption.
     let caption: String?
-    /// Optional tap target: http(s) URL or a deep link. Nil opens the app.
+    /// Optional tap target: http(s) URL or a deep link. Nil opens the app. On a `PLAY` card
+    /// it is the direct video URL instead, never a tap target.
     let url: String?
+    /// Media type of a `PLAY` card's video (`vt`), e.g. `video/mp4`.
+    let videoType: String?
+
+    init(mediaId: String, caption: String?, url: String?, videoType: String? = nil) {
+        self.mediaId = mediaId
+        self.caption = caption
+        self.url = url
+        self.videoType = videoType
+    }
 }
 
 /// Delivery context from the `bearound` marker, used to route per-card fetches and taps
@@ -98,7 +111,8 @@ struct RichPushPayload: Equatable {
             else { return nil }
             let caption = (card["t"] as? String).flatMap { $0.isEmpty ? nil : $0 }
             let url = (card["u"] as? String).flatMap { $0.isEmpty ? nil : $0 }
-            cards.append(RichPushCard(mediaId: mediaId, caption: caption, url: url))
+            let videoType = (card["vt"] as? String).flatMap { $0.isEmpty ? nil : $0 }
+            cards.append(RichPushCard(mediaId: mediaId, caption: caption, url: url, videoType: videoType))
         }
         guard format.allowedCardCount.contains(cards.count) else { return nil }
 
@@ -124,11 +138,19 @@ struct RichPushPayload: Equatable {
         return RichPush.trackerURL(tracking, verb: "view", target: raw, index: index)
     }
 
+    /// Direct video URL of a `PLAY` payload (card 0 `u`, http(s) only). Nil for the other
+    /// formats, or when `u` is missing or not http(s): the poster is attached instead.
+    var videoURL: URL? {
+        guard format == .play, let raw = cards.first?.url, RichPush.isHTTP(raw) else { return nil }
+        return URL(string: raw)
+    }
+
     /// URL to open when card `index` is tapped. Nil when the card has no `u` (the tap opens
     /// the app). An http(s) `u` goes through the tracker click when tracking is available; a
-    /// deep link always opens directly.
+    /// deep link always opens directly. Always nil for `PLAY`: its `u` is the video, and a tap
+    /// opens the app, where the host decides what to do.
     func tapURL(at index: Int) -> URL? {
-        guard cards.indices.contains(index), let target = cards[index].url else { return nil }
+        guard format != .play, cards.indices.contains(index), let target = cards[index].url else { return nil }
         if RichPush.isHTTP(target), let tracking {
             return RichPush.trackerURL(tracking, verb: "click", target: target, index: index)
         }
@@ -136,19 +158,74 @@ struct RichPushPayload: Equatable {
     }
 }
 
+/// URLs the Service Extension downloads for one notification.
+struct RichPushAttachmentPlan: Equatable {
+    /// Card 0 image, the PLAY poster, or the legacy `image_url`.
+    let image: URL?
+    /// The PLAY video, attached in preference to `image` when it downloads within the cap.
+    let video: URL?
+}
+
 /// Helpers shared by the Service and Content extensions.
 enum RichPush {
-    /// Identifier of the attachment the Service Extension adds (card 0 or the PLAY cover).
+    /// Identifier of the attachment the Service Extension adds (card 0, the PLAY video, or
+    /// the PLAY poster when the video could not be attached).
     static let attachmentIdentifier = "bearound-card-0"
 
-    /// The image the Service Extension should attach: card 0 of a valid rich payload, else
-    /// the legacy top-level `image_url` (already tracker-wrapped by the server).
+    /// Largest PLAY video the Service Extension attaches. The contract caps uploads at
+    /// 15 MB; a bigger download is cancelled as soon as it announces or passes the cap.
+    static let maxVideoBytes: Int64 = 15 * 1024 * 1024
+    /// Largest image attached (the system limit for image attachments is 10 MB).
+    static let maxImageBytes: Int64 = 10 * 1024 * 1024
+    /// The system gives a Service Extension about 30 s. The video gets this much, and the
+    /// poster (downloaded in parallel) is always ready as the fallback.
+    static let videoDownloadTimeout: TimeInterval = 22
+    static let imageDownloadTimeout: TimeInterval = 20
+    /// Uniform type of an MP4 attachment (`UTType.mpeg4Movie`), the attachment's type hint.
+    static let mpeg4TypeIdentifier = "public.mpeg-4"
+    /// Frame of the video the system uses as the collapsed thumbnail.
+    static let videoThumbnailTime: Double = 1
+
+    /// The image the Service Extension should attach: card 0 (the poster, for PLAY) of a
+    /// valid rich payload, else the legacy top-level `image_url` (already tracker-wrapped).
     static func attachmentURL(from userInfo: [AnyHashable: Any]) -> URL? {
+        attachmentPlan(from: userInfo)?.image
+    }
+
+    /// What the Service Extension downloads. `image` is always fetched when present: through
+    /// the tracker that fetch IS the view, for PLAY too (the poster fetch is the view).
+    /// `video` is set only for a PLAY payload with an http(s) `u`.
+    static func attachmentPlan(from userInfo: [AnyHashable: Any]) -> RichPushAttachmentPlan? {
         if let payload = RichPushPayload.parse(userInfo) {
-            return payload.imageURL(at: 0)
+            let plan = RichPushAttachmentPlan(image: payload.imageURL(at: 0), video: payload.videoURL)
+            return plan.image == nil && plan.video == nil ? nil : plan
         }
-        guard let legacy = userInfo["image_url"] as? String, isHTTP(legacy) else { return nil }
-        return URL(string: legacy)
+        guard let legacy = userInfo["image_url"] as? String, isHTTP(legacy), let url = URL(string: legacy)
+        else { return nil }
+        return RichPushAttachmentPlan(image: url, video: nil)
+    }
+
+    /// The attachment to show: the video when it made it, else the poster/image, else none.
+    static func preferredAttachment<T>(video: T?, image: T?) -> T? {
+        video ?? image
+    }
+
+    /// True when a download must be abandoned: the server announced more than `cap` bytes
+    /// (`expected` is negative when unknown), or more than `cap` already arrived.
+    static func exceedsCap(expected: Int64, received: Int64, cap: Int64) -> Bool {
+        (expected > 0 && expected > cap) || received > cap
+    }
+
+    /// True when a downloaded file is an MP4 the attachment API can play: a `video/mp4`
+    /// Content-Type or the `ftyp` box at offset 4. Rejects an HTML error page served as 200.
+    static func isMP4(mimeType: String?, data: Data?) -> Bool {
+        if let mime = mimeType?.split(separator: ";").first?
+            .trimmingCharacters(in: .whitespaces).lowercased(),
+            mime == "video/mp4" {
+            return true
+        }
+        guard let data, data.count >= 8 else { return false }
+        return [UInt8](data.subdata(in: 4..<8)) == [0x66, 0x74, 0x79, 0x70]
     }
 
     /// `GET {tr}/v1/push:open?d={d}`, the open hit, for taps the host app never sees

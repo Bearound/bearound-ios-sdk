@@ -4,17 +4,19 @@
 //
 //  Notification Content Extension for Bearound rich push. Draws the cards of a
 //  `bearound_rich` payload programmatically (no storyboard): one image, two side-by-side
-//  cards, a paged carousel, or a cover with a play glyph. Extension-safe: does not depend on
-//  the core SDK.
+//  cards or a paged carousel. PLAY is not drawn here: the Service Extension attaches the
+//  video and the system player shows it on expand. Extension-safe: does not depend on the
+//  core SDK.
 //
 //  Host usage (the whole NotificationViewController.swift of the host's content extension):
 //
 //      import BearoundSDK
 //      class NotificationViewController: BearoundNotificationViewController {}
 //
-//  The extension's Info.plist declares `BearoundPushCategory.all` as
+//  The extension's Info.plist declares `BearoundPushCategory.contentExtension` as
 //  `UNNotificationExtensionCategory` and `UNNotificationExtensionUserInteractionEnabled = YES`
-//  (without it card taps do nothing).
+//  (without it card taps do nothing). Never `BEAROUND_PLAY`: claiming it would replace the
+//  system video player with this view.
 //
 
 import UIKit
@@ -75,7 +77,9 @@ open class BearoundNotificationViewController: UIViewController, UNNotificationC
         singleAspect = nil
         currentPage = 0
 
-        payload = RichPushPayload.parse(content.userInfo)
+        // PLAY belongs to the system video player; a host that still lists its category gets
+        // an empty view here instead of a still cover.
+        payload = RichPushPayload.parse(content.userInfo).flatMap { $0.format == .play ? nil : $0 }
         attachmentImage = Self.attachmentImage(in: content)
         guard let payload else {
             preferredContentSize = CGSize(width: availableWidth, height: 0)
@@ -83,31 +87,16 @@ open class BearoundNotificationViewController: UIViewController, UNNotificationC
         }
 
         switch payload.format {
-        case .image, .play: buildSingle(payload)
+        case .image: buildSingle(payload)
         case .twoImages: buildTwoImages(payload)
         case .carousel: buildCarousel(payload)
+        case .play: break
         }
     }
 
     private func buildSingle(_ payload: RichPushPayload) {
         let width = availableWidth
         let card = makeCard(index: 0, caption: payload.cards[0].caption, ratio: nil)
-        if payload.format == .play, let imageView = imageViews.first {
-            let glyph = UIImageView(image: UIImage(systemName: "play.circle.fill"))
-            glyph.translatesAutoresizingMaskIntoConstraints = false
-            glyph.tintColor = .white
-            glyph.layer.shadowColor = UIColor.black.cgColor
-            glyph.layer.shadowOpacity = 0.4
-            glyph.layer.shadowRadius = 4
-            glyph.layer.shadowOffset = .zero
-            imageView.addSubview(glyph)
-            NSLayoutConstraint.activate([
-                glyph.centerXAnchor.constraint(equalTo: imageView.centerXAnchor),
-                glyph.centerYAnchor.constraint(equalTo: imageView.centerYAnchor),
-                glyph.widthAnchor.constraint(equalToConstant: 64),
-                glyph.heightAnchor.constraint(equalToConstant: 64),
-            ])
-        }
         pin(card, insets: UIEdgeInsets(top: 0, left: 0, bottom: 0, right: 0))
         singleHasCaption = payload.cards[0].caption != nil
         setSingleAspect(1, width: width)

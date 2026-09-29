@@ -8,6 +8,7 @@
 
 import Foundation
 import Testing
+import UniformTypeIdentifiers
 
 @testable import BearoundSDK
 
@@ -20,10 +21,11 @@ private func rich(_ format: String, cards: [[String: Any]], version: Any = 1) ->
     ["v": version, "f": format, "mb": mediaBase, "c": cards]
 }
 
-private func card(_ m: String, t: String? = nil, u: String? = nil) -> [String: Any] {
+private func card(_ m: String, t: String? = nil, u: String? = nil, vt: String? = nil) -> [String: Any] {
     var out: [String: Any] = ["m": m]
     if let t { out["t"] = t }
     if let u { out["u"] = u }
+    if let vt { out["vt"] = vt }
     return out
 }
 
@@ -69,14 +71,17 @@ struct RichPushParsingTests {
         #expect((payload != nil) == valid)
         if let payload {
             #expect(payload.cards.count == count)
-            #expect(BearoundPushCategory.all.contains(payload.format.categoryIdentifier))
+            #expect(payload.format.categoryIdentifier == "BEAROUND_\(format)")
         }
     }
 
-    @Test("category ids are the four BEAROUND_ ids")
+    @Test("the content extension claims IMAGE, TWO_IMAGES and CAROUSEL, never PLAY")
     func categoryIds() {
-        #expect(BearoundPushCategory.all == ["BEAROUND_IMAGE", "BEAROUND_TWO_IMAGES", "BEAROUND_CAROUSEL", "BEAROUND_PLAY"])
-        #expect(RichPushFormat.play.categoryIdentifier == "BEAROUND_PLAY")
+        #expect(BearoundPushCategory.contentExtension == ["BEAROUND_IMAGE", "BEAROUND_TWO_IMAGES", "BEAROUND_CAROUSEL"])
+        // PLAY keeps its category id (the server sends it), but the system player owns it.
+        #expect(BearoundPushCategory.play == "BEAROUND_PLAY")
+        #expect(RichPushFormat.play.categoryIdentifier == BearoundPushCategory.play)
+        #expect(!BearoundPushCategory.contentExtension.contains(BearoundPushCategory.play))
     }
 
     @Test("anything outside v1 is the legacy path")
@@ -197,5 +202,93 @@ struct PushTokenVersionResendTests {
         // After the send is marked with the current version: nothing until rotation or TTL.
         #expect(!PushTokenStore.shouldSend(token: "tok", lastSent: "tok", lastSentAt: sentAt,
                                            lastSentVersion: "3.13.0", currentVersion: "3.13.0", now: sentAt + 60))
+    }
+}
+
+@Suite("Rich push PLAY video")
+struct RichPushPlayVideoTests {
+    private let video = "https://media.example.com/push-media/" + String(repeating: "c", count: 64)
+
+    @Test("PLAY parses the poster in m and the direct video in u")
+    func parsesPlay() throws {
+        let payload = try #require(RichPushPayload.parse([
+            "bearound": marker,
+            "bearound_rich": rich("PLAY", cards: [card(m0, u: video, vt: "video/mp4")]),
+        ]))
+        #expect(payload.format == .play)
+        #expect(payload.cards == [RichPushCard(mediaId: m0, caption: nil, url: video, videoType: "video/mp4")])
+        #expect(payload.videoURL?.absoluteString == video)
+        // The poster fetch goes through the tracker: it is the view.
+        #expect(payload.imageURL(at: 0)?.absoluteString.hasPrefix("\(tracker)/v1/push:view?") == true)
+        // u is the video, not a tap target: a tap opens the app.
+        #expect(payload.tapURL(at: 0) == nil)
+    }
+
+    @Test("videoURL only for PLAY with an http(s) u")
+    func videoURLOnlyForPlay() throws {
+        let noU = try #require(RichPushPayload.parse(["bearound_rich": rich("PLAY", cards: [card(m0)])]))
+        #expect(noU.videoURL == nil)
+        let deepLink = try #require(RichPushPayload.parse(["bearound_rich": rich("PLAY", cards: [card(m0, u: "myapp://video")])]))
+        #expect(deepLink.videoURL == nil)
+        let image = try #require(RichPushPayload.parse(["bearound_rich": rich("IMAGE", cards: [card(m0, u: video)])]))
+        #expect(image.videoURL == nil)
+        #expect(image.tapURL(at: 0)?.absoluteString == video)
+    }
+
+    @Test("attachment plan: PLAY downloads video and poster, other formats only the image")
+    func attachmentPlan() {
+        let play = RichPush.attachmentPlan(from: ["bearound_rich": rich("PLAY", cards: [card(m0, u: video)])])
+        #expect(play == RichPushAttachmentPlan(image: URL(string: mediaBase + m0), video: URL(string: video)))
+
+        let playNoVideo = RichPush.attachmentPlan(from: ["bearound_rich": rich("PLAY", cards: [card(m0)])])
+        #expect(playNoVideo == RichPushAttachmentPlan(image: URL(string: mediaBase + m0), video: nil))
+
+        let carousel = RichPush.attachmentPlan(from: ["bearound_rich": rich("CAROUSEL", cards: [card(m0, u: video), card(m1)])])
+        #expect(carousel == RichPushAttachmentPlan(image: URL(string: mediaBase + m0), video: nil))
+
+        let legacy = "https://tracker.example.com/v1/push:view?d=x&r=y"
+        #expect(RichPush.attachmentPlan(from: ["image_url": legacy]) == RichPushAttachmentPlan(image: URL(string: legacy), video: nil))
+        #expect(RichPush.attachmentPlan(from: [:]) == nil)
+    }
+
+    @Test("the video wins when it made it, else the poster, else nothing")
+    func attachmentChoice() {
+        #expect(RichPush.preferredAttachment(video: "video", image: "poster") == "video")
+        #expect(RichPush.preferredAttachment(video: nil, image: "poster") == "poster")
+        #expect(RichPush.preferredAttachment(video: "video", image: nil) == "video")
+        #expect(RichPush.preferredAttachment(video: String?.none, image: nil) == nil)
+    }
+
+    @Test("size cap: an announced or received size above 15 MB aborts the video")
+    func sizeCap() {
+        let cap = RichPush.maxVideoBytes
+        #expect(cap == 15 * 1024 * 1024)
+        #expect(!RichPush.exceedsCap(expected: 2_848_208, received: 0, cap: cap))
+        #expect(!RichPush.exceedsCap(expected: cap, received: cap, cap: cap))
+        #expect(RichPush.exceedsCap(expected: cap + 1, received: 0, cap: cap))
+        // Unknown length (-1, chunked): decided by what arrived.
+        #expect(!RichPush.exceedsCap(expected: -1, received: cap - 1, cap: cap))
+        #expect(RichPush.exceedsCap(expected: -1, received: cap + 1, cap: cap))
+        // A server that under-announces is still cut by the bytes received.
+        #expect(RichPush.exceedsCap(expected: 1_000, received: cap + 1, cap: cap))
+    }
+
+    @Test("only MP4 bytes become a video attachment")
+    func mp4Detection() {
+        let ftyp = Data([0x00, 0x00, 0x00, 0x20, 0x66, 0x74, 0x79, 0x70, 0x69, 0x73, 0x6F, 0x6D])
+        let html = Data("<!doctype html>".utf8)
+        #expect(RichPush.isMP4(mimeType: "video/mp4", data: nil))
+        #expect(RichPush.isMP4(mimeType: "Video/MP4; codecs=avc1", data: nil))
+        #expect(RichPush.isMP4(mimeType: "application/octet-stream", data: ftyp))
+        #expect(!RichPush.isMP4(mimeType: "text/html", data: html))
+        #expect(!RichPush.isMP4(mimeType: nil, data: Data([0x00])))
+    }
+
+    @Test("the type hint is the MPEG-4 uniform type")
+    func typeHint() {
+        if #available(iOS 14.0, *) {
+            #expect(RichPush.mpeg4TypeIdentifier == UTType.mpeg4Movie.identifier)
+        }
+        #expect(RichPush.videoThumbnailTime == 1)
     }
 }
