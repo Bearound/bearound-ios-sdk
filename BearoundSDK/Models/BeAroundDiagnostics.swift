@@ -56,6 +56,12 @@ public struct BeAroundDiagnostics {
     /// whether background location updates are legal at all (`location`).
     public let backgroundModes: [String]
 
+    /// Result of the last Wi-Fi visit round: `ready` / `missingEntitlement` /
+    /// `locationNotAuthorized` / `notConnected`, or `notRun` before one ran. `missingEntitlement`
+    /// means the host app lacks `com.apple.developer.networking.wifi-info`, so Wi-Fi visit
+    /// matching stays inert.
+    public let wifiStatus: String
+
     public func summary() -> String {
         let iso = ISO8601DateFormatter()
         func fmt(_ d: Date?) -> String { d.map { iso.string(from: $0) } ?? "—" }
@@ -76,6 +82,7 @@ public struct BeAroundDiagnostics {
             "  bgRefresh: \(backgroundRefreshStatus)  bgTasks: \(backgroundTasksRegistered ? "registered" : "not registered")",
             "  bgModes:  \(backgroundModes.isEmpty ? "none" : backgroundModes.joined(separator: ", "))",
             "  detects:  \(detectionReadiness)",
+            "  wifi:     \(wifiStatus)",
         ]
         if recentErrors.isEmpty {
             lines.append("  errors:   none")

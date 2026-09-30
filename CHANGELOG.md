@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.14.0] - 2026-09-30
+
+### Added
+- **Visita por Wi-Fi.** Nos lugares configurados para isso, o SDK também detecta a visita pela
+  rede Wi-Fi em que o aparelho está conectado, e a reporta como evento `visit` comum.
+- `diagnostics().wifiStatus`: `ready`, `notConnected`, `missingEntitlement` ou
+  `locationNotAuthorized`. Exige o entitlement **Access WiFi Information** e localização
+  Always; sem eles fica inerte, e o diagnóstico diz por quê.
+
+### Changed
+- `VisitEvent` passa a aceitar evento sem localização. Configurações e estado salvos pela
+  3.13.0 continuam carregando. Nenhuma permissão nova.
+
 ## [3.13.0] - 2026-09-29
 
 ### Added

@@ -53,8 +53,8 @@ open class BearoundNotificationService: UNNotificationServiceExtension {
             return
         }
 
-        // The image (poster for PLAY) is always fetched: through the tracker that fetch IS
-        // the view. The video runs in parallel, so the poster is ready if the video fails.
+        // The image (poster for PLAY) is always fetched. The video runs in parallel, so the
+        // poster is ready if the video fails.
         let group = DispatchGroup()
         var started: [BearoundBoundedDownload] = []
         if let image = plan.image {

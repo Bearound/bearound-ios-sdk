@@ -352,9 +352,8 @@ open class BearoundNotificationViewController: UIViewController, UNNotificationC
 
     // MARK: - Images
 
-    /// Card 0 comes from the Service Extension's attachment when present, so its view is not
-    /// counted twice. Other cards are fetched when shown: through the tracker, that fetch IS
-    /// the view. The fetch is a download to a file, capped at `RichPush.maxCardImageBytes`,
+    /// Card 0 comes from the Service Extension's attachment when present. Other cards are
+    /// fetched when shown. The fetch is a download to a file, capped at `RichPush.maxCardImageBytes`,
     /// and the image is decoded downsampled.
     private func loadImage(at index: Int) {
         guard let payload, imageViews.indices.contains(index), !loaded.contains(index), downloads[index] == nil

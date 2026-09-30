@@ -40,17 +40,22 @@ enum VisitEventKind: String {
 struct VisitEvent: Equatable {
     let kind: VisitEventKind
     let syncTrigger: String
-    let latitude: Double
-    let longitude: Double
+    /// nil for an event of a stop the Wi-Fi matcher opened with no GPS fix: the event then
+    /// carries no location and is dated by `wifis[0].timestamp`.
+    let latitude: Double?
+    let longitude: Double?
     let accuracy: Double?
     let timestamp: Date
-    /// The environment whose geofence woke the SDK, when known. Diagnostic only: the
-    /// ingest resolves the environment from the coordinates (section 2.4a).
+    /// The environment whose geofence woke the SDK, when known. Diagnostic only.
     let environmentId: String?
+    /// Matched known access points first (each with its real observation time), then the
+    /// others seen in the same round. Empty for a pure GPS event.
+    var wifis: [WifiObservation] = []
 
-    var deviceLocation: DeviceLocation {
-        DeviceLocation(latitude: latitude, longitude: longitude, accuracy: accuracy,
-                       timestamp: timestamp, source: VisitMonitor.locationSource)
+    var deviceLocation: DeviceLocation? {
+        guard let latitude, let longitude else { return nil }
+        return DeviceLocation(latitude: latitude, longitude: longitude, accuracy: accuracy,
+                              timestamp: timestamp, source: VisitMonitor.locationSource)
     }
 }
 
@@ -174,6 +179,13 @@ final class VisitMonitor {
     private let clock: VisitClock
     private let policy: () -> DataCollectionPolicy
     private let budget: RegionBudget
+    private let wifi: WifiRoundProviding?
+
+    private var matcher = WifiVisitMatcher()
+    private var wifiRoundInFlight = false
+
+    /// Most access points one event carries.
+    static let maxWifisPerEvent = 25
 
     private(set) var isStarted = false
     private var pendingArrivalEnvironmentId: String?
@@ -188,7 +200,8 @@ final class VisitMonitor {
         store: VisitStateStore = VisitStateStore(),
         clock: VisitClock = SystemVisitClock(),
         policy: @escaping () -> DataCollectionPolicy = { DataCollectionPolicyStore.current },
-        budget: RegionBudget = RegionBudget()
+        budget: RegionBudget = RegionBudget(),
+        wifi: WifiRoundProviding? = nil
     ) {
         self.locationManager = locationManager
         self.fetcher = fetcher
@@ -197,6 +210,7 @@ final class VisitMonitor {
         self.clock = clock
         self.policy = policy
         self.budget = budget
+        self.wifi = wifi
         locationManager.delegate = self
     }
 
@@ -244,6 +258,7 @@ final class VisitMonitor {
         }
         // No list yet (first run without a successful fetch): no native geofence.
         guard let cached = store.loadConfig() else { return }
+        if !policy().wifi { discardWifiState() }
         apply(cached.config)
     }
 
@@ -281,6 +296,7 @@ final class VisitMonitor {
     }
 
     private func tearDown() {
+        discardWifiState()
         pendingArrivalEnvironmentId = nil
         pendingRefresh = false
         pendingRefreshForced = false
@@ -302,6 +318,7 @@ final class VisitMonitor {
     // MARK: Refresh
 
     private func refreshIfNeeded(fix: VisitFix?, forced: Bool) {
+        runWifiRound()
         guard isStarted, isEligible, !fetchInFlight else { return }
         let now = clock.now
         let cached = store.loadConfig()
@@ -366,8 +383,7 @@ final class VisitMonitor {
             return nil
         }
         if let expiresAt = open.fenceExpiresAt, clock.now > expiresAt {
-            // Drive-by: the fence fired but iOS never saw a dwell. No departure is invented;
-            // the lone arrival is a short session on the server.
+            // Drive-by: the fence fired but iOS never saw a dwell. No departure is sent.
             store.openStop = nil
             NSLog("[BeAroundSDK] Visit stop opened by a geofence (%@) expired without a CLVisit, dropped",
                   open.environmentId ?? "?")
@@ -385,8 +401,9 @@ final class VisitMonitor {
     private func isFenceArrivalCovered(environmentId: String) -> Bool {
         guard let open = currentOpenStop() else { return false }
         if open.environmentId == environmentId { return true }
-        guard let center = place(environmentId)?.geometry.circleCenter else { return false }
-        return Self.distanceMeters(open.latitude, open.longitude, center.lat, center.lng)
+        guard let center = place(environmentId)?.geometry.circleCenter,
+              let anchor = anchor(of: open) else { return false }
+        return Self.distanceMeters(anchor.lat, anchor.lng, center.lat, center.lng)
             <= Self.sameStopRadiusMeters
     }
 
@@ -395,28 +412,54 @@ final class VisitMonitor {
         return arrivalAt.addingTimeInterval(TimeInterval(dwellMinutes) * 60 + Self.fenceStopGrace)
     }
 
+    /// Where a stop is: its own fix, or for a Wi-Fi stop without one the center of its place.
+    private func anchor(of open: VisitStateStore.OpenStop) -> (lat: Double, lng: Double)? {
+        if let latitude = open.latitude, let longitude = open.longitude { return (latitude, longitude) }
+        guard let environmentId = open.environmentId,
+              let center = place(environmentId)?.geometry.circleCenter else { return nil }
+        return (center.lat, center.lng)
+    }
+
     private func belongs(_ visit: VisitObservation, to open: VisitStateStore.OpenStop) -> Bool {
-        Self.distanceMeters(visit.latitude, visit.longitude, open.latitude, open.longitude)
+        guard let anchor = anchor(of: open) else { return false }
+        return Self.distanceMeters(visit.latitude, visit.longitude, anchor.lat, anchor.lng)
             <= Self.sameStopRadiusMeters + (visit.accuracy ?? 0)
     }
 
-    /// Opens a stop and sends its arrival. An open stop at another place is overwritten
-    /// without any event for it: its arrival stays an orphan, which the server accepts as a
-    /// short session.
-    private func sendArrival(latitude: Double, longitude: Double, accuracy: Double?,
-                             at timestamp: Date, environmentId: String?, fenceExpiresAt: Date? = nil) {
-        store.openStop = VisitStateStore.OpenStop(latitude: latitude, longitude: longitude,
-                                                  arrivalAt: timestamp, environmentId: environmentId,
-                                                  fenceExpiresAt: fenceExpiresAt)
-        send(.arrival, latitude: latitude, longitude: longitude, accuracy: accuracy,
-             at: timestamp, environmentId: environmentId)
+    private func updateOpenStop(_ mutate: (inout VisitStateStore.OpenStop) -> Void) {
+        guard var open = store.openStop else { return }
+        mutate(&open)
+        store.openStop = open
     }
 
-    private func send(_ kind: VisitEventKind, latitude: Double, longitude: Double, accuracy: Double?,
-                      at timestamp: Date, environmentId: String?) {
+    /// Opens a stop and sends its arrival. An open stop at another place is overwritten
+    /// without any event for it.
+    private func sendArrival(latitude: Double?, longitude: Double?, accuracy: Double?,
+                             at timestamp: Date, environmentId: String?, fenceExpiresAt: Date? = nil,
+                             sources: Set<VisitStateStore.StopSource> = [.gps], apIds: [String] = [],
+                             wifis: [WifiObservation] = []) {
+        store.openStop = VisitStateStore.OpenStop(latitude: latitude, longitude: longitude,
+                                                  arrivalAt: timestamp, environmentId: environmentId,
+                                                  fenceExpiresAt: fenceExpiresAt, sources: sources,
+                                                  apIds: apIds)
+        send(.arrival, latitude: latitude, longitude: longitude, accuracy: accuracy,
+             at: timestamp, environmentId: environmentId, wifis: wifis)
+    }
+
+    private func send(_ kind: VisitEventKind, latitude: Double?, longitude: Double?, accuracy: Double?,
+                      at timestamp: Date, environmentId: String?, wifis: [WifiObservation] = []) {
         sender.send(VisitEvent(kind: kind, syncTrigger: Self.syncTrigger, latitude: latitude,
                                longitude: longitude, accuracy: accuracy, timestamp: timestamp,
-                               environmentId: environmentId))
+                               environmentId: environmentId, wifis: wifis))
+    }
+
+    /// The access points a stop accumulated, for a GPS event. Only their ids are kept, so
+    /// they carry the event time: a located event is dated by its fix, not by them.
+    private func carriedWifis(_ open: VisitStateStore.OpenStop?, at timestamp: Date) -> [WifiObservation] {
+        (open?.apIds ?? []).prefix(Self.maxWifisPerEvent).map {
+            WifiObservation(apId: $0, ssid: nil, rssi: nil, connected: true, frequencyMhz: nil,
+                            timestamp: Int(timestamp.timeIntervalSince1970 * 1000))
+        }
     }
 
     private var canReportVisits: Bool {
@@ -433,6 +476,106 @@ final class VisitMonitor {
     }
 }
 
+// MARK: - Wi-Fi matching
+
+extension VisitMonitor {
+
+    /// The matcher runs only while visits are reportable and the host allows Wi-Fi (location
+    /// is already part of eligibility).
+    private var wifiMatchingActive: Bool {
+        wifi != nil && canReportVisits && policy().wifi
+    }
+
+    /// Drops the candidate and a Wi-Fi-only stop with no event: a departure is never invented
+    /// for a detection that was switched off.
+    fileprivate func discardWifiState() {
+        matcher = WifiVisitMatcher()
+        if let open = store.openStop, open.sources == [.wifi] { store.openStop = nil }
+    }
+
+    /// One Wi-Fi read, fed to the matcher. Cheap to call from every wakeup: a read in flight
+    /// absorbs the calls that arrive meanwhile.
+    fileprivate func runWifiRound() {
+        guard let wifi else { return }
+        guard wifiMatchingActive else {
+            if isStarted { discardWifiState() }
+            return
+        }
+        guard !wifiRoundInFlight else { return }
+        wifiRoundInFlight = true
+        wifi.fetchRound { [weak self] round in
+            guard let self else { return }
+            self.wifiRoundInFlight = false
+            // Switched off while the read was in flight.
+            guard self.wifiMatchingActive else { return }
+            self.handle(round)
+        }
+    }
+
+    private func handle(_ round: WifiRound) {
+        let places = store.loadConfig()?.config.places ?? []
+        let observations = round.observation.map {
+            [WifiVisitMatcher.Observation(apId: $0.apId,
+                                          observedAt: Date(timeIntervalSince1970: Double($0.timestamp) / 1000))]
+        } ?? []
+        let actions = matcher.onRound(
+            WifiVisitMatcher.Round(at: clock.now, observations: observations, conclusive: round.status.isConclusive),
+            places: places)
+        let seen = round.observation.map { [$0] } ?? []
+        for action in actions {
+            switch action {
+            case .arrive(let environmentId, let at, let matched):
+                wifiArrival(environmentId: environmentId, at: at, matched: matched, seen: seen)
+            case .depart(let environmentId, let at, let matched):
+                wifiDeparture(environmentId: environmentId, at: at, matched: matched, seen: seen)
+            }
+        }
+    }
+
+    private func wifiArrival(environmentId: String, at: Date, matched: [WifiVisitMatcher.Observation],
+                             seen: [WifiObservation]) {
+        if let lastDeparture = store.lastDepartureAt, at <= lastDeparture { return }
+        let apIds = matched.map(\.apId)
+        if isFenceArrivalCovered(environmentId: environmentId) {
+            // One stop per place: GPS already opened it, Wi-Fi only adds what it saw.
+            updateOpenStop { stop in
+                stop.sources.insert(.wifi)
+                stop.apIds = stop.apIds + apIds.filter { !stop.apIds.contains($0) }
+                if stop.environmentId == nil { stop.environmentId = environmentId }
+            }
+            return
+        }
+        sendArrival(latitude: nil, longitude: nil, accuracy: nil, at: at, environmentId: environmentId,
+                    sources: [.wifi], apIds: apIds, wifis: Self.wifiList(matched: matched, at: at, seen: seen))
+    }
+
+    private func wifiDeparture(environmentId: String, at: Date, matched: [WifiVisitMatcher.Observation],
+                               seen: [WifiObservation]) {
+        // A stop GPS also reported is closed by GPS, which carries the access points.
+        guard let open = currentOpenStop(), open.environmentId == environmentId,
+              open.sources == [.wifi] else { return }
+        if let lastDeparture = store.lastDepartureAt, at <= lastDeparture { return }
+        send(.departure, latitude: nil, longitude: nil, accuracy: nil, at: at, environmentId: environmentId,
+             wifis: Self.wifiList(matched: matched, at: at, seen: seen))
+        store.openStop = nil
+        store.lastDepartureAt = at
+    }
+
+    /// Matched observations first, then the others. The matched ones carry `at`, the real
+    /// sighting the event stands for (first sighting for an arrival, last for a departure).
+    static func wifiList(matched: [WifiVisitMatcher.Observation], at: Date,
+                         seen: [WifiObservation]) -> [WifiObservation] {
+        let matchedIds = Set(matched.map(\.apId))
+        let first = matched.map { observation in
+            WifiObservation(apId: observation.apId,
+                            ssid: seen.first { $0.apId == observation.apId }?.ssid,
+                            rssi: nil, connected: true, frequencyMhz: nil,
+                            timestamp: Int(at.timeIntervalSince1970 * 1000))
+        }
+        return Array((first + seen.filter { !matchedIds.contains($0.apId) }).prefix(maxWifisPerEvent))
+    }
+}
+
 // MARK: - CoreLocation events
 
 extension VisitMonitor: VisitLocationManagerDelegate {
@@ -445,6 +588,8 @@ extension VisitMonitor: VisitLocationManagerDelegate {
         guard !isFenceArrivalCovered(environmentId: environmentId) else { return }
         pendingArrivalEnvironmentId = environmentId
         locationManager.requestLocation()
+        // Independent of the fix: the Wi-Fi round does not wait for `requestLocation`.
+        if place(environmentId)?.knownApIds.isEmpty == false { runWifiRound() }
     }
 
     func visitLocationManager(didExitRegion identifier: String) {
@@ -456,6 +601,7 @@ extension VisitMonitor: VisitLocationManagerDelegate {
 
     func visitLocationManager(didVisit visit: VisitObservation) {
         guard canReportVisits else { return }
+        runWifiRound()
         let lastDeparture = store.lastDepartureAt
 
         if let departure = visit.departureDate {
@@ -467,9 +613,10 @@ extension VisitMonitor: VisitLocationManagerDelegate {
                 sendArrival(latitude: visit.latitude, longitude: visit.longitude,
                             accuracy: visit.accuracy, at: arrival, environmentId: nil)
             }
-            let environmentId = store.openStop?.environmentId
+            let open = store.openStop
             send(.departure, latitude: visit.latitude, longitude: visit.longitude,
-                 accuracy: visit.accuracy, at: departure, environmentId: environmentId)
+                 accuracy: visit.accuracy, at: departure, environmentId: open?.environmentId,
+                 wifis: carriedWifis(open, at: departure))
             store.openStop = nil
             store.lastDepartureAt = departure
             return
@@ -479,12 +626,15 @@ extension VisitMonitor: VisitLocationManagerDelegate {
         if let lastDeparture, arrival <= lastDeparture { return }
         if let open = currentOpenStop(), belongs(visit, to: open) {
             // iOS confirmed the dwell of a stop a fence opened: it now waits for the CLVisit
-            // departure instead of expiring as a drive-by.
-            if open.fenceExpiresAt != nil {
-                store.openStop = VisitStateStore.OpenStop(latitude: open.latitude, longitude: open.longitude,
-                                                          arrivalAt: open.arrivalAt,
-                                                          environmentId: open.environmentId,
-                                                          fenceExpiresAt: nil)
+            // departure instead of expiring as a drive-by. A stop the Wi-Fi matcher opened
+            // gains the GPS source and the fix: the CLVisit departure closes it, carrying both.
+            updateOpenStop { stop in
+                stop.fenceExpiresAt = nil
+                if !stop.sources.contains(.gps) {
+                    stop.sources.insert(.gps)
+                    stop.latitude = visit.latitude
+                    stop.longitude = visit.longitude
+                }
             }
             return
         }

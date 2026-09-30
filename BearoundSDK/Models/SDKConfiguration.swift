@@ -39,7 +39,7 @@ public enum PresenceHeartbeatDefaults {
     /// Interval floor. Below a minute the same coordinate is repeated for no added meaning,
     /// and every report wakes the radio.
     public static let minimumAcceptedInterval: TimeInterval = 60
-    /// Interval ceiling. Past an hour the trail is too sparse to say anything about presence.
+    /// Interval ceiling (1 hour).
     public static let maximumAcceptedInterval: TimeInterval = 60 * 60
 
     /// Sanitizes a host-provided interval. Non-positive means "off" and is returned as-is
@@ -146,8 +146,7 @@ public struct SDKConfiguration {
     /// (`react-native` / `flutter`) so the backend can attribute traffic per integration.
     public let technology: String
 
-    /// The single SDK host: `/ingest`, `/sdk-errors` and `/sdk/places/*` (the ingest's load
-    /// balancer routes the places paths to the places service by path).
+    /// The single SDK host: `/ingest`, `/sdk-errors` and `/sdk/places/*`.
     let apiBaseURL: String
 
     /// Enables the periodic background reconciliation (`BGAppRefreshTask` layer).
@@ -193,9 +192,8 @@ public struct SDKConfiguration {
 
     /// How often a scan that found **nothing** still reports in.
     ///
-    /// A scan that finds no beacon and no peer is data too: the device was *here* and saw
-    /// nothing. Those payloads carry the device's own location and the Wi-Fi it can see, and
-    /// they are what make coverage — and the absence of it — visible.
+    /// When enabled, a scan that finds no beacon and no peer still reports the device's own
+    /// location and visible Wi-Fi.
     ///
     /// Only the *upload* is throttled, never the scan: a beacon or an encounter still syncs at
     /// the normal cadence. This interval is the floor between two consecutive "saw nothing"

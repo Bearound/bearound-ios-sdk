@@ -294,7 +294,7 @@ class BluetoothManager: NSObject {
 
     /// Set when the radio powers off mid-scan so the scan auto-resumes when power
     /// returns. Without it, BT off→on left isScanning=false and pendingAutoStart=false
-    /// — the scan never came back until an app restart (field review, bug 7).
+    /// and the scan never came back until an app restart.
     private var shouldResumeAfterPowerRecovery = false
 
     // MARK: - Duty Cycle (v2.6)
@@ -476,8 +476,7 @@ class BluetoothManager: NSObject {
     /// `parseBeadServiceData` by its **Service Data** (0x16) entry keyed by 0xBEAD.
     /// A `[beadServiceUUID]` filter would miss firmware ≤ v5, which carries 0xBEAD
     /// only in Service Data — CoreBluetooth's service filter matches the advertised
-    /// **Service UUID list** (0x02/0x03), not Service Data (regression v2.3.2 /
-    /// 25ee37c taught us this the hard way).
+    /// **Service UUID list** (0x02/0x03), not Service Data.
     ///
     /// **Background — `withServices: [beadServiceUUID]`**: iOS silently discards
     /// nil-filter scans while backgrounded, so nil delivers NOTHING there. A specific

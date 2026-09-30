@@ -84,6 +84,16 @@ private final class FakeBackgroundTasks: VisitBackgroundTasking {
     var outstanding: Int { begun - ended.count }
 }
 
+private final class FakeWifi: WifiRoundProviding {
+    var next = WifiRound(status: .notConnected, observation: nil)
+    var fetches = 0
+
+    func fetchRound(completion: @escaping (WifiRound) -> Void) {
+        fetches += 1
+        completion(next)
+    }
+}
+
 private final class PolicyBox {
     var value: DataCollectionPolicy = .allEnabled
 }
@@ -94,12 +104,12 @@ private let origin = PlacesConfig.Coordinate(lat: -23.561, lng: -46.656)
 private let t0 = Date(timeIntervalSince1970: 1_790_000_000)
 
 private func place(_ id: String, lat: Double, lng: Double, distance: Double,
-                   minDwell: Int? = 5) -> PlacesConfig.Place {
+                   minDwell: Int? = 5, apIds: [String] = []) -> PlacesConfig.Place {
     PlacesConfig.Place(
         environmentId: id, businessId: "biz", name: id, gpsVisitClass: "street_isolated",
         geometry: PlacesConfig.Geometry(type: "point", lat: lat, lng: lng, center: nil,
                                         radiusMeters: 80, rings: nil),
-        distanceMeters: distance, minDwellMinutes: minDwell)
+        distanceMeters: distance, minDwellMinutes: minDwell, knownApIds: apIds)
 }
 
 private func config(enabled: Bool, places: [PlacesConfig.Place]? = nil) -> PlacesConfig {
@@ -118,6 +128,7 @@ private struct Harness {
     let defaults: UserDefaults
     let store: VisitStateStore
     let monitor: VisitMonitor
+    let wifi = FakeWifi()
 
     init(fetchResult: PlacesConfigFetchResult, cached: PlacesConfig? = nil) {
         let suite = "VisitMonitorTests.\(UUID().uuidString)"
@@ -129,7 +140,17 @@ private struct Harness {
         let policy = self.policy
         monitor = VisitMonitor(
             locationManager: manager, fetcher: fetcher, sender: sender, store: store,
-            clock: clock, policy: { policy.value })
+            clock: clock, policy: { policy.value }, wifi: wifi)
+    }
+
+    /// One Wi-Fi wakeup at `date`: the collector answers `apId` (nil: not connected).
+    func wifiRound(_ apId: String?, at date: Date) {
+        clock.now = date
+        wifi.next = apId.map {
+            WifiRound(status: .ready, observation: WifiObservation(
+                apId: $0, ssid: "guest", rssi: nil, connected: true, frequencyMhz: nil, timestamp: ms(date)))
+        } ?? WifiRound(status: .notConnected, observation: nil)
+        monitor.visitLocationManagerDidChangeAuthorization()
     }
 
     /// Geofence entry for an environment, answered by a fix at `fixTime`.
@@ -203,8 +224,8 @@ struct VisitMonitorTests {
         #expect(h.sender.events.map(\.kind) == [.arrival, .departure])
         #expect(h.sender.events.allSatisfy { $0.syncTrigger == "visit" })
         #expect(h.sender.events.map { ms($0.timestamp) } == [ms(arrival), ms(departure)])
-        #expect(h.sender.events.map { $0.deviceLocation.timestamp } == [ms(arrival), ms(departure)])
-        #expect(h.sender.events.allSatisfy { $0.deviceLocation.source == "gnss" })
+        #expect(h.sender.events.map { $0.deviceLocation?.timestamp } == [ms(arrival), ms(departure)])
+        #expect(h.sender.events.allSatisfy { $0.deviceLocation?.source == "gnss" })
     }
 
     @Test("Geofence entry sends the arrival at the fresh fix time; CLVisit then adds only the departure")
@@ -614,5 +635,176 @@ struct PlacesConfigClientTests {
             Issue.record("unconfigured fetch: \(unconfigured)")
         }
         #expect(tasks.begun == 2)
+    }
+}
+
+@Suite("PlacesConfig knownApIds decoding")
+struct PlacesConfigKnownApIdsTests {
+
+    private let json = """
+    {"origin":{"lat":-23.561,"lng":-46.656},"refreshAfterMeters":2500,"maxAgeSeconds":21600,
+     "visit_detection_enabled":true,
+     "places":[
+      {"environmentId":"env-1","businessId":"biz","name":"env-1","gpsVisitClass":"street_isolated",
+       "geometry":{"type":"point","lat":-23.562,"lng":-46.657,"radiusMeters":80},
+       "distanceMeters":150,"minDwellMinutes":5},
+      {"environmentId":"env-wifi","businessId":"biz","name":"env-wifi","gpsVisitClass":"mall_gallery",
+       "geometry":{"type":"point","lat":-23.5625,"lng":-46.6575,"radiusMeters":80},
+       "distanceMeters":200,"minDwellMinutes":5,
+       "knownApIds":["9f3a1c02b7d4e688","0a1b2c3d4e5f6071"]}
+     ]}
+    """
+
+    @Test("A place without the field decodes as an empty list; one with it keeps the ids")
+    func decodesWithAndWithoutField() throws {
+        let config = try JSONDecoder().decode(PlacesConfig.self, from: Data(json.utf8))
+        #expect(config.places.count == 2)
+        #expect(config.places[0].knownApIds.isEmpty)
+        #expect(config.places[1].knownApIds == ["9f3a1c02b7d4e688", "0a1b2c3d4e5f6071"])
+    }
+
+    @Test("The ids survive the persisted round trip")
+    func survivesPersistence() throws {
+        let config = try JSONDecoder().decode(PlacesConfig.self, from: Data(json.utf8))
+        let decoded = try JSONDecoder().decode(PlacesConfig.self, from: JSONEncoder().encode(config))
+        #expect(decoded == config)
+    }
+}
+
+// MARK: - Wi-Fi matching
+
+@Suite("VisitMonitor Wi-Fi matching")
+struct VisitMonitorWifiTests {
+
+    private let known = "9f3a1c02b7d4e688"
+    private let other = "ffffffffffffffff"
+
+    private var wifiConfig: PlacesConfig {
+        config(enabled: true, places: [
+            place("env-wifi", lat: -23.562, lng: -46.657, distance: 150, apIds: [known])])
+    }
+
+    private func minute(_ m: Double) -> Date { t0.addingTimeInterval(m * 60) }
+
+    @Test("Wi-Fi with an open GPS stop only adds the apId: no event, one stop")
+    func wifiOnOpenGpsStopOnlyAddsApId() {
+        let h = Harness(fetchResult: .notModified, cached: wifiConfig)
+        h.monitor.start()
+        h.fenceArrival("env-wifi", lat: -23.562, lng: -46.657, at: t0)
+        #expect(h.sender.events.map(\.kind) == [.arrival])
+
+        h.wifiRound(known, at: minute(1))
+        h.wifiRound(known, at: minute(7))
+
+        #expect(h.sender.events.map(\.kind) == [.arrival])
+        #expect(h.store.openStop?.sources == [.gps, .wifi])
+        #expect(h.store.openStop?.apIds == [known])
+        #expect(h.store.openStop?.latitude == -23.562)
+    }
+
+    @Test("A Wi-Fi-only stop sends its events without location and with the matched AP first")
+    func wifiEventsHaveNoLocationAndMatchedFirst() {
+        let h = Harness(fetchResult: .notModified, cached: wifiConfig)
+        h.monitor.start()
+
+        h.wifiRound(known, at: minute(0))
+        h.wifiRound(known, at: minute(6))
+        #expect(h.sender.events.count == 1)
+        let arrival = h.sender.events[0]
+        #expect(arrival.kind == .arrival)
+        #expect(arrival.syncTrigger == "visit")
+        #expect(arrival.latitude == nil && arrival.longitude == nil)
+        #expect(arrival.deviceLocation == nil)
+        #expect(arrival.environmentId == "env-wifi")
+        #expect(arrival.timestamp == minute(0))
+        #expect(arrival.wifis.map(\.apId) == [known])
+        #expect(arrival.wifis[0].timestamp == ms(minute(0)))
+        #expect(h.store.openStop?.sources == [.wifi])
+        #expect(h.store.openStop?.latitude == nil)
+
+        // Joined to another AP 10 min after the last sighting: the known one still leads.
+        h.wifiRound(other, at: minute(16))
+        #expect(h.sender.events.map(\.kind) == [.arrival, .departure])
+        let departure = h.sender.events[1]
+        #expect(departure.latitude == nil && departure.deviceLocation == nil)
+        #expect(departure.timestamp == minute(6))
+        #expect(departure.wifis.map(\.apId) == [known, other])
+        #expect(departure.wifis[0].timestamp == ms(minute(6)))
+        #expect(h.store.openStop == nil)
+        #expect(h.store.lastDepartureAt == minute(6))
+    }
+
+    @Test("A CLVisit departure closes a stop Wi-Fi also reported, carrying the fix and the apIds")
+    func gpsDepartureCarriesFixAndApIds() {
+        let h = Harness(fetchResult: .notModified, cached: wifiConfig)
+        h.monitor.start()
+        h.wifiRound(known, at: minute(0))
+        h.wifiRound(known, at: minute(6))
+
+        // GPS confirms the same place: refused as a new arrival, recorded as a source.
+        h.clock.now = minute(8)
+        h.monitor.visitLocationManager(didVisit: VisitObservation(
+            latitude: -23.562, longitude: -46.657, accuracy: 20, arrivalDate: minute(1), departureDate: nil))
+        #expect(h.sender.events.map(\.kind) == [.arrival])
+        #expect(h.store.openStop?.sources == [.gps, .wifi])
+
+        // The Wi-Fi leaves, but only GPS may close a stop it also owns.
+        h.wifiRound(nil, at: minute(20))
+        #expect(h.sender.events.map(\.kind) == [.arrival])
+
+        h.clock.now = minute(25)
+        h.monitor.visitLocationManager(didVisit: VisitObservation(
+            latitude: -23.562, longitude: -46.657, accuracy: 20, arrivalDate: minute(1), departureDate: minute(18)))
+        #expect(h.sender.events.map(\.kind) == [.arrival, .departure])
+        let departure = h.sender.events[1]
+        #expect(departure.latitude == -23.562)
+        #expect(departure.wifis.map(\.apId) == [known])
+        #expect(h.store.openStop == nil)
+    }
+
+    @Test("Turning visit detection off discards the candidate and the Wi-Fi stop with no event")
+    func killSwitchDiscardsWifiState() {
+        let h = Harness(fetchResult: .notModified, cached: wifiConfig)
+        h.monitor.start()
+        h.wifiRound(known, at: minute(0))
+        h.wifiRound(known, at: minute(6))
+        #expect(h.sender.events.count == 1)
+        #expect(h.store.openStop?.sources == [.wifi])
+
+        h.store.saveConfig(config(enabled: false, places: wifiConfig.places), etag: nil, fetchedAt: minute(7))
+        h.wifiRound(nil, at: minute(30))
+
+        #expect(h.sender.events.count == 1)
+        #expect(h.store.openStop == nil)
+    }
+
+    @Test("collectWifi off stops the matcher: no round is read and the Wi-Fi stop is discarded")
+    func hostWifiOffDiscardsState() {
+        let h = Harness(fetchResult: .notModified, cached: wifiConfig)
+        h.monitor.start()
+        h.wifiRound(known, at: minute(0))
+        h.wifiRound(known, at: minute(6))
+        #expect(h.store.openStop?.sources == [.wifi])
+        let fetches = h.wifi.fetches
+
+        h.policy.value = DataCollectionPolicy(wifi: false)
+        h.wifiRound(nil, at: minute(30))
+
+        #expect(h.wifi.fetches == fetches)
+        #expect(h.sender.events.count == 1)
+        #expect(h.store.openStop == nil)
+    }
+
+    @Test("An open stop persisted by the previous version decodes as a GPS stop without access points")
+    func legacyOpenStopDecodes() throws {
+        let legacy = Data("""
+        {"latitude":-23.5,"longitude":-46.6,"arrivalAt":1790000000,"environmentId":"env-1"}
+        """.utf8)
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .secondsSince1970
+        let stop = try decoder.decode(VisitStateStore.OpenStop.self, from: legacy)
+        #expect(stop.sources == [.gps])
+        #expect(stop.apIds.isEmpty)
+        #expect(stop.latitude == -23.5)
     }
 }

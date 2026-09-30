@@ -123,9 +123,7 @@ If you opt into the **Location eye** (force-quit survival — see [Terminated Ap
 #### Wi-Fi observations (optional)
 
 Alongside each beacon sighting the SDK can report the **access point the device is joined
-to**. The purpose is positioning coverage: an access point seen repeatedly next to a known
-beacon gets a position of its own, and from then on it can place a device even where no
-beacon reaches.
+to**.
 
 ##### Turning it on — two steps
 
@@ -158,8 +156,8 @@ BeAroundSDK.shared.requestLocationAuthorization(.always)
 > `.whenInUse`, iOS stops revealing it once your app is backgrounded — it returns `nil`, not
 > an error, so the SDK simply reports no Wi-Fi and nothing anywhere says why.
 >
-> Since a fleet spends almost all of its time in the background, "foreground only" means
-> "almost never". If you test by hand with the app open, it will look perfect.
+> Devices spend most of their time in the background, so "foreground only" means "rarely".
+> If you test by hand with the app open, it will look perfect.
 >
 > `.always` is what keeps the collection alive in the background — and if you already
 > enabled the [Location eye](#the-two-eyes) for force-quit survival, you are asking for it
@@ -176,21 +174,19 @@ The identity that matters is `apId`: a one-way SHA-256 hash of the access point'
 address, canonicalised so that the same router yields the same identifier on iOS and on
 Android.
 
-> **`ssid` and `network.wifiSSID` carry the network name**, and the backend consumes them:
-> the name says something the hashed `apId` cannot. Because a network name identifies a
-> place — and at home a household — both are personal data and ship only while Wi-Fi
-> collection is on. `configure(collectWifi: false)` drops them with the rest of the Wi-Fi
+> **`ssid` and `network.wifiSSID` carry the network name**, sent alongside the hashed
+> `apId`. Because a network name identifies a place (and at home a household), both are
+> personal data and ship only while Wi-Fi collection is on. `configure(collectWifi: false)` drops them with the rest of the Wi-Fi
 > block; see [Controlling what the SDK collects](#controlling-what-the-sdk-collects).
 
 > **What iOS can and cannot give.** There is no public API for scanning neighbouring
 > networks — iOS reports only the access point you are connected to, and its signal-strength
 > value proved unreliable in practice (it measured `0` on real hardware), so the SDK
 > deliberately sends **no RSSI** rather than a fabricated one. Android fills the same
-> structure with the neighbours and their real dBm. In the map, iOS confirms points that
-> Android draws.
+> structure with the neighbours and their real dBm.
 >
-> `network.apId` joins `network.wifiSSID`: a stable identity for the access point, reported
-> next to the name rather than instead of it.
+> `network.apId` joins `network.wifiSSID`: a stable identifier for the access point,
+> reported next to the name rather than instead of it.
 
 > **When does the Bluetooth prompt appear?** The first time your code touches
 > `BeAroundSDK.shared`, the SDK creates its `CBCentralManager` — and iOS shows the
@@ -199,10 +195,27 @@ Android.
 > that for terminated-app wake-up the singleton must be touched inside
 > `application(_:didFinishLaunchingWithOptions:)` (see Quick Start).
 
+#### Wi-Fi visit matching
+
+From 3.14.0 the SDK can also detect a visit at a place through the Wi-Fi network the device is
+joined to, on places configured for it. Visits are reported as ordinary `visit` events.
+
+It needs what [Wi-Fi observations](#wi-fi-observations-optional) already needs, nothing more:
+
+- the **Access WiFi Information** capability (`com.apple.developer.networking.wifi-info`)
+  on your app target;
+- location authorisation **Always**, which iOS also requires for visit detection.
+
+The SDK requests no new permission. Without the entitlement or the authorisation it stays
+inert and everything else behaves as before; `BeAroundSDK.shared.diagnostics().wifiStatus`
+says why (`missingEntitlement`, `locationNotAuthorized`, `notConnected` or `ready`).
+
+On iOS only the network the device is joined to is visible. `configure(collectWifi: false)`,
+`collectLocation: false` or disabling visit detection switch it off.
+
 #### Advertising identifier (IDFA — optional)
 
-The SDK can report the **IDFA**, the identifier iOS provides for advertising attribution,
-which lets a visit be tied to the same person across apps.
+The SDK can report the **IDFA**, the identifier iOS provides for advertising.
 
 **The SDK never shows the App Tracking Transparency prompt by itself.** When (and whether)
 to ask is your app's decision. Two steps:
@@ -695,7 +708,7 @@ BeAroundSDK.shared.requestLocationAuthorization(.always)
 The same call unlocks [Wi-Fi observations](#wi-fi-observations-optional) — iOS requires
 location authorisation before it will reveal the connected access point. `.whenInUse` is
 enough while your app is in the foreground; **`.always` is what keeps it coming in the
-background**, which for a real fleet is nearly all of the time.
+background**, where devices spend most of their time.
 
 **Check Permission Status:**
 ```swift
@@ -1186,7 +1199,7 @@ The SDK logs important events with tag `[BeAroundSDK]`:
 
 #### Diagnostics snapshot
 
-`BeAroundSDK.shared.diagnostics()` returns a `BeAroundDiagnostics` (device id, masked push token + last-sent, `apnsEnvironment`, scanning state, pending batches, last scan/sync/push, recent errors). Use `.summary()` for a log-friendly string. Reads in-memory state only — no network.
+`BeAroundSDK.shared.diagnostics()` returns a `BeAroundDiagnostics` (device id, masked push token + last-sent, `apnsEnvironment`, scanning state, pending batches, last scan/sync/push, recent errors, `wifiStatus`). Use `.summary()` for a log-friendly string. Reads in-memory state only, no network.
 
 ### Security & Privacy
 

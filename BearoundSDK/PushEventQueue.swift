@@ -93,8 +93,7 @@ enum PushEventDeliveryOutcome {
 }
 
 /// Isolated transport used by `PushEventQueue`. Abstracted so tests can inject a fake
-/// without a real network round trip (parity with the "test doubles for each response
-/// class" requirement).
+/// without a real network round trip.
 protocol PushEventTransport {
     func send(request: URLRequest, completion: @escaping (PushEventDeliveryOutcome) -> Void)
 }

@@ -133,8 +133,8 @@ struct RichPushPayload: Equatable {
         return mediaBase + cards[index].mediaId
     }
 
-    /// URL to fetch card `index`'s image. Through the tracker (the fetch IS the view) when
-    /// the marker carries `d` and `tr`; the raw media URL otherwise.
+    /// URL to fetch card `index`'s image: through the tracker when the marker carries `d`
+    /// and `tr`, the raw media URL otherwise.
     func imageURL(at index: Int) -> URL? {
         guard let raw = rawImageURL(at: index) else { return nil }
         guard let tracking else { return URL(string: raw) }
@@ -206,8 +206,8 @@ enum RichPush {
         attachmentPlan(from: userInfo)?.image
     }
 
-    /// What the Service Extension downloads. `image` is always fetched when present: through
-    /// the tracker that fetch IS the view, for PLAY too (the poster fetch is the view).
+    /// What the Service Extension downloads. `image` is always fetched when present, for PLAY
+    /// too (the poster).
     /// `video` is set only for a PLAY payload with an http(s) `u`.
     static func attachmentPlan(from userInfo: [AnyHashable: Any]) -> RichPushAttachmentPlan? {
         if let payload = RichPushPayload.parse(userInfo) {

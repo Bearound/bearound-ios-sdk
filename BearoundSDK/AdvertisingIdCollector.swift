@@ -2,8 +2,7 @@ import AdSupport
 import AppTrackingTransparency
 import Foundation
 
-/// Reads the IDFA (Identifier for Advertisers) — the resettable identifier that lets the
-/// same person be recognised across apps for advertising purposes.
+/// Reads the IDFA (Identifier for Advertisers), the resettable identifier iOS provides for advertising.
 ///
 /// **On iOS the identifier is gated by a user-facing prompt.** Since iOS 14.5, reading a
 /// real IDFA requires App Tracking Transparency authorisation; without it the platform
@@ -24,8 +23,8 @@ enum AdvertisingIdCollector {
         return idfa == unauthorised ? nil : idfa
     }
 
-    /// Authorisation state, reported alongside the identifier so the backend can tell a
-    /// refusal apart from a prompt that was simply never shown.
+    /// Authorisation state, reported alongside the identifier, so a refusal can be told
+    /// apart from a prompt that was simply never shown.
     ///
     /// One of `authorized`, `denied`, `restricted`, `notDetermined` — or `unavailable` on
     /// iOS below 14, where the concept does not exist.
