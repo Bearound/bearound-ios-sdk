@@ -201,12 +201,8 @@ Android.
 
 #### Wi-Fi visit matching
 
-When the places list the SDK already downloads carries the known access points of a place, the
-SDK can also detect a **visit by Wi-Fi**: the device stays joined to one of those access points
-for the place's minimum dwell, and the SDK sends the arrival. It sends the departure once the
-device has been away from them for the same window. Both go out as ordinary `visit` events,
-with the matched access point first in `wifis[]` and, when the stop was opened by Wi-Fi alone,
-**no location**: the place is identified by the access point, not by a coordinate.
+From 3.14.0 the SDK can also detect a visit at a place through the Wi-Fi network the device is
+joined to, on places configured for it. Visits are reported as ordinary `visit` events.
 
 It needs what [Wi-Fi observations](#wi-fi-observations-optional) already needs, nothing more:
 
@@ -218,16 +214,8 @@ The SDK requests no new permission. Without the entitlement or the authorisation
 inert and everything else behaves as before; `BeAroundSDK.shared.diagnostics().wifiStatus`
 says why (`missingEntitlement`, `locationNotAuthorized`, `notConnected` or `ready`).
 
-> **Only the connected access point is visible on iOS.** There is no public API to scan
-> neighbouring networks, so a visit is matched only while the device is joined to one of the
-> place's known access points. The check runs at the moments iOS already wakes the SDK
-> (geofence entry, a visit, a location fix), not on a timer. A place with no Wi-Fi coverage
-> by its own access points keeps being detected by GPS alone.
-
-GPS and Wi-Fi reporting the same place share **one** stop: one arrival and one departure.
-`configure(collectWifi: false)`, `collectLocation: false` or the server's
-`visit_detection_enabled: false` switch the matcher off and discard its state, with no
-departure invented.
+On iOS only the network the device is joined to is visible. `configure(collectWifi: false)`,
+`collectLocation: false` or disabling visit detection switch it off.
 
 #### Advertising identifier (IDFA — optional)
 
