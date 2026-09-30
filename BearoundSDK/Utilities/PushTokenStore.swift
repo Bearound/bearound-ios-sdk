@@ -7,11 +7,17 @@
 
 import Foundation
 
-/// Stores the APNs push token and decides when to (re)send it: on change or every `ttl` (heartbeat).
+/// Stores the APNs push token and decides when to (re)send it: on change, every `ttl`
+/// (heartbeat), or once after the SDK version changed since the last send.
 enum PushTokenStore {
     private static let tokenKey = "io.bearound.sdk.pushToken"
     private static let lastSentKey = "io.bearound.sdk.pushTokenLastSent"
     private static let lastSentAtKey = "io.bearound.sdk.pushTokenLastSentAt"
+    /// SDK version that rode with the last delivered token. The backend decides push
+    /// capabilities (e.g. rich push) from the `sdkVersion` sent next to the token, so an
+    /// upgraded SDK must re-send the token once or the device stays on its old capabilities
+    /// until the token rotates, which may never happen.
+    private static let lastSentVersionKey = "io.bearound.sdk.pushTokenLastSentSdkVersion"
     private static let ttl: TimeInterval = 7 * 24 * 60 * 60 // 7 days
 
     private static let defaults = UserDefaults.standard
@@ -25,13 +31,30 @@ enum PushTokenStore {
     static var tokenForPayload: String? {
         lock.lock(); defer { lock.unlock() }
         guard let token = defaults.string(forKey: tokenKey), !token.isEmpty else { return nil }
-        let lastSent = defaults.string(forKey: lastSentKey)
-        if token != lastSent { return token }
-        if let at = defaults.object(forKey: lastSentAtKey) as? Date,
-           Date().timeIntervalSince(at) <= ttl {
-            return nil
-        }
-        return token // heartbeat: TTL elapsed since last send → re-send
+        let send = shouldSend(
+            token: token,
+            lastSent: defaults.string(forKey: lastSentKey),
+            lastSentAt: defaults.object(forKey: lastSentAtKey) as? Date,
+            lastSentVersion: defaults.string(forKey: lastSentVersionKey),
+            currentVersion: SDKVersion.resolved
+        )
+        return send ? token : nil
+    }
+
+    /// Pure send decision: a new token, an SDK version different from the one that rode
+    /// with the last send (includes installs that predate this key), or the TTL heartbeat.
+    static func shouldSend(
+        token: String,
+        lastSent: String?,
+        lastSentAt: Date?,
+        lastSentVersion: String?,
+        currentVersion: String,
+        now: Date = Date()
+    ) -> Bool {
+        if token != lastSent { return true }
+        if lastSentVersion != currentVersion { return true }
+        guard let lastSentAt else { return true }
+        return now.timeIntervalSince(lastSentAt) > ttl // heartbeat: TTL elapsed since last send
     }
 
     /// Marks `exactToken` as delivered. Pass the token that actually RODE in the
@@ -45,6 +68,7 @@ enum PushTokenStore {
         lock.lock(); defer { lock.unlock() }
         defaults.set(token, forKey: lastSentKey)
         defaults.set(Date(), forKey: lastSentAtKey)
+        defaults.set(SDKVersion.resolved, forKey: lastSentVersionKey)
     }
 
     static var maskedToken: String? {

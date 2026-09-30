@@ -7,6 +7,50 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.13.0] - 2026-09-29
+
+### Added
+- **Push rico: imagem, duas imagens, carrossel e vídeo.** Dois subspecs novos, para os
+  targets de extensão do app hospedeiro: `BearoundSDK/NotificationService`
+  (`BearoundNotificationService`, uma Notification Service Extension) e
+  `BearoundSDK/NotificationContent` (`BearoundNotificationViewController`, uma Notification
+  Content Extension). Nenhum dos dois depende do core: só usam APIs seguras para extensão
+  (`APPLICATION_EXTENSION_API_ONLY`), sem BLE, localização nem background modes. O
+  hospedeiro cria os dois targets e subclassifica as classes em uma linha cada.
+  - A Service Extension lê `bearound_rich` (contrato v1), baixa o card 0 (a capa, no
+    PLAY) e o anexa à notificação. Com o marcador `bearound { d, tr }`, o download passa pelo
+    tracker (`/v1/push:view?d=&r=&idx=`) e conta como visualização do card. A extensão do
+    arquivo vem do `Content-Type` (com a assinatura dos bytes como reserva); WebP é
+    recodificado como JPEG, que o `UNNotificationAttachment` aceita.
+  - Sem `bearound_rich`, a Service Extension anexa o `image_url` legado do topo do payload:
+    a imagem de fallback passa a aparecer também nos pushes antigos.
+  - **PLAY é vídeo de verdade.** A Service Extension baixa o MP4 do card (`u`, até 15 MB)
+    para um arquivo `.mp4` temporário e o anexa com a dica de tipo MPEG-4 e miniatura em
+    cerca de 1 s: ao expandir, o iOS toca o vídeo no player do sistema. O download é
+    cancelado assim que o servidor anuncia, ou envia, mais que o limite, e tem prazo dentro
+    do orçamento de tempo da extensão. A capa (`m`) é baixada em paralelo, sempre: pelo
+    tracker, esse download é a visualização. Se o vídeo falhar, passar do limite ou não
+    for MP4, a capa vira o anexo. Não há imagem parada com ícone de play em nenhum caso.
+  - A Content Extension desenha os cards por código (sem storyboard) conforme a categoria:
+    `BEAROUND_IMAGE`, `BEAROUND_TWO_IMAGES` (dois cards lado a lado com legenda) e
+    `BEAROUND_CAROUSEL` (páginas horizontais com anterior/próximo, imagem carregada ao
+    aparecer). Ela **não** declara `BEAROUND_PLAY`: se declarasse, esconderia o player
+    nativo. O toque num card abre a URL: http(s) pelo clique do tracker com `idx`, deep
+    link direto. Card sem URL abre o app, como um toque comum. O toque numa notificação
+    PLAY abre o app, e o hospedeiro decide o que fazer. Os ids ficam em
+    `BearoundPushCategory`; a lista para o Info.plist da Content Extension é
+    `BearoundPushCategory.contentExtension`.
+  - Se o servidor não mandar `aps.category`, a Service Extension define a categoria a
+    partir do `bearound_rich`, e o layout rico aparece mesmo assim.
+  - Sem as extensões instaladas, o aparelho continua recebendo a notificação padrão.
+- **`sdkVersion` junto do push token.** O bloco `userDevice` do payload leva a versão
+  nativa do SDK (até 32 caracteres), para o backend saber quais aparelhos já têm as
+  extensões de push rico.
+  Depois de uma atualização do SDK, o token é reenviado uma vez mesmo sem ter mudado: o
+  `PushTokenStore` guarda a versão que acompanhou o último envio, e sem isso um aparelho
+  atualizado continuaria marcado como antigo até o token rotacionar, o que pode nunca
+  acontecer.
+
 ## [3.12.0] - 2026-09-28
 
 ### Fixed
