@@ -41,7 +41,7 @@ struct VisitEvent: Equatable {
     let kind: VisitEventKind
     let syncTrigger: String
     /// nil for an event of a stop the Wi-Fi matcher opened with no GPS fix: the event then
-    /// carries no location at all and the server dates it by `wifis[0].timestamp`.
+    /// carries no location and is dated by `wifis[0].timestamp`.
     let latitude: Double?
     let longitude: Double?
     let accuracy: Double?
@@ -565,8 +565,7 @@ extension VisitMonitor {
     }
 
     /// Matched observations first, then the others. The matched ones carry `at`, the real
-    /// sighting the event stands for (first sighting for an arrival, last for a departure):
-    /// the server dates a location-less visit by `wifis[0].timestamp`.
+    /// sighting the event stands for (first sighting for an arrival, last for a departure).
     static func wifiList(matched: [WifiVisitMatcher.Observation], at: Date,
                          seen: [WifiObservation]) -> [WifiObservation] {
         let matchedIds = Set(matched.map(\.apId))

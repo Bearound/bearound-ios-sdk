@@ -1464,11 +1464,10 @@ public class BeAroundSDK {
     /// location (the fix time, not the send time).
     static func visitUserDevice(for event: VisitEvent, collected: UserDevice) -> UserDevice {
         var userDevice = collected
-        // nil for a Wi-Fi-only stop: the cached fix is never attached, it would be a stale
-        // GNSS anchor for a place identified by its access point.
+        // nil for a Wi-Fi-only stop: a cached fix could be old and far from the place.
         userDevice.location = event.deviceLocation
         if !event.wifis.isEmpty {
-            // Matched access points first: the server dates a location-less visit by wifis[0].
+            // Matched access points first: they date an event that has no location.
             let matched = Set(event.wifis.map(\.apId))
             userDevice.wifis = Array(
                 (event.wifis + collected.wifis.filter { !matched.contains($0.apId) })
