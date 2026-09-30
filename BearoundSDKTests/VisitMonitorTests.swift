@@ -616,3 +616,36 @@ struct PlacesConfigClientTests {
         #expect(tasks.begun == 2)
     }
 }
+
+@Suite("PlacesConfig knownApIds decoding")
+struct PlacesConfigKnownApIdsTests {
+
+    private let json = """
+    {"origin":{"lat":-23.561,"lng":-46.656},"refreshAfterMeters":2500,"maxAgeSeconds":21600,
+     "visit_detection_enabled":true,
+     "places":[
+      {"environmentId":"env-1","businessId":"biz","name":"env-1","gpsVisitClass":"street_isolated",
+       "geometry":{"type":"point","lat":-23.562,"lng":-46.657,"radiusMeters":80},
+       "distanceMeters":150,"minDwellMinutes":5},
+      {"environmentId":"env-wifi","businessId":"biz","name":"env-wifi","gpsVisitClass":"mall_gallery",
+       "geometry":{"type":"point","lat":-23.5625,"lng":-46.6575,"radiusMeters":80},
+       "distanceMeters":200,"minDwellMinutes":5,
+       "knownApIds":["9f3a1c02b7d4e688","0a1b2c3d4e5f6071"]}
+     ]}
+    """
+
+    @Test("A place without the field decodes as an empty list; one with it keeps the ids")
+    func decodesWithAndWithoutField() throws {
+        let config = try JSONDecoder().decode(PlacesConfig.self, from: Data(json.utf8))
+        #expect(config.places.count == 2)
+        #expect(config.places[0].knownApIds.isEmpty)
+        #expect(config.places[1].knownApIds == ["9f3a1c02b7d4e688", "0a1b2c3d4e5f6071"])
+    }
+
+    @Test("The ids survive the persisted round trip")
+    func survivesPersistence() throws {
+        let config = try JSONDecoder().decode(PlacesConfig.self, from: Data(json.utf8))
+        let decoded = try JSONDecoder().decode(PlacesConfig.self, from: JSONEncoder().encode(config))
+        #expect(decoded == config)
+    }
+}

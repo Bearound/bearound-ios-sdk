@@ -47,6 +47,34 @@ struct PlacesConfig: Codable, Equatable {
         let geometry: Geometry
         let distanceMeters: Double
         let minDwellMinutes: Int?
+        /// Hashed identifiers (`ApIdentifier`) of the access points known to belong to the
+        /// environment. Absent from older responses, which decode as an empty list.
+        let knownApIds: [String]
+
+        init(environmentId: String, businessId: String?, name: String?, gpsVisitClass: String?,
+             geometry: Geometry, distanceMeters: Double, minDwellMinutes: Int?,
+             knownApIds: [String] = []) {
+            self.environmentId = environmentId
+            self.businessId = businessId
+            self.name = name
+            self.gpsVisitClass = gpsVisitClass
+            self.geometry = geometry
+            self.distanceMeters = distanceMeters
+            self.minDwellMinutes = minDwellMinutes
+            self.knownApIds = knownApIds
+        }
+
+        init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            environmentId = try container.decode(String.self, forKey: .environmentId)
+            businessId = try container.decodeIfPresent(String.self, forKey: .businessId)
+            name = try container.decodeIfPresent(String.self, forKey: .name)
+            gpsVisitClass = try container.decodeIfPresent(String.self, forKey: .gpsVisitClass)
+            geometry = try container.decode(Geometry.self, forKey: .geometry)
+            distanceMeters = try container.decode(Double.self, forKey: .distanceMeters)
+            minDwellMinutes = try container.decodeIfPresent(Int.self, forKey: .minDwellMinutes)
+            knownApIds = try container.decodeIfPresent([String].self, forKey: .knownApIds) ?? []
+        }
     }
 
     let origin: Coordinate
