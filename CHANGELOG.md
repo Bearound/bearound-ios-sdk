@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.14.0] - 2026-09-30
+
+### Added
+- **Visita por Wi-Fi.** A configuração de lugares pode trazer `knownApIds` por lugar (a
+  identidade com hash do ponto de acesso, o mesmo `apId` que o SDK já reporta). Quando o
+  aparelho fica conectado a um desses pontos pelo dwell do lugar, o SDK envia a chegada; quando
+  fica longe deles pela mesma janela, envia a saída. Os dois saem como eventos `visit` comuns,
+  com o ponto casado primeiro em `wifis[]`, datado pela hora em que foi visto.
+- O matcher roda nos momentos em que o iOS já acorda o SDK (entrada na cerca, CLVisit, fix de
+  localização), não por temporizador. No iOS só o ponto conectado é visível
+  (`NEHotspotNetwork.fetchCurrent`).
+- `diagnostics().wifiStatus`: `ready`, `notConnected`, `missingEntitlement` ou
+  `locationNotAuthorized`. Sem o entitlement **Access WiFi Information** ou sem localização
+  Always o matcher fica inerte, e o diagnóstico diz por quê.
+
+### Changed
+- **Uma parada por lugar.** GPS e Wi-Fi no mesmo lugar dividem a parada aberta: chegada Wi-Fi
+  com parada GPS aberta só acrescenta os pontos; saída Wi-Fi só fecha parada aberta por Wi-Fi;
+  saída GPS fecha qualquer parada e leva os pontos casados.
+- O evento de uma parada aberta só por Wi-Fi vai **sem localização**.
+- Configuração sem `knownApIds` continua decodificando (lista vazia), e a parada salva pela
+  3.13.0 continua carregando. Nenhuma permissão nova.
+
 ## [3.13.0] - 2026-09-29
 
 ### Added

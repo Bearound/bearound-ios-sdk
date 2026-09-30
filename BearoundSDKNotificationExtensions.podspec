@@ -1,7 +1,7 @@
 Pod::Spec.new do |spec|
 
   spec.name         = "BearoundSDKNotificationExtensions"
-  spec.version      = "3.13.0"
+  spec.version      = "3.14.0"
   spec.summary      = "Notification Service and Content extensions for Bearound rich push on iOS."
   spec.description  = "Ready-made app extension classes for Bearound rich push: a Notification Service Extension that attaches the image or video of a push, and a Notification Content Extension that draws the image, two-card and carousel layouts. Ships separately from BearoundSDK and does not depend on it."
   spec.homepage     = "https://github.com/Bearound/bearound-ios-sdk"
