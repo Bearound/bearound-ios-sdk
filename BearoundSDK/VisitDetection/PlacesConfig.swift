@@ -284,23 +284,49 @@ final class VisitStateStore {
         set { defaults.set(newValue, forKey: Self.keyLastFailedFetchAt) }
     }
 
+    /// What reported a stop: the GPS pipeline (CLVisit, geofence fix), the Wi-Fi matcher, or both.
+    enum StopSource: String, Codable {
+        case gps
+        case wifi
+    }
+
     /// A stop whose arrival was sent and whose departure was not yet.
+    ///
+    /// Persisted by the previous version without `sources`/`apIds`: those decode as a GPS
+    /// stop with no access points.
     struct OpenStop: Codable, Equatable {
-        let latitude: Double
-        let longitude: Double
+        /// nil for a stop opened by the Wi-Fi matcher with no GPS fix.
+        var latitude: Double?
+        var longitude: Double?
         let arrivalAt: Date
-        let environmentId: String?
+        var environmentId: String?
         /// Set only for a stop a geofence entry opened: past this instant, with no CLVisit
         /// confirming the dwell, the stop is dropped (drive-by). nil for a CLVisit stop.
-        let fenceExpiresAt: Date?
+        var fenceExpiresAt: Date?
+        var sources: Set<StopSource>
+        /// Hashed ids of the known access points matched during the stop.
+        var apIds: [String]
 
-        init(latitude: Double, longitude: Double, arrivalAt: Date, environmentId: String?,
-             fenceExpiresAt: Date? = nil) {
+        init(latitude: Double?, longitude: Double?, arrivalAt: Date, environmentId: String?,
+             fenceExpiresAt: Date? = nil, sources: Set<StopSource> = [.gps], apIds: [String] = []) {
             self.latitude = latitude
             self.longitude = longitude
             self.arrivalAt = arrivalAt
             self.environmentId = environmentId
             self.fenceExpiresAt = fenceExpiresAt
+            self.sources = sources
+            self.apIds = apIds
+        }
+
+        init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            latitude = try container.decodeIfPresent(Double.self, forKey: .latitude)
+            longitude = try container.decodeIfPresent(Double.self, forKey: .longitude)
+            arrivalAt = try container.decode(Date.self, forKey: .arrivalAt)
+            environmentId = try container.decodeIfPresent(String.self, forKey: .environmentId)
+            fenceExpiresAt = try container.decodeIfPresent(Date.self, forKey: .fenceExpiresAt)
+            sources = try container.decodeIfPresent(Set<StopSource>.self, forKey: .sources) ?? [.gps]
+            apIds = try container.decodeIfPresent([String].self, forKey: .apIds) ?? []
         }
     }
 

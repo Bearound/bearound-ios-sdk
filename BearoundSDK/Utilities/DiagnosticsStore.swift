@@ -20,6 +20,8 @@ final class DiagnosticsStore {
     private(set) var lastSyncSuccess: Bool?
     private(set) var lastSyncBeaconCount: Int?
     private(set) var lastPushReceivedAt: Date?
+    /// `WifiCollectorStatus` of the last Wi-Fi visit round; nil until one ran.
+    private(set) var lastWifiStatus: String?
     private var errors: [String] = [] // ring buffer, last 10
 
     private let iso: ISO8601DateFormatter = {
@@ -39,6 +41,11 @@ final class DiagnosticsStore {
     func recordPushReceived() {
         lock.lock(); defer { lock.unlock() }
         lastPushReceivedAt = Date()
+    }
+
+    func recordWifiStatus(_ status: String) {
+        lock.lock(); defer { lock.unlock() }
+        lastWifiStatus = status
     }
 
     func recordError(_ message: String) {

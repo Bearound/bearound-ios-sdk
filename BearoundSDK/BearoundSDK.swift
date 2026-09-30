@@ -154,7 +154,8 @@ public class BeAroundSDK {
             backgroundRefreshStatus: backgroundRefresh,
             backgroundTasksRegistered: bgTasksRegistered,
             detectionReadiness: detectionReadiness.rawValue,
-            backgroundModes: Self.declaredBackgroundModes
+            backgroundModes: Self.declaredBackgroundModes,
+            wifiStatus: store.lastWifiStatus ?? "notRun"
         )
     }
 
@@ -1372,7 +1373,8 @@ public class BeAroundSDK {
                 self.visitMonitor = VisitMonitor(
                     locationManager: CoreLocationVisitManager(),
                     fetcher: PlacesConfigClient(configuration: { [weak self] in self?.configuration }),
-                    sender: VisitEventForwarder { [weak self] event in self?.sendVisitEvent(event) }
+                    sender: VisitEventForwarder { [weak self] event in self?.sendVisitEvent(event) },
+                    wifi: WifiCollector()
                 )
             }
             self.visitMonitor?.start()
@@ -1426,8 +1428,9 @@ public class BeAroundSDK {
     }
 
     /// One visit event is a normal `/ingest` payload: no beacons, `syncTrigger: "visit"`, the
-    /// visit fix as `location` (real fix time, `source: "gnss"`) and the Wi-Fi the collector
-    /// already holds when the policy allows it.
+    /// visit fix as `location` (real fix time, `source: "gnss"`; absent for a Wi-Fi-only stop)
+    /// and the Wi-Fi: the matched access points first, then what the collector already holds,
+    /// when the policy allows it.
     ///
     /// Durable: the event is persisted in `OfflineBatchStorage` with its captured context
     /// (exempt from the count eviction) and delivered by the retry drain, which keeps
@@ -1461,7 +1464,16 @@ public class BeAroundSDK {
     /// location (the fix time, not the send time).
     static func visitUserDevice(for event: VisitEvent, collected: UserDevice) -> UserDevice {
         var userDevice = collected
+        // nil for a Wi-Fi-only stop: the cached fix is never attached, it would be a stale
+        // GNSS anchor for a place identified by its access point.
         userDevice.location = event.deviceLocation
+        if !event.wifis.isEmpty {
+            // Matched access points first: the server dates a location-less visit by wifis[0].
+            let matched = Set(event.wifis.map(\.apId))
+            userDevice.wifis = Array(
+                (event.wifis + collected.wifis.filter { !matched.contains($0.apId) })
+                    .prefix(VisitMonitor.maxWifisPerEvent))
+        }
         return userDevice
     }
 

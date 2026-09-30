@@ -199,6 +199,36 @@ Android.
 > that for terminated-app wake-up the singleton must be touched inside
 > `application(_:didFinishLaunchingWithOptions:)` (see Quick Start).
 
+#### Wi-Fi visit matching
+
+When the places list the SDK already downloads carries the known access points of a place, the
+SDK can also detect a **visit by Wi-Fi**: the device stays joined to one of those access points
+for the place's minimum dwell, and the SDK sends the arrival. It sends the departure once the
+device has been away from them for the same window. Both go out as ordinary `visit` events,
+with the matched access point first in `wifis[]` and, when the stop was opened by Wi-Fi alone,
+**no location**: the place is identified by the access point, not by a coordinate.
+
+It needs what [Wi-Fi observations](#wi-fi-observations-optional) already needs, nothing more:
+
+- the **Access WiFi Information** capability (`com.apple.developer.networking.wifi-info`)
+  on your app target;
+- location authorisation **Always**, which iOS also requires for visit detection.
+
+The SDK requests no new permission. Without the entitlement or the authorisation it stays
+inert and everything else behaves as before; `BeAroundSDK.shared.diagnostics().wifiStatus`
+says why (`missingEntitlement`, `locationNotAuthorized`, `notConnected` or `ready`).
+
+> **Only the connected access point is visible on iOS.** There is no public API to scan
+> neighbouring networks, so a visit is matched only while the device is joined to one of the
+> place's known access points. The check runs at the moments iOS already wakes the SDK
+> (geofence entry, a visit, a location fix), not on a timer. A place with no Wi-Fi coverage
+> by its own access points keeps being detected by GPS alone.
+
+GPS and Wi-Fi reporting the same place share **one** stop: one arrival and one departure.
+`configure(collectWifi: false)`, `collectLocation: false` or the server's
+`visit_detection_enabled: false` switch the matcher off and discard its state, with no
+departure invented.
+
 #### Advertising identifier (IDFA — optional)
 
 The SDK can report the **IDFA**, the identifier iOS provides for advertising attribution,
@@ -1186,7 +1216,7 @@ The SDK logs important events with tag `[BeAroundSDK]`:
 
 #### Diagnostics snapshot
 
-`BeAroundSDK.shared.diagnostics()` returns a `BeAroundDiagnostics` (device id, masked push token + last-sent, `apnsEnvironment`, scanning state, pending batches, last scan/sync/push, recent errors). Use `.summary()` for a log-friendly string. Reads in-memory state only — no network.
+`BeAroundSDK.shared.diagnostics()` returns a `BeAroundDiagnostics` (device id, masked push token + last-sent, `apnsEnvironment`, scanning state, pending batches, last scan/sync/push, recent errors, `wifiStatus`). Use `.summary()` for a log-friendly string. Reads in-memory state only, no network.
 
 ### Security & Privacy
 
