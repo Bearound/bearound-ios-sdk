@@ -5,24 +5,20 @@ import Foundation
 /// **iOS reports exactly one of these — the access point the device is joined to.** There
 /// is no public API for scanning neighbouring networks, so `rssi` is usually `nil` and the
 /// list never grows past one entry. Android fills the same structure with the neighbours it
-/// can see; the backend consumes both shapes without caring which platform produced them.
+/// can see.
 struct WifiObservation: Codable, Equatable {
-    /// Canonical hash of the BSSID (16 hex chars) — the identity the backend actually uses.
+    /// Canonical hash of the BSSID (16 hex chars): the access point's identifier.
     let apId: String
     /// Human-readable network name, reported alongside `apId`.
     ///
-    /// **Consumed by the backend — keep it.** It is not a debugging leftover on its way out:
-    /// the name carries information the hashed `apId` cannot, so it is part of the payload
-    /// contract. (An earlier revision of this file marked it for removal; that is no longer
-    /// the plan, and deleting it would take a live signal down with it.)
+    /// Part of the payload contract.
     ///
     /// It is personal data all the same — a network name identifies a place, and at home a
     /// household — so it ships only while the host allows Wi-Fi collection
     /// (`configure(collectWifi:)`) and is dropped with the rest of the block otherwise.
     let ssid: String?
-    /// Signal strength in dBm. Almost always `nil` on iOS — the platform exposes only a
-    /// coarse 0…1 value that proved unreliable in practice, and publishing a fabricated
-    /// dBm would poison distance estimates downstream.
+    /// Signal strength in dBm. Almost always `nil` on iOS: the platform exposes only a
+    /// coarse 0…1 value.
     let rssi: Int?
     /// Whether this is the access point the device is joined to. Always `true` on iOS.
     let connected: Bool

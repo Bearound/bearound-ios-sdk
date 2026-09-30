@@ -46,8 +46,7 @@ struct VisitEvent: Equatable {
     let longitude: Double?
     let accuracy: Double?
     let timestamp: Date
-    /// The environment whose geofence woke the SDK, when known. Diagnostic only: the
-    /// ingest resolves the environment from the coordinates (section 2.4a).
+    /// The environment whose geofence woke the SDK, when known. Diagnostic only.
     let environmentId: String?
     /// Matched known access points first (each with its real observation time), then the
     /// others seen in the same round. Empty for a pure GPS event.
@@ -384,8 +383,7 @@ final class VisitMonitor {
             return nil
         }
         if let expiresAt = open.fenceExpiresAt, clock.now > expiresAt {
-            // Drive-by: the fence fired but iOS never saw a dwell. No departure is invented;
-            // the lone arrival is a short session on the server.
+            // Drive-by: the fence fired but iOS never saw a dwell. No departure is sent.
             store.openStop = nil
             NSLog("[BeAroundSDK] Visit stop opened by a geofence (%@) expired without a CLVisit, dropped",
                   open.environmentId ?? "?")
@@ -435,8 +433,7 @@ final class VisitMonitor {
     }
 
     /// Opens a stop and sends its arrival. An open stop at another place is overwritten
-    /// without any event for it: its arrival stays an orphan, which the server accepts as a
-    /// short session.
+    /// without any event for it.
     private func sendArrival(latitude: Double?, longitude: Double?, accuracy: Double?,
                              at timestamp: Date, environmentId: String?, fenceExpiresAt: Date? = nil,
                              sources: Set<VisitStateStore.StopSource> = [.gps], apIds: [String] = [],

@@ -34,13 +34,12 @@ struct UserDevice: Codable, Equatable {
     let coldStart: Bool
     let lowPowerMode: Bool?
     let locationAccuracy: String?
-    /// Hash of the connected access point's BSSID — the identity the backend uses.
+    /// Hash of the connected access point's BSSID (the access point's identifier).
     let apId: String?
     /// Name of the connected network.
     ///
-    /// **Consumed by the backend — keep it.** See ``WifiObservation/ssid``: the name carries
-    /// information the hashed `apId` cannot. Personal data, so it ships only while the host
-    /// allows Wi-Fi collection (`configure(collectWifi:)`).
+    /// Personal data, so it ships only while the host allows Wi-Fi collection
+    /// (`configure(collectWifi:)`).
     let wifiSSID: String?
     let connectionMetered: Bool?
     let connectionExpensive: Bool?

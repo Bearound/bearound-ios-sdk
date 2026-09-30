@@ -3,7 +3,7 @@
 //  BearoundSDK
 //
 //  Visit detection config: the nearby target environments and the kill switch,
-//  served by `GET /sdk/places/nearby` on the Bearound backend (the SDK host, `apiBaseURL`).
+//  served by `GET /sdk/places/nearby` on the SDK host (`apiBaseURL`).
 //
 
 import Foundation
@@ -22,7 +22,7 @@ struct PlacesConfig: Codable, Equatable {
 
     /// `point` carries `lat`/`lng`; `polygon` carries `rings` plus the circumscribed
     /// circle (`center`). Both carry `radiusMeters`. Only the circle is used on device:
-    /// CLCircularRegion accepts nothing else, and the ingest decides the environment.
+    /// CLCircularRegion accepts nothing else.
     struct Geometry: Codable, Equatable {
         let type: String
         let lat: Double?

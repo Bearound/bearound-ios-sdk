@@ -346,9 +346,8 @@ final class DeviceInfoCollector: @unchecked Sendable {
 		return nil
 	}
 
-	// The old `wifiSSID()` lived here. It read the network NAME, which identified the
-	// user's household in clear text and served no purpose downstream — `WifiCollector`
-	// now reports the hashed access point identity instead.
+	// The network name (SSID) is not read here. `WifiCollector` reports it alongside the
+	// hashed `apId`, and only while Wi-Fi collection is on.
 
 	private func connectionMetered() -> Bool? {
 		let networkType = networkType()

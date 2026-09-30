@@ -95,7 +95,7 @@ final class BackgroundSessionManager: NSObject {
     /// This is pure background-session by design: the immediate-first attempt lives in
     /// `APIClient.sendBeacons(delivery: .immediateFirst)`, which falls back HERE on
     /// transport failure. Keeping this layer background-only avoids double immediate
-    /// attempts (PR #51 + #52 overlapped on the same fix; this is the reconciliation)
+    /// attempts
     /// and preserves an honest `.background` mode for callers without an execution
     /// window. Background sessions reject `httpBody` on upload tasks, so the body is
     /// staged to a temp file (deleted in didCompleteWithError).
@@ -270,14 +270,10 @@ class APIClient {
     /// durable copy (e.g. register).
     /// Which payloads the ingest accepts with an empty `beacons` array.
     ///
-    /// Mirrors `beacon-ingest/src/payload_rules.ts`: `register` short-circuits before the
-    /// beacon check, and anything else is accepted when it still carries something to
-    /// archive — encounters, the device's own location, or the Wi-Fi around it. Everything
-    /// else is answered `400 Missing beacons in payload`.
+    /// Mirrors the ingest payload rules: `register` needs no beacons; other triggers need
+    /// encounters, location or Wi-Fi. Anything else gets `400 Missing beacons in payload`.
     ///
-    /// Named (rather than inlined) because this is the rule that was violated silently — the
-    /// encounter layer began uploading beacon-less payloads and nothing here objected. Keeping
-    /// it in one named place is what makes a future divergence from the backend visible.
+    /// Named (rather than inlined) so the rule lives in one place.
     static func acceptsEmptyBeacons(
         syncTrigger: String,
         hasEncounters: Bool,
@@ -297,12 +293,9 @@ class APIClient {
         persistedBatchIds: [String] = [],
         completion: @escaping (Result<Void, Error>) -> Void
     ) {
-        // A payload with no beacons is only worth a request when it still carries something to
-        // archive — `register`, encounters, the device's own location, or the Wi-Fi around it.
-        // Anything else is answered 400 "Missing beacons in payload". Enforced here, at the
-        // boundary, because the previous unconditional early-exit was removed to let `register`
-        // through — and that quietly opened the door for the encounter layer to ship a
-        // beacon-less upload that the backend rejected on arrival.
+        // A payload with no beacons is sent only when it still carries something the ingest
+        // accepts: `register`, encounters, the device's own location, or Wi-Fi. Anything else
+        // is answered 400 "Missing beacons in payload". Enforced here, at the boundary.
         //
         // Completes as SUCCESS on purpose: reaching here is an SDK-side mistake, not a delivery
         // failure. Reporting it as a failure would bump `consecutiveFailures` and push the retry
@@ -541,9 +534,7 @@ class APIClient {
         if let locationAccuracy = device.locationAccuracy {
             permissions["locationAccuracy"] = locationAccuracy
         }
-        // Advertising ID lives here because that is where the ingest already reads it from
-        // (`device.permissions.advertisingId`) — provided by the SDK so the backend can skip
-        // the matchmaker round-trip.
+        // Advertising ID is sent under `device.permissions.advertisingId`.
         if let advertisingId = device.advertisingId {
             permissions["advertisingId"] = advertisingId
         }

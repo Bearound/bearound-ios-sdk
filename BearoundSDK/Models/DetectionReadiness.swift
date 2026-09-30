@@ -25,7 +25,7 @@ public enum BeAroundDetectionReadiness: String {
 
     /// Location `Always` + full accuracy. Region monitoring arms, so iOS relaunches the app
     /// on a beacon region enter **even after the user force-quits it**. The only regime with
-    /// a deterministic waker, and the one the product was designed around.
+    /// a deterministic waker.
     case full
 
     /// No CoreLocation waker (at most `whenInUse`, or Precise Location off), but the host
@@ -80,8 +80,8 @@ public enum BeAroundDetectionReadiness: String {
         let canRangeInForeground = locationUsable
             && (locationStatus == .authorizedAlways || locationStatus == .authorizedWhenInUse)
 
-        // The waker is the whole product: Always, and nothing less. `whenInUse` buys
-        // foreground ranging and iOS answers startMonitoring() with kCLErrorDomain 4.
+        // A deterministic waker requires Always. `whenInUse` buys foreground ranging and
+        // iOS answers startMonitoring() with kCLErrorDomain 4.
         if locationUsable, locationStatus == .authorizedAlways { return .full }
 
         guard bluetoothAuthorized || canRangeInForeground else { return .blind }

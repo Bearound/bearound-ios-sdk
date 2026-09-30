@@ -36,18 +36,16 @@ protocol WifiRoundProviding: AnyObject {
 ///
 /// **iOS gives us one access point, not a list.** There is no public API for scanning
 /// neighbouring networks — `NEHotspotHelper` is reserved for hotspot-provider apps and
-/// nothing else enumerates the air. So where Android draws the map, iOS confirms a point on
-/// it: "this device is on this access point right now". One vote per device, but a reliable
-/// one, and at fleet scale that is what densifies the map.
+/// nothing else enumerates the air. So on iOS the payload carries at most the one access
+/// point the device is joined to.
 ///
 /// Two host-app requirements, both outside the SDK's control:
 ///
 /// - the **Access WiFi Information** capability (`com.apple.developer.networking.wifi-info`)
 /// - location authorisation — When In Use is enough **while the app is in the foreground**;
 ///   `.always` is what keeps the access point coming once it is backgrounded. With
-///   `.whenInUse` iOS returns `nil` in the background rather than an error, so the payload
-///   simply arrives without Wi-Fi and nothing reports why. A fleet lives in the background,
-///   so this is the difference between collecting and not collecting.
+///   `.whenInUse` iOS returns `nil` in the background rather than an error, so background
+///   payloads carry no Wi-Fi unless the app holds `.always`.
 ///
 /// Without either, iOS returns `nil` and the SDK simply reports no Wi-Fi — every other
 /// feature behaves exactly as before.
@@ -166,9 +164,7 @@ final class WifiCollector: WifiRoundProviding {
             apId: apId,
             // Part of the contract, not a leftover — see WifiObservation.ssid.
             ssid: ssid,
-            // Deliberately nil: `NEHotspotNetwork.signalStrength` is a coarse 0…1 value that
-            // measured 0 on real hardware. Publishing a fabricated dBm would poison the
-            // distance estimates the backend derives from RSSI.
+            // Deliberately nil: `NEHotspotNetwork.signalStrength` is a coarse 0…1 value, not dBm.
             rssi: nil,
             connected: true,
             // Not exposed by iOS at all.

@@ -104,8 +104,8 @@ Start; the steps below refine it).
    (step 4) OR if I want Wi-Fi observations collected in the BACKGROUND. On the Wi-Fi
    side the level matters and the difference is invisible: .whenInUse reveals the access
    point only while the app is on screen — once backgrounded iOS returns nil, not an
-   error, so the payload just arrives without Wi-Fi and nothing says why. A fleet lives
-   in the background, so .whenInUse means "almost never". If the Location eye is already
+   error, so the payload just arrives without Wi-Fi and nothing says why. Devices
+   spend most of their time in the background, so .whenInUse means "rarely". If the Location eye is already
    on, .always covers both and there is nothing extra to decide; if it is NOT on, ASK ME
    before requesting .always purely for Wi-Fi — it is a real prompt with a real refusal
    rate.
