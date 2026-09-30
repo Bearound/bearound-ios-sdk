@@ -3,11 +3,14 @@
 //  BearoundSDK
 //
 //  Pure parsing of the rich push contract (`bearound_rich`, v1) and the URLs derived from it.
-//  Foundation only and extension-safe: this file is compiled into the core SDK AND into the
-//  `NotificationService` / `NotificationContent` subspecs, which must not depend on the core.
+//  Foundation and ImageIO only, extension-safe: this file is compiled into the core SDK AND
+//  into the separate `BearoundSDKNotificationExtensions` pod, which must not depend on the
+//  core. Everything here stays internal except `BearoundPushCategory`, so each module gets
+//  its own copy without clashing.
 //
 
 import Foundation
+import ImageIO
 
 /// Notification category ids of the rich push formats (`aps.category`).
 public enum BearoundPushCategory {
@@ -100,7 +103,7 @@ struct RichPushPayload: Equatable {
         guard let rich = RichPush.dictionary(userInfo["bearound_rich"]),
               let version = rich["v"] as? Int, version == supportedVersion,
               let rawFormat = rich["f"] as? String, let format = RichPushFormat(rawValue: rawFormat),
-              let mediaBase = rich["mb"] as? String, RichPush.isHTTP(mediaBase),
+              let mediaBase = rich["mb"] as? String, RichPush.isHTTPS(mediaBase),
               let rawCards = rich["c"] as? [Any]
         else { return nil }
 
@@ -138,23 +141,27 @@ struct RichPushPayload: Equatable {
         return RichPush.trackerURL(tracking, verb: "view", target: raw, index: index)
     }
 
-    /// Direct video URL of a `PLAY` payload (card 0 `u`, http(s) only). Nil for the other
-    /// formats, or when `u` is missing or not http(s): the poster is attached instead.
+    /// Direct video URL of a `PLAY` payload (card 0 `u`, https only: ATS blocks plain http
+    /// inside the extension). Nil for the other formats, or when `u` is missing or not https:
+    /// the poster is attached instead.
     var videoURL: URL? {
-        guard format == .play, let raw = cards.first?.url, RichPush.isHTTP(raw) else { return nil }
+        guard format == .play, let raw = cards.first?.url, RichPush.isHTTPS(raw) else { return nil }
         return URL(string: raw)
     }
 
-    /// URL to open when card `index` is tapped. Nil when the card has no `u` (the tap opens
-    /// the app). An http(s) `u` goes through the tracker click when tracking is available; a
-    /// deep link always opens directly. Always nil for `PLAY`: its `u` is the video, and a tap
-    /// opens the app, where the host decides what to do.
-    func tapURL(at index: Int) -> URL? {
-        guard format != .play, cards.indices.contains(index), let target = cards[index].url else { return nil }
+    /// URL to open when card `index` is tapped. Nil means the default action (open the app):
+    /// the card has no `u`, or `u` is neither http(s) nor a scheme the host app declares in
+    /// its `CFBundleURLTypes` (`hostSchemes`, lowercased). An http(s) `u` goes through the
+    /// tracker click when tracking is available; a declared deep link opens directly. Always
+    /// nil for `PLAY`: its `u` is the video, and a tap opens the app.
+    func tapURL(at index: Int, hostSchemes: Set<String> = []) -> URL? {
+        guard format != .play, cards.indices.contains(index), let target = cards[index].url,
+              let url = URL(string: target), RichPush.isAllowedTapTarget(url, hostSchemes: hostSchemes)
+        else { return nil }
         if RichPush.isHTTP(target), let tracking {
             return RichPush.trackerURL(tracking, verb: "click", target: target, index: index)
         }
-        return URL(string: target)
+        return url
     }
 }
 
@@ -177,6 +184,13 @@ enum RichPush {
     static let maxVideoBytes: Int64 = 15 * 1024 * 1024
     /// Largest image attached (the system limit for image attachments is 10 MB).
     static let maxImageBytes: Int64 = 10 * 1024 * 1024
+    /// Largest card image the Content Extension fetches (cards 1+ of a carousel or pair).
+    static let maxCardImageBytes: Int64 = 5 * 1024 * 1024
+    /// Longest side, in pixels, of an image the extensions decode or re-encode. Keeps a
+    /// WebP/HEIC far larger than the screen from being decoded at full size in an extension.
+    static let maxImagePixelSize = 2048
+    /// Prefixes of the temp items the Service Extension creates.
+    static let tempPrefixes = ["bearound-rich-", "bearound-download-"]
     /// The system gives a Service Extension about 30 s. The video gets this much, and the
     /// poster (downloaded in parallel) is always ready as the fallback.
     static let videoDownloadTimeout: TimeInterval = 22
@@ -200,7 +214,7 @@ enum RichPush {
             let plan = RichPushAttachmentPlan(image: payload.imageURL(at: 0), video: payload.videoURL)
             return plan.image == nil && plan.video == nil ? nil : plan
         }
-        guard let legacy = userInfo["image_url"] as? String, isHTTP(legacy), let url = URL(string: legacy)
+        guard let legacy = userInfo["image_url"] as? String, isHTTPS(legacy), let url = URL(string: legacy)
         else { return nil }
         return RichPushAttachmentPlan(image: url, video: nil)
     }
@@ -216,14 +230,10 @@ enum RichPush {
         (expected > 0 && expected > cap) || received > cap
     }
 
-    /// True when a downloaded file is an MP4 the attachment API can play: a `video/mp4`
-    /// Content-Type or the `ftyp` box at offset 4. Rejects an HTML error page served as 200.
+    /// True when a downloaded file is an MP4 the attachment API can play: the `ftyp` box at
+    /// offset 4, always. The Content-Type alone is not trusted (`mimeType` is informational),
+    /// so an HTML error page served as `video/mp4` with a 200 is rejected.
     static func isMP4(mimeType: String?, data: Data?) -> Bool {
-        if let mime = mimeType?.split(separator: ";").first?
-            .trimmingCharacters(in: .whitespaces).lowercased(),
-            mime == "video/mp4" {
-            return true
-        }
         guard let data, data.count >= 8 else { return false }
         return [UInt8](data.subdata(in: 4..<8)) == [0x66, 0x74, 0x79, 0x70]
     }
@@ -270,6 +280,73 @@ enum RichPush {
     static func isHTTP(_ value: String) -> Bool {
         let lower = value.lowercased()
         return lower.hasPrefix("https://") || lower.hasPrefix("http://")
+    }
+
+    /// Media (images, video) must be https: App Transport Security blocks plain http in the
+    /// extensions, so an http media URL could never load.
+    static func isHTTPS(_ value: String) -> Bool {
+        value.lowercased().hasPrefix("https://")
+    }
+
+    /// Whether a card tap may open `url`: http(s), or a scheme the host app declares.
+    /// Anything else (`javascript:`, `tel:`, another app's scheme) is the default action.
+    static func isAllowedTapTarget(_ url: URL, hostSchemes: Set<String>) -> Bool {
+        guard let scheme = url.scheme?.lowercased(), !scheme.isEmpty else { return false }
+        if scheme == "https" || scheme == "http" { return url.host?.isEmpty == false }
+        return hostSchemes.contains(scheme)
+    }
+
+    /// The URL schemes an app declares in its Info.plist (`CFBundleURLTypes[].CFBundleURLSchemes`),
+    /// lowercased.
+    static func declaredURLSchemes(infoDictionary: [String: Any]?) -> Set<String> {
+        guard let types = infoDictionary?["CFBundleURLTypes"] as? [[String: Any]] else { return [] }
+        var schemes = Set<String>()
+        for type in types {
+            for scheme in (type["CFBundleURLSchemes"] as? [String]) ?? [] where !scheme.isEmpty {
+                schemes.insert(scheme.lowercased())
+            }
+        }
+        return schemes
+    }
+
+    /// Decodes the image in `file` at most `maxPixelSize` on its longest side, never at full
+    /// resolution (ImageIO thumbnail from the file; orientation applied). Nil when the file
+    /// is not an image ImageIO can read.
+    static func downsampledImage(at file: URL, maxPixelSize: Int = maxImagePixelSize) -> CGImage? {
+        let sourceOptions = [kCGImageSourceShouldCache: false] as CFDictionary
+        guard let source = CGImageSourceCreateWithURL(file as CFURL, sourceOptions) else { return nil }
+        let options = [
+            kCGImageSourceCreateThumbnailFromImageAlways: true,
+            kCGImageSourceCreateThumbnailWithTransform: true,
+            kCGImageSourceShouldCacheImmediately: true,
+            kCGImageSourceThumbnailMaxPixelSize: maxPixelSize,
+        ] as CFDictionary
+        return CGImageSourceCreateThumbnailAtIndex(source, 0, options)
+    }
+
+    /// Writes `image` to `file` as JPEG. False when encoding fails.
+    static func writeJPEG(_ image: CGImage, to file: URL, quality: Double = 0.9) -> Bool {
+        guard let destination = CGImageDestinationCreateWithURL(file as CFURL, "public.jpeg" as CFString, 1, nil)
+        else { return false }
+        CGImageDestinationAddImage(destination, image, [kCGImageDestinationLossyCompressionQuality: quality] as CFDictionary)
+        return CGImageDestinationFinalize(destination)
+    }
+
+    /// Removes the Service Extension's temp items (`tempPrefixes`) in `directory` last
+    /// modified more than `age` seconds before `now`. A delivered attachment's file can only
+    /// be dropped once the system took it, which happens after the extension hands the
+    /// content over; the next run sweeps what is left.
+    static func removeStaleTempItems(in directory: URL, olderThan age: TimeInterval, now: Date = Date()) {
+        let fm = FileManager.default
+        guard let items = try? fm.contentsOfDirectory(
+            at: directory, includingPropertiesForKeys: [.contentModificationDateKey], options: []
+        ) else { return }
+        for item in items where tempPrefixes.contains(where: { item.lastPathComponent.hasPrefix($0) }) {
+            let modified = (try? item.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate
+            if let modified, now.timeIntervalSince(modified) > age {
+                try? fm.removeItem(at: item)
+            }
+        }
     }
 
     static func isValidMediaId(_ value: String) -> Bool {

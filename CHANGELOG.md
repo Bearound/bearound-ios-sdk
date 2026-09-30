@@ -10,18 +10,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [3.13.0] - 2026-09-29
 
 ### Added
-- **Push rico: imagem, duas imagens, carrossel e vídeo.** Dois subspecs novos, para os
-  targets de extensão do app hospedeiro: `BearoundSDK/NotificationService`
-  (`BearoundNotificationService`, uma Notification Service Extension) e
-  `BearoundSDK/NotificationContent` (`BearoundNotificationViewController`, uma Notification
-  Content Extension). Nenhum dos dois depende do core: só usam APIs seguras para extensão
+- **Push rico: imagem, duas imagens, carrossel e vídeo.** Um pod novo e separado,
+  `BearoundSDKNotificationExtensions` (módulo próprio, mesma versão e mesma tag), para os
+  targets de extensão do app hospedeiro. Ele traz `BearoundNotificationService` (uma
+  Notification Service Extension) e `BearoundNotificationViewController` (uma Notification
+  Content Extension), e não depende do core: só usa APIs seguras para extensão
   (`APPLICATION_EXTENSION_API_ONLY`), sem BLE, localização nem background modes. O
-  hospedeiro cria os dois targets e subclassifica as classes em uma linha cada.
+  hospedeiro cria os dois targets, põe `pod 'BearoundSDKNotificationExtensions'` nos
+  **dois** e subclassifica as classes em uma linha cada, com
+  `import BearoundSDKNotificationExtensions`. `pod 'BearoundSDK'` continua instalando
+  exatamente o core, sem mudança.
+  - **Por que um pod separado.** Com `use_frameworks!` dinâmico, o CocoaPods copia os
+    frameworks das extensões para o `Frameworks/` do app. Se as extensões gerassem um
+    módulo `BearoundSDK` (como subspecs do core), o último `BearoundSDK.framework` copiado
+    sobrescreveria o do app, e o app fecharia ao abrir. Com módulo próprio isso não
+    acontece, com ou sem `:linkage => :static`. O pod não tem subspecs de propósito: um
+    subspec por target geraria duas variantes do mesmo framework, e uma extensão perderia
+    a sua classe.
   - A Service Extension lê `bearound_rich` (contrato v1), baixa o card 0 (a capa, no
     PLAY) e o anexa à notificação. Com o marcador `bearound { d, tr }`, o download passa pelo
     tracker (`/v1/push:view?d=&r=&idx=`) e conta como visualização do card. A extensão do
-    arquivo vem do `Content-Type` (com a assinatura dos bytes como reserva); WebP é
-    recodificado como JPEG, que o `UNNotificationAttachment` aceita.
+    arquivo vem do `Content-Type` (com a assinatura dos bytes como reserva). WebP, HEIC e
+    outros formatos que o `UNNotificationAttachment` não aceita são reduzidos pelo ImageIO
+    direto do arquivo baixado (no máximo 2048 px no lado maior, nunca decodificados em
+    resolução cheia) e recodificados como JPEG.
+  - Imagens e vídeo precisam de `https`: o App Transport Security bloqueia `http` dentro das
+    extensões. Um `mb` em `http` invalida o `bearound_rich`, um vídeo em `http` cai para a
+    capa, e um `image_url` legado em `http` não é anexado. Os links de toque continuam
+    aceitando `http(s)`.
+  - O MP4 só é aceito com a assinatura `ftyp` nos bytes, mesmo quando o `Content-Type` diz
+    `video/mp4`.
+  - Os arquivos temporários da Service Extension são removidos: a capa quando o vídeo
+    vence, o arquivo quando o anexo é recusado, e o que sobrar de notificações anteriores
+    (mais de 5 minutos) na próxima execução.
   - Sem `bearound_rich`, a Service Extension anexa o `image_url` legado do topo do payload:
     a imagem de fallback passa a aparecer também nos pushes antigos.
   - **PLAY é vídeo de verdade.** A Service Extension baixa o MP4 do card (`u`, até 15 MB)
@@ -34,18 +55,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - A Content Extension desenha os cards por código (sem storyboard) conforme a categoria:
     `BEAROUND_IMAGE`, `BEAROUND_TWO_IMAGES` (dois cards lado a lado com legenda) e
     `BEAROUND_CAROUSEL` (páginas horizontais com anterior/próximo, imagem carregada ao
-    aparecer). Ela **não** declara `BEAROUND_PLAY`: se declarasse, esconderia o player
-    nativo. O toque num card abre a URL: http(s) pelo clique do tracker com `idx`, deep
-    link direto. Card sem URL abre o app, como um toque comum. O toque numa notificação
-    PLAY abre o app, e o hospedeiro decide o que fazer. Os ids ficam em
+    aparecer, até 5 MB, baixada para arquivo e decodificada reduzida; uma falha é tentada de
+    novo quando o card volta à tela). A legenda segue o Dynamic Type, e a altura da
+    notificação e a posição das setas são recalculadas quando o tamanho muda. Ela **não**
+    declara `BEAROUND_PLAY`: se declarasse, esconderia o player nativo. O toque num card
+    abre a URL: http(s) pelo clique do tracker com `idx`; deep link direto, só se o esquema
+    estiver declarado no `CFBundleURLTypes` do app hospedeiro. Qualquer outro esquema, e o
+    card sem URL, abrem o app, como um toque comum. A abertura só é contada depois que o
+    iOS confirma que abriu o link. O toque numa notificação PLAY abre o app, e o hospedeiro
+    decide o que fazer. Os ids ficam em
     `BearoundPushCategory`; a lista para o Info.plist da Content Extension é
     `BearoundPushCategory.contentExtension`.
   - Se o servidor não mandar `aps.category`, a Service Extension define a categoria a
     partir do `bearound_rich`, e o layout rico aparece mesmo assim.
   - Sem as extensões instaladas, o aparelho continua recebendo a notificação padrão.
-- **`sdkVersion` junto do push token.** O bloco `userDevice` do payload leva a versão
-  nativa do SDK (até 32 caracteres), para o backend saber quais aparelhos já têm as
-  extensões de push rico.
+- **`sdkVersion` no `userDevice`.** O bloco `userDevice` do payload leva sempre a versão
+  nativa do SDK (até 32 caracteres), com ou sem push token, para o backend saber quais
+  aparelhos já têm as extensões de push rico.
   Depois de uma atualização do SDK, o token é reenviado uma vez mesmo sem ter mudado: o
   `PushTokenStore` guarda a versão que acompanhou o último envio, e sem isso um aparelho
   atualizado continuaria marcado como antigo até o token rotacionar, o que pode nunca

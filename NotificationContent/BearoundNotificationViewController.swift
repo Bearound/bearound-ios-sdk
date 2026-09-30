@@ -1,6 +1,6 @@
 //
 //  BearoundNotificationViewController.swift
-//  BearoundSDK/NotificationContent
+//  BearoundSDKNotificationExtensions/Content
 //
 //  Notification Content Extension for Bearound rich push. Draws the cards of a
 //  `bearound_rich` payload programmatically (no storyboard): one image, two side-by-side
@@ -10,7 +10,7 @@
 //
 //  Host usage (the whole NotificationViewController.swift of the host's content extension):
 //
-//      import BearoundSDK
+//      import BearoundSDKNotificationExtensions
 //      class NotificationViewController: BearoundNotificationViewController {}
 //
 //  The extension's Info.plist declares `BearoundPushCategory.contentExtension` as
@@ -24,28 +24,50 @@ import UserNotifications
 import UserNotificationsUI
 
 open class BearoundNotificationViewController: UIViewController, UNNotificationContentExtension, UIScrollViewDelegate {
+    private enum Layout { case single, twoImages, carousel }
+
     private static let spacing: CGFloat = 8
-    private static let captionHeight: CGFloat = 18
+    /// Gap between an image and its caption.
+    private static let captionGap: CGFloat = 4
     /// Two-image cards are uploaded at up to 1080x608.
     private static let twoImagesRatio: CGFloat = 608.0 / 1080.0
     private static let carouselRatio: CGFloat = 0.75
+    private static let cardImageTimeout: TimeInterval = 15
 
     private let container = UIView()
     private var payload: RichPushPayload?
+    private var layout: Layout?
+    private var hasCaption = false
+    private var singleRatio: CGFloat = 1
     private var attachmentImage: UIImage?
     private var imageViews: [UIImageView] = []
-    private var requested = Set<Int>()
+    /// Cards whose image is on screen. A card enters only after a successful load, so a
+    /// failed fetch is retried the next time the card is shown.
+    private var loaded = Set<Int>()
+    private var downloads: [Int: BearoundBoundedDownload] = [:]
+    /// Bumped on every render, so a fetch started for a previous notification is ignored.
+    private var generation = 0
     private var singleAspect: NSLayoutConstraint?
-    private var singleHasCaption = false
+    private var chevronCenter: NSLayoutConstraint?
     private weak var scrollView: UIScrollView?
     private weak var prevButton: UIButton?
     private weak var nextButton: UIButton?
     private var currentPage = 0
+    /// The open hit of a card tap, held until it completes.
+    private var openHitTask: URLSessionDataTask?
 
     private lazy var session: URLSession = {
         let config = URLSessionConfiguration.ephemeral
         config.timeoutIntervalForRequest = 15
         return URLSession(configuration: config)
+    }()
+
+    /// URL schemes the containing app declares (`CFBundleURLTypes`). The app bundle is two
+    /// directories up from this appex (`App.app/PlugIns/Ext.appex`).
+    private lazy var hostSchemes: Set<String> = {
+        let appURL = Bundle.main.bundleURL.deletingLastPathComponent().deletingLastPathComponent()
+        guard appURL.pathExtension == "app" else { return [] }
+        return RichPush.declaredURLSchemes(infoDictionary: Bundle(url: appURL)?.infoDictionary)
     }()
 
     open override func viewDidLoad() {
@@ -64,17 +86,51 @@ open class BearoundNotificationViewController: UIViewController, UNNotificationC
         render(notification.request.content)
     }
 
+    open override func viewDidLayoutSubviews() {
+        super.viewDidLayoutSubviews()
+        updateLayout(width: view.bounds.width)
+        // Keep the carousel on its page when the width changes.
+        if let scrollView, scrollView.bounds.width > 0, !scrollView.isDragging, !scrollView.isDecelerating {
+            let x = CGFloat(currentPage) * scrollView.bounds.width
+            if abs(scrollView.contentOffset.x - x) > 0.5 { scrollView.contentOffset = CGPoint(x: x, y: 0) }
+        }
+    }
+
+    open override func viewWillTransition(to size: CGSize, with coordinator: UIViewControllerTransitionCoordinator) {
+        super.viewWillTransition(to: size, with: coordinator)
+        updateLayout(width: size.width)
+    }
+
+    open override func traitCollectionDidChange(_ previousTraitCollection: UITraitCollection?) {
+        super.traitCollectionDidChange(previousTraitCollection)
+        if previousTraitCollection?.preferredContentSizeCategory != traitCollection.preferredContentSizeCategory {
+            updateLayout(width: view.bounds.width)
+        }
+    }
+
     // MARK: - Layout
 
     private var availableWidth: CGFloat {
         view.bounds.width > 0 ? view.bounds.width : 320
     }
 
+    /// Caption height at the current Dynamic Type size (one line of `.footnote`).
+    private var captionHeight: CGFloat {
+        ceil(UIFont.preferredFont(forTextStyle: .footnote, compatibleWith: traitCollection).lineHeight)
+    }
+
     private func render(_ content: UNNotificationContent) {
+        downloads.values.forEach { $0.cancel() }
+        downloads = [:]
+        generation += 1
         container.subviews.forEach { $0.removeFromSuperview() }
         imageViews = []
-        requested = []
+        loaded = []
+        layout = nil
+        hasCaption = false
+        singleRatio = 1
         singleAspect = nil
+        chevronCenter = nil
         currentPage = 0
 
         // PLAY belongs to the system video player; a host that still lists its category gets
@@ -86,25 +142,48 @@ open class BearoundNotificationViewController: UIViewController, UNNotificationC
             return
         }
 
+        hasCaption = payload.cards.contains { $0.caption != nil }
         switch payload.format {
         case .image: buildSingle(payload)
         case .twoImages: buildTwoImages(payload)
         case .carousel: buildCarousel(payload)
         case .play: break
         }
+        updateLayout(width: availableWidth)
+    }
+
+    /// Recomputes `preferredContentSize` and the pager position from the width and the
+    /// caption's current Dynamic Type height. Called on render, layout, size and text-size
+    /// changes; only writes when something moved.
+    private func updateLayout(width: CGFloat) {
+        guard let layout, width > 0 else { return }
+        let caption = hasCaption ? captionHeight + Self.captionGap : 0
+        let height: CGFloat
+        switch layout {
+        case .single:
+            height = width * singleRatio + (hasCaption ? caption + Self.spacing : 0)
+        case .twoImages:
+            let cardWidth = (width - 3 * Self.spacing) / 2
+            height = 2 * Self.spacing + cardWidth * Self.twoImagesRatio + caption
+        case .carousel:
+            let imageHeight = (width - 2 * Self.spacing) * Self.carouselRatio
+            let center = Self.spacing + imageHeight / 2
+            if let chevronCenter, abs(chevronCenter.constant - center) > 0.5 { chevronCenter.constant = center }
+            height = 2 * Self.spacing + imageHeight + caption
+        }
+        let size = CGSize(width: width, height: ceil(height))
+        if preferredContentSize != size { preferredContentSize = size }
     }
 
     private func buildSingle(_ payload: RichPushPayload) {
-        let width = availableWidth
+        layout = .single
         let card = makeCard(index: 0, caption: payload.cards[0].caption, ratio: nil)
         pin(card, insets: UIEdgeInsets(top: 0, left: 0, bottom: 0, right: 0))
-        singleHasCaption = payload.cards[0].caption != nil
-        setSingleAspect(1, width: width)
         loadImage(at: 0)
     }
 
     private func buildTwoImages(_ payload: RichPushPayload) {
-        let width = availableWidth
+        layout = .twoImages
         let stack = UIStackView()
         stack.axis = .horizontal
         stack.distribution = .fillEqually
@@ -115,16 +194,11 @@ open class BearoundNotificationViewController: UIViewController, UNNotificationC
         }
         let inset = Self.spacing
         pin(stack, insets: UIEdgeInsets(top: inset, left: inset, bottom: inset, right: inset))
-
-        let cardWidth = (width - 3 * Self.spacing) / 2
-        let hasCaption = payload.cards.contains { $0.caption != nil }
-        let height = 2 * Self.spacing + cardWidth * Self.twoImagesRatio + (hasCaption ? Self.captionHeight + 4 : 0)
-        preferredContentSize = CGSize(width: width, height: ceil(height))
         payload.cards.indices.forEach { loadImage(at: $0) }
     }
 
     private func buildCarousel(_ payload: RichPushPayload) {
-        let width = availableWidth
+        layout = .carousel
         let scroll = UIScrollView()
         scroll.isPagingEnabled = true
         scroll.showsHorizontalScrollIndicator = false
@@ -164,19 +238,18 @@ open class BearoundNotificationViewController: UIViewController, UNNotificationC
 
         let prev = makePagerButton(symbol: "chevron.left.circle.fill", action: #selector(showPrevious))
         let next = makePagerButton(symbol: "chevron.right.circle.fill", action: #selector(showNext))
-        let imageHeight = (width - 2 * Self.spacing) * Self.carouselRatio
+        // The constant (image center) is set by updateLayout for the current width.
+        let center = prev.centerYAnchor.constraint(equalTo: container.topAnchor, constant: 0)
         NSLayoutConstraint.activate([
             prev.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: Self.spacing * 2),
             next.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -Self.spacing * 2),
-            prev.centerYAnchor.constraint(equalTo: container.topAnchor, constant: Self.spacing + imageHeight / 2),
+            center,
             next.centerYAnchor.constraint(equalTo: prev.centerYAnchor),
         ])
+        chevronCenter = center
         prevButton = prev
         nextButton = next
 
-        let hasCaption = payload.cards.contains { $0.caption != nil }
-        let height = 2 * Self.spacing + imageHeight + (hasCaption ? Self.captionHeight + 4 : 0)
-        preferredContentSize = CGSize(width: width, height: ceil(height))
         updatePager()
         loadImage(at: 0)
     }
@@ -212,18 +285,21 @@ open class BearoundNotificationViewController: UIViewController, UNNotificationC
         }
 
         if let caption {
+            // No fixed height: the label follows Dynamic Type, and updateLayout sizes the
+            // notification from the same font's line height.
             let label = UILabel()
             label.translatesAutoresizingMaskIntoConstraints = false
             label.text = caption
             label.font = .preferredFont(forTextStyle: .footnote)
+            label.adjustsFontForContentSizeCategory = true
+            label.numberOfLines = 1
             label.textColor = .label
             label.lineBreakMode = .byTruncatingTail
             card.addSubview(label)
             constraints += [
-                label.topAnchor.constraint(equalTo: imageView.bottomAnchor, constant: 4),
+                label.topAnchor.constraint(equalTo: imageView.bottomAnchor, constant: Self.captionGap),
                 label.leadingAnchor.constraint(equalTo: card.leadingAnchor, constant: ratio == nil ? Self.spacing : 0),
                 label.trailingAnchor.constraint(equalTo: card.trailingAnchor, constant: ratio == nil ? -Self.spacing : 0),
-                label.heightAnchor.constraint(equalToConstant: Self.captionHeight),
                 label.bottomAnchor.constraint(lessThanOrEqualTo: card.bottomAnchor),
             ]
         } else {
@@ -262,43 +338,61 @@ open class BearoundNotificationViewController: UIViewController, UNNotificationC
         ])
     }
 
-    private func setSingleAspect(_ ratio: CGFloat, width: CGFloat) {
+    private func setSingleAspect(_ ratio: CGFloat) {
         let clamped = min(max(ratio, 0.3), 1.5)
+        singleRatio = clamped
         if let current = singleAspect, let imageView = imageViews.first {
             current.isActive = false
             let aspect = imageView.heightAnchor.constraint(equalTo: imageView.widthAnchor, multiplier: clamped)
             aspect.isActive = true
             singleAspect = aspect
         }
-        let height = width * clamped + (singleHasCaption ? Self.captionHeight + 4 + Self.spacing : 0)
-        preferredContentSize = CGSize(width: width, height: ceil(height))
+        updateLayout(width: availableWidth)
     }
 
     // MARK: - Images
 
     /// Card 0 comes from the Service Extension's attachment when present, so its view is not
     /// counted twice. Other cards are fetched when shown: through the tracker, that fetch IS
-    /// the view.
+    /// the view. The fetch is a download to a file, capped at `RichPush.maxCardImageBytes`,
+    /// and the image is decoded downsampled.
     private func loadImage(at index: Int) {
-        guard let payload, imageViews.indices.contains(index), !requested.contains(index) else { return }
-        requested.insert(index)
+        guard let payload, imageViews.indices.contains(index), !loaded.contains(index), downloads[index] == nil
+        else { return }
         if index == 0, let attachmentImage {
+            loaded.insert(0)
             setImage(attachmentImage, at: 0)
             return
         }
         guard let url = payload.imageURL(at: index) else { return }
-        session.dataTask(with: url) { [weak self] data, response, _ in
-            if let http = response as? HTTPURLResponse, !(200...299).contains(http.statusCode) { return }
-            guard let data, let image = UIImage(data: data) else { return }
-            DispatchQueue.main.async { self?.setImage(image, at: index) }
-        }.resume()
+        let generation = self.generation
+        let download = BearoundBoundedDownload(
+            url: url, maxBytes: RichPush.maxCardImageBytes, timeout: Self.cardImageTimeout
+        ) { [weak self] file, response in
+            var image: UIImage?
+            if let file {
+                let ok = (response as? HTTPURLResponse).map { (200...299).contains($0.statusCode) } ?? true
+                if ok, let cgImage = RichPush.downsampledImage(at: file) { image = UIImage(cgImage: cgImage) }
+                try? FileManager.default.removeItem(at: file)
+            }
+            DispatchQueue.main.async {
+                guard let self, self.generation == generation else { return }
+                self.downloads[index] = nil
+                // On failure the card stays out of `loaded`: showing it again retries.
+                guard let image else { return }
+                self.loaded.insert(index)
+                self.setImage(image, at: index)
+            }
+        }
+        downloads[index] = download
+        download.start()
     }
 
     private func setImage(_ image: UIImage, at index: Int) {
         guard imageViews.indices.contains(index) else { return }
         imageViews[index].image = image
         if index == 0, singleAspect != nil, image.size.width > 0 {
-            setSingleAspect(image.size.height / image.size.width, width: availableWidth)
+            setSingleAspect(image.size.height / image.size.width)
         }
     }
 
@@ -308,8 +402,7 @@ open class BearoundNotificationViewController: UIViewController, UNNotificationC
         let url = attachment.url
         let scoped = url.startAccessingSecurityScopedResource()
         defer { if scoped { url.stopAccessingSecurityScopedResource() } }
-        guard let data = try? Data(contentsOf: url) else { return nil }
-        return UIImage(data: data)
+        return RichPush.downsampledImage(at: url).map { UIImage(cgImage: $0) }
     }
 
     // MARK: - Carousel paging
@@ -344,18 +437,29 @@ open class BearoundNotificationViewController: UIViewController, UNNotificationC
         openCard(at: sender.view?.tag ?? 0)
     }
 
-    /// A card with a URL opens it (http(s) through the tracker click, a deep link directly)
-    /// and reports the open, since the host app never sees this tap. A card without a URL
-    /// opens the app like a regular notification tap, where the SDK reports the open.
+    /// A card with an allowed URL (http(s), or a scheme the host app declares) opens it and,
+    /// once the system confirms it opened, reports the open, since the host app never sees
+    /// this tap. Any other card opens the app like a regular notification tap, where the SDK
+    /// reports the open.
     private func openCard(at index: Int) {
         guard let payload else { return }
-        guard let url = payload.tapURL(at: index) else {
+        guard let url = payload.tapURL(at: index, hostSchemes: hostSchemes) else {
             extensionContext?.performNotificationDefaultAction()
             return
         }
-        if let tracking = payload.tracking, let open = RichPush.openURL(tracking) {
-            session.dataTask(with: open).resume()
+        let openHit = payload.tracking.flatMap { RichPush.openURL($0) }
+        // Strong `self`: the controller and its session must outlive the open to send the hit.
+        extensionContext?.open(url) { success in
+            guard success, let openHit else { return }
+            DispatchQueue.main.async { self.sendOpenHit(openHit) }
         }
-        extensionContext?.open(url, completionHandler: nil)
+    }
+
+    private func sendOpenHit(_ url: URL) {
+        let task = session.dataTask(with: url) { _, _, _ in
+            DispatchQueue.main.async { self.openHitTask = nil }
+        }
+        openHitTask = task
+        task.resume()
     }
 }
