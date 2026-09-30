@@ -1,6 +1,6 @@
 //
 //  BearoundNotificationService.swift
-//  BearoundSDK/NotificationService
+//  BearoundSDKNotificationExtensions/Service
 //
 //  Notification Service Extension for Bearound rich push. Downloads card 0 of a
 //  `bearound_rich` payload, or the legacy top-level `image_url`, and attaches it. For PLAY it
@@ -10,15 +10,18 @@
 //
 //  Host usage (the whole NotificationService.swift of the host's NSE target):
 //
-//      import BearoundSDK
+//      import BearoundSDKNotificationExtensions
 //      class NotificationService: BearoundNotificationService {}
 //
 
 import Foundation
-import UIKit
+import ImageIO
 import UserNotifications
 
 open class BearoundNotificationService: UNNotificationServiceExtension {
+    /// Temp items older than this are left over from earlier notifications and are removed.
+    private static let staleTempAge: TimeInterval = 5 * 60
+
     private let lock = NSLock()
     private var contentHandler: ((UNNotificationContent) -> Void)?
     private var bestAttempt: UNMutableNotificationContent?
@@ -30,6 +33,7 @@ open class BearoundNotificationService: UNNotificationServiceExtension {
         _ request: UNNotificationRequest,
         withContentHandler contentHandler: @escaping (UNNotificationContent) -> Void
     ) {
+        RichPush.removeStaleTempItems(in: FileManager.default.temporaryDirectory, olderThan: Self.staleTempAge)
         guard let content = request.content.mutableCopy() as? UNMutableNotificationContent else {
             contentHandler(request.content)
             return
@@ -63,6 +67,7 @@ open class BearoundNotificationService: UNNotificationServiceExtension {
                     self?.imageAttachment = attachment
                     self?.lock.unlock()
                 }
+                // A usable image was moved next to the attachment; this only drops a rejected one.
                 if let file { try? FileManager.default.removeItem(at: file) }
                 group.leave()
             })
@@ -98,47 +103,48 @@ open class BearoundNotificationService: UNNotificationServiceExtension {
     }
 
     /// Hands the best attempt to the system exactly once, with the video when it made it,
-    /// else the image or poster.
+    /// else the image or poster. The attachment that loses (the poster, when the video won)
+    /// is deleted here; the delivered one belongs to the system from now on.
     private func deliver() {
         lock.lock()
         let handler = contentHandler
         let content = bestAttempt
         let attachment = RichPush.preferredAttachment(video: videoAttachment, image: imageAttachment)
+        let unused = videoAttachment != nil ? imageAttachment : nil
         contentHandler = nil
         downloads = []
         lock.unlock()
         guard let handler, let content else { return }
         if let attachment { content.attachments = [attachment] }
+        if let unused { Self.removeAttachmentDirectory(of: unused.url) }
         handler(content)
     }
 
-    /// Moves the downloaded file to a path with the right extension and wraps it. WebP and
-    /// other types the attachment API rejects are re-encoded as JPEG.
+    /// Moves the downloaded image to a path with the right extension and wraps it. WebP, HEIC
+    /// and other types the attachment API rejects are downsampled from the file (at most
+    /// `RichPush.maxImagePixelSize`, never decoded at full size) and re-encoded as JPEG.
     static func makeAttachment(from location: URL, response: URLResponse) -> UNNotificationAttachment? {
         if let http = response as? HTTPURLResponse, !(200...299).contains(http.statusCode) {
             return nil
         }
-        guard let data = try? Data(contentsOf: location), !data.isEmpty else { return nil }
+        let head = readHead(of: location, length: 12)
+        guard let head, !head.isEmpty else { return nil }
 
-        let fileExtension: String
-        let bytes: Data
-        if let ext = RichPush.attachmentFileExtension(mimeType: response.mimeType, data: data) {
-            fileExtension = ext
-            bytes = data
-        } else if let image = UIImage(data: data), let jpeg = image.jpegData(compressionQuality: 0.9) {
-            fileExtension = "jpg"
-            bytes = jpeg
+        let ext = RichPush.attachmentFileExtension(mimeType: response.mimeType, data: head)
+        guard let file = try? attachmentFile(extension: ext ?? "jpg") else { return nil }
+        let ready: Bool
+        if ext != nil {
+            ready = (try? FileManager.default.moveItem(at: location, to: file)) != nil
+        } else if let image = RichPush.downsampledImage(at: location) {
+            ready = RichPush.writeJPEG(image, to: file)
         } else {
+            ready = false
+        }
+        guard ready else {
+            removeAttachmentDirectory(of: file)
             return nil
         }
-
-        do {
-            let file = try attachmentFile(extension: fileExtension)
-            try bytes.write(to: file)
-            return try UNNotificationAttachment(identifier: RichPush.attachmentIdentifier, url: file, options: nil)
-        } catch {
-            return nil
-        }
+        return wrap(file, options: nil)
     }
 
     /// Wraps a downloaded MP4 as a video attachment: `.mp4` file, MPEG-4 type hint and a
@@ -150,26 +156,34 @@ open class BearoundNotificationService: UNNotificationServiceExtension {
         }
         let size = (try? FileManager.default.attributesOfItem(atPath: location.path)[.size] as? NSNumber)?.int64Value ?? 0
         guard size > 0, !RichPush.exceedsCap(expected: -1, received: size, cap: RichPush.maxVideoBytes) else { return nil }
-        let head = (try? FileHandle(forReadingFrom: location)).map { handle -> Data in
-            defer { handle.closeFile() }
-            return handle.readData(ofLength: 12)
-        }
-        guard RichPush.isMP4(mimeType: response.mimeType, data: head) else { return nil }
+        guard RichPush.isMP4(mimeType: response.mimeType, data: readHead(of: location, length: 12)) else { return nil }
 
-        do {
-            let file = try attachmentFile(extension: "mp4")
-            try FileManager.default.moveItem(at: location, to: file)
-            return try UNNotificationAttachment(
-                identifier: RichPush.attachmentIdentifier,
-                url: file,
-                options: [
-                    UNNotificationAttachmentOptionsTypeHintKey: RichPush.mpeg4TypeIdentifier,
-                    UNNotificationAttachmentOptionsThumbnailTimeKey: NSNumber(value: RichPush.videoThumbnailTime),
-                ]
-            )
-        } catch {
+        guard let file = try? attachmentFile(extension: "mp4") else { return nil }
+        guard (try? FileManager.default.moveItem(at: location, to: file)) != nil else {
+            removeAttachmentDirectory(of: file)
             return nil
         }
+        return wrap(file, options: [
+            UNNotificationAttachmentOptionsTypeHintKey: RichPush.mpeg4TypeIdentifier,
+            UNNotificationAttachmentOptionsThumbnailTimeKey: NSNumber(value: RichPush.videoThumbnailTime),
+        ])
+    }
+
+    /// Creates the attachment, or removes the file (and its directory) when the system
+    /// rejects it.
+    private static func wrap(_ file: URL, options: [AnyHashable: Any]?) -> UNNotificationAttachment? {
+        do {
+            return try UNNotificationAttachment(identifier: RichPush.attachmentIdentifier, url: file, options: options)
+        } catch {
+            removeAttachmentDirectory(of: file)
+            return nil
+        }
+    }
+
+    private static func readHead(of file: URL, length: Int) -> Data? {
+        guard let handle = try? FileHandle(forReadingFrom: file) else { return nil }
+        defer { handle.closeFile() }
+        return handle.readData(ofLength: length)
     }
 
     private static func attachmentFile(extension fileExtension: String) throws -> URL {
@@ -178,75 +192,14 @@ open class BearoundNotificationService: UNNotificationServiceExtension {
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         return directory.appendingPathComponent("\(RichPush.attachmentIdentifier).\(fileExtension)")
     }
-}
 
-/// One download with a byte cap and a time limit. Cancelled as soon as the server announces,
-/// or sends, more than `maxBytes`, so an oversized video does not eat the extension's time.
-/// The completion runs once, with a temp file the caller owns (nil on any failure).
-final class BearoundBoundedDownload: NSObject, URLSessionDownloadDelegate {
-    private let url: URL
-    private let maxBytes: Int64
-    private let completion: (URL?, URLResponse?) -> Void
-    private let lock = NSLock()
-    private var session: URLSession?
-    private var file: URL?
-    private var finished = false
-
-    init(url: URL, maxBytes: Int64, timeout: TimeInterval, completion: @escaping (URL?, URLResponse?) -> Void) {
-        self.url = url
-        self.maxBytes = maxBytes
-        self.completion = completion
-        super.init()
-        let config = URLSessionConfiguration.ephemeral
-        config.timeoutIntervalForRequest = min(15, timeout)
-        config.timeoutIntervalForResource = timeout
-        session = URLSession(configuration: config, delegate: self, delegateQueue: nil)
-    }
-
-    func start() {
-        session?.downloadTask(with: url).resume()
-    }
-
-    func cancel() {
-        session?.invalidateAndCancel()
-    }
-
-    func urlSession(
-        _ session: URLSession,
-        downloadTask: URLSessionDownloadTask,
-        didWriteData bytesWritten: Int64,
-        totalBytesWritten: Int64,
-        totalBytesExpectedToWrite: Int64
-    ) {
-        if RichPush.exceedsCap(expected: totalBytesExpectedToWrite, received: totalBytesWritten, cap: maxBytes) {
-            downloadTask.cancel()
-        }
-    }
-
-    func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask, didFinishDownloadingTo location: URL) {
-        // `location` is deleted when this returns: move it somewhere the caller owns.
-        let target = FileManager.default.temporaryDirectory
-            .appendingPathComponent("bearound-download-\(UUID().uuidString)")
-        if (try? FileManager.default.moveItem(at: location, to: target)) != nil {
-            lock.lock()
-            file = target
-            lock.unlock()
-        }
-    }
-
-    func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
-        lock.lock()
-        let alreadyFinished = finished
-        finished = true
-        let downloaded = file
-        lock.unlock()
-        session.finishTasksAndInvalidate()
-        guard !alreadyFinished else { return }
-        if error == nil, let downloaded {
-            completion(downloaded, task.response)
+    /// Removes the `bearound-rich-<uuid>` directory holding `file` (never anything else).
+    private static func removeAttachmentDirectory(of file: URL) {
+        let directory = file.deletingLastPathComponent()
+        if directory.lastPathComponent.hasPrefix("bearound-rich-") {
+            try? FileManager.default.removeItem(at: directory)
         } else {
-            if let downloaded { try? FileManager.default.removeItem(at: downloaded) }
-            completion(nil, nil)
+            try? FileManager.default.removeItem(at: file)
         }
     }
 }

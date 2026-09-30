@@ -39,7 +39,7 @@ The payload is the source of truth: `sdk.version` reads `CFBundleShortVersionStr
 embedded framework (`SDKVersion.resolved`). The app's Settings screen shows the same value.
 Never infer the version from the branch you last edited.
 
-## Release — the version lives in FOUR places
+## Release: the version lives in FIVE places
 
 `release.yml` (triggered by tag `v*`) verifies each against the tag and aborts on the first
 mismatch:
@@ -47,13 +47,14 @@ mismatch:
 | File | Where |
 |------|-------|
 | `BearoundSDK.podspec` | `spec.version` |
+| `BearoundSDKNotificationExtensions.podspec` | `spec.version` (second pod, same tag) |
 | `BearoundSDK.xcodeproj/project.pbxproj` | `MARKETING_VERSION` (all occurrences) |
 | `BearoundSDK/Constants.swift` | `SDKVersion.current` |
 | `CHANGELOG.md` | `## [X.Y.Z]` |
 
 **`Constants.swift` is the one that bites.** PR CI does not check it — only the release
 workflow does, and that runs *after* you push the tag. A green PR does not prove the release
-will pass. Simulate all four locally before tagging; `PUBLISH.md` has the commands.
+will pass. Simulate all five locally before tagging; `PUBLISH.md` has the commands.
 
 ## Testing
 

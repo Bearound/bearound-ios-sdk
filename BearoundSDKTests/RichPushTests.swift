@@ -8,6 +8,7 @@
 
 import Foundation
 import Testing
+import ImageIO
 import UniformTypeIdentifiers
 
 @testable import BearoundSDK
@@ -127,7 +128,7 @@ struct RichPushURLTests {
         #expect(payload.imageURL(at: 0)?.absoluteString == mediaBase + m0)
     }
 
-    @Test("http(s) taps go through the tracker click; deep links open directly")
+    @Test("http(s) taps go through the tracker click; declared deep links open directly")
     func tapURLs() throws {
         let cards = [
             card(m0, u: "https://shop.example.com/p?x=1&y=2"),
@@ -137,7 +138,7 @@ struct RichPushURLTests {
         let tracked = try #require(RichPushPayload.parse(["bearound": marker, "bearound_rich": rich("CAROUSEL", cards: cards)]))
         #expect(tracked.tapURL(at: 0)?.absoluteString
             == "\(tracker)/v1/push:click?d=ctx%2B%2F%3D&r=https%3A%2F%2Fshop.example.com%2Fp%3Fx%3D1%26y%3D2&idx=0")
-        #expect(tracked.tapURL(at: 1)?.absoluteString == "myapp://deep/link")
+        #expect(tracked.tapURL(at: 1, hostSchemes: ["myapp"])?.absoluteString == "myapp://deep/link")
         #expect(tracked.tapURL(at: 2) == nil)
 
         let untracked = try #require(RichPushPayload.parse(["bearound_rich": rich("CAROUSEL", cards: cards)]))
@@ -277,8 +278,8 @@ struct RichPushPlayVideoTests {
     func mp4Detection() {
         let ftyp = Data([0x00, 0x00, 0x00, 0x20, 0x66, 0x74, 0x79, 0x70, 0x69, 0x73, 0x6F, 0x6D])
         let html = Data("<!doctype html>".utf8)
-        #expect(RichPush.isMP4(mimeType: "video/mp4", data: nil))
-        #expect(RichPush.isMP4(mimeType: "Video/MP4; codecs=avc1", data: nil))
+        #expect(RichPush.isMP4(mimeType: "video/mp4", data: ftyp))
+        #expect(RichPush.isMP4(mimeType: "Video/MP4; codecs=avc1", data: ftyp))
         #expect(RichPush.isMP4(mimeType: "application/octet-stream", data: ftyp))
         #expect(!RichPush.isMP4(mimeType: "text/html", data: html))
         #expect(!RichPush.isMP4(mimeType: nil, data: Data([0x00])))
@@ -290,5 +291,163 @@ struct RichPushPlayVideoTests {
             #expect(RichPush.mpeg4TypeIdentifier == UTType.mpeg4Movie.identifier)
         }
         #expect(RichPush.videoThumbnailTime == 1)
+    }
+}
+
+@Suite("Rich push review hardening")
+struct RichPushReviewTests {
+    @Test("media must be https: extensions run under ATS, which blocks http")
+    func mediaRequiresHTTPS() {
+        // mb over http: not a v1 payload the extensions can fetch.
+        #expect(RichPushPayload.parse(["bearound_rich": ["v": 1, "f": "IMAGE", "mb": "http://media.example.com/", "c": [card(m0)]]]) == nil)
+        // PLAY video over http: no video, the poster stays.
+        let play = RichPush.attachmentPlan(from: ["bearound_rich": rich("PLAY", cards: [card(m0, u: "http://video.example.com/v.mp4")])])
+        #expect(play == RichPushAttachmentPlan(image: URL(string: mediaBase + m0), video: nil))
+        // Legacy image_url over http: nothing to attach.
+        #expect(RichPush.attachmentPlan(from: ["image_url": "http://tracker.example.com/v1/push:view?d=x"]) == nil)
+        // Tap targets keep http(s).
+        let tap = RichPushPayload.parse(["bearound_rich": rich("IMAGE", cards: [card(m0, u: "http://shop.example.com/a")])])
+        #expect(tap?.tapURL(at: 0)?.absoluteString == "http://shop.example.com/a")
+    }
+
+    @Test("an MP4 needs the ftyp signature even when the Content-Type says video/mp4")
+    func mp4AlwaysNeedsSignature() {
+        let html = Data("<!doctype html><html>".utf8)
+        #expect(!RichPush.isMP4(mimeType: "video/mp4", data: html))
+        #expect(!RichPush.isMP4(mimeType: "video/mp4", data: nil))
+    }
+
+    @Test("a tap target with a scheme the host does not declare falls back to opening the app")
+    func undeclaredSchemeIsDefaultAction() {
+        let cards = [card(m0, u: "javascript:alert(1)"), card(m1, u: "tel:+5511999999999")]
+        let payload = RichPushPayload.parse(["bearound": marker, "bearound_rich": rich("TWO_IMAGES", cards: cards)])
+        #expect(payload?.tapURL(at: 0) == nil)
+        #expect(payload?.tapURL(at: 1) == nil)
+    }
+}
+
+@Suite("Rich push tap scheme allowlist")
+struct RichPushTapAllowlistTests {
+    @Test("http(s) always; other schemes only when the host app declares them", arguments: [
+        ("https://shop.example.com/a", [], true),
+        ("HTTP://shop.example.com/a", [], true),
+        ("https://", [], false),
+        ("myapp://deep/link", [], false),
+        ("myapp://deep/link", ["myapp"], true),
+        ("MyApp://deep/link", ["myapp"], true),
+        ("otherapp://x", ["myapp"], false),
+        ("javascript:alert(1)", ["myapp"], false),
+        ("tel:+5511999999999", ["myapp"], false),
+        ("file:///etc/passwd", ["myapp"], false),
+    ] as [(String, Set<String>, Bool)])
+    func decision(target: String, schemes: Set<String>, allowed: Bool) throws {
+        let url = try #require(URL(string: target))
+        #expect(RichPush.isAllowedTapTarget(url, hostSchemes: schemes) == allowed)
+    }
+
+    @Test("a disallowed target is the default action (nil), an allowed deep link opens as-is")
+    func tapURLUsesAllowlist() throws {
+        let cards = [card(m0, u: "myapp://promo/1"), card(m1, u: "otherapp://x")]
+        let payload = try #require(RichPushPayload.parse(["bearound": marker, "bearound_rich": rich("TWO_IMAGES", cards: cards)]))
+        #expect(payload.tapURL(at: 0) == nil)
+        #expect(payload.tapURL(at: 0, hostSchemes: ["myapp"])?.absoluteString == "myapp://promo/1")
+        #expect(payload.tapURL(at: 1, hostSchemes: ["myapp"]) == nil)
+    }
+
+    @Test("the host's declared schemes come from CFBundleURLTypes, lowercased")
+    func declaredSchemes() {
+        let info: [String: Any] = [
+            "CFBundleURLTypes": [
+                ["CFBundleURLName": "main", "CFBundleURLSchemes": ["MyApp", "myapp-dev"]],
+                ["CFBundleURLSchemes": ["fb123", ""]],
+                ["CFBundleURLName": "no schemes"],
+            ],
+        ]
+        #expect(RichPush.declaredURLSchemes(infoDictionary: info) == ["myapp", "myapp-dev", "fb123"])
+        #expect(RichPush.declaredURLSchemes(infoDictionary: [:]).isEmpty)
+        #expect(RichPush.declaredURLSchemes(infoDictionary: nil).isEmpty)
+    }
+}
+
+@Suite("Rich push image downsampling and temp cleanup", .serialized)
+struct RichPushImageFileTests {
+    private func tempDir() throws -> URL {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("richpush-tests-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        return dir
+    }
+
+    /// Writes a width x height TIFF (a type the attachment API does not take as-is).
+    private func writeTIFF(width: Int, height: Int, to url: URL) throws {
+        let context = try #require(CGContext(
+            data: nil, width: width, height: height, bitsPerComponent: 8, bytesPerRow: 0,
+            space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue
+        ))
+        context.setFillColor(CGColor(red: 0.2, green: 0.4, blue: 0.8, alpha: 1))
+        context.fill(CGRect(x: 0, y: 0, width: width, height: height))
+        let image = try #require(context.makeImage())
+        let destination = try #require(CGImageDestinationCreateWithURL(url as CFURL, "public.tiff" as CFString, 1, nil))
+        CGImageDestinationAddImage(destination, image, nil)
+        #expect(CGImageDestinationFinalize(destination))
+    }
+
+    @Test("a large non-JPEG image is decoded at most 2048 px and re-encoded as JPEG")
+    func downsamplesLargeImage() throws {
+        let dir = try tempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let source = dir.appendingPathComponent("big.tiff")
+        try writeTIFF(width: 4000, height: 3000, to: source)
+
+        let image = try #require(RichPush.downsampledImage(at: source))
+        #expect(RichPush.maxImagePixelSize == 2048)
+        #expect(max(image.width, image.height) == 2048)
+        #expect(image.width == 2048 && image.height == 1536)
+
+        let jpeg = dir.appendingPathComponent("out.jpg")
+        #expect(RichPush.writeJPEG(image, to: jpeg))
+        let head = try Data(contentsOf: jpeg).prefix(4)
+        #expect(RichPush.attachmentFileExtension(mimeType: nil, data: head) == "jpg")
+    }
+
+    @Test("a small image keeps its size; a non-image yields nothing")
+    func smallAndInvalid() throws {
+        let dir = try tempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let small = dir.appendingPathComponent("small.tiff")
+        try writeTIFF(width: 300, height: 200, to: small)
+        let image = try #require(RichPush.downsampledImage(at: small))
+        #expect(image.width == 300 && image.height == 200)
+
+        let html = dir.appendingPathComponent("page.webp")
+        try Data("<!doctype html>".utf8).write(to: html)
+        #expect(RichPush.downsampledImage(at: html) == nil)
+    }
+
+    @Test("stale extension temp items are removed; fresh and unrelated ones stay")
+    func removesStaleTempItems() throws {
+        let dir = try tempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let fm = FileManager.default
+        let now = Date()
+        let staleRich = dir.appendingPathComponent("bearound-rich-OLD", isDirectory: true)
+        let staleDownload = dir.appendingPathComponent("bearound-download-OLD")
+        let freshRich = dir.appendingPathComponent("bearound-rich-NEW", isDirectory: true)
+        let unrelated = dir.appendingPathComponent("host-cache-OLD")
+        try fm.createDirectory(at: staleRich, withIntermediateDirectories: true)
+        try Data([1]).write(to: staleRich.appendingPathComponent("bearound-card-0.jpg"))
+        try Data([1]).write(to: staleDownload)
+        try fm.createDirectory(at: freshRich, withIntermediateDirectories: true)
+        try Data([1]).write(to: unrelated)
+        let old = now.addingTimeInterval(-3600)
+        for item in [staleRich, staleDownload, unrelated] {
+            try fm.setAttributes([.modificationDate: old], ofItemAtPath: item.path)
+        }
+
+        RichPush.removeStaleTempItems(in: dir, olderThan: 300, now: now)
+
+        #expect(!fm.fileExists(atPath: staleRich.path))
+        #expect(!fm.fileExists(atPath: staleDownload.path))
+        #expect(fm.fileExists(atPath: freshRich.path))
+        #expect(fm.fileExists(atPath: unrelated.path))
     }
 }

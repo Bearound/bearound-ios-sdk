@@ -432,6 +432,9 @@ Set both targets to iOS 13.0 or later.
 
 #### 2. Add the pods per target
 
+The extensions ship as a **separate pod**, `BearoundSDKNotificationExtensions`, with its own
+module. Install that same pod in **both** extension targets:
+
 ```ruby
 target 'YourApp' do
   use_frameworks!                      # keep whatever your app already uses
@@ -439,32 +442,33 @@ target 'YourApp' do
 end
 
 target 'NotificationService' do
-  use_frameworks! :linkage => :static  # needed only if your app uses use_frameworks!
-  pod 'BearoundSDK/NotificationService', '~> 3.13'
+  use_frameworks!                      # dynamic or :linkage => :static, both work
+  pod 'BearoundSDKNotificationExtensions', '~> 3.13'
 end
 
 target 'NotificationContent' do
-  use_frameworks! :linkage => :static  # needed only if your app uses use_frameworks!
-  pod 'BearoundSDK/NotificationContent', '~> 3.13'
+  use_frameworks!                      # dynamic or :linkage => :static, both work
+  pod 'BearoundSDKNotificationExtensions', '~> 3.13'
 end
 ```
 
-`pod 'BearoundSDK'` alone still installs exactly the core SDK. The two extension subspecs
-do **not** include the core (no Bluetooth, location or background modes inside an
-extension) and only use extension-safe APIs.
+`pod 'BearoundSDK'` still installs exactly the core SDK, unchanged. The extensions pod does
+**not** depend on the core (no Bluetooth, location or background modes inside an extension)
+and only uses extension-safe APIs. Apps without `use_frameworks!` (static libraries, the
+React Native default) need nothing extra.
 
-> **Why `:linkage => :static` on the extension targets:** all three subspecs build a module
-> named `BearoundSDK`. With dynamic frameworks, the app would embed one `BearoundSDK.framework`
-> for itself and its extensions, and one of them would overwrite the other. Linking the
-> extension subspecs statically puts their code inside each extension binary instead. Apps
-> without `use_frameworks!` (static libraries, the React Native default) need nothing extra.
+> **Why one pod, in both targets:** with dynamic frameworks CocoaPods copies every
+> extension's frameworks into the app's `Frameworks/` folder. Each pod has its own module
+> name (`BearoundSDK`, `BearoundSDKNotificationExtensions`), so the two never overwrite each
+> other. Use the same pod line in both extension targets: that way both get the one framework
+> that holds both classes.
 
 #### 3. Subclass the two classes
 
 `NotificationService/NotificationService.swift`, the whole file:
 
 ```swift
-import BearoundSDK
+import BearoundSDKNotificationExtensions
 
 class NotificationService: BearoundNotificationService {}
 ```
@@ -472,10 +476,13 @@ class NotificationService: BearoundNotificationService {}
 `NotificationContent/NotificationViewController.swift`, the whole file:
 
 ```swift
-import BearoundSDK
+import BearoundSDKNotificationExtensions
 
 class NotificationViewController: BearoundNotificationViewController {}
 ```
+
+The class names are `BearoundNotificationService` and `BearoundNotificationViewController`;
+the module to import is `BearoundSDKNotificationExtensions` (not `BearoundSDK`).
 
 Delete the storyboard Xcode generated for the content extension (the view is drawn in
 code), and in its Info.plist replace `NSExtensionMainStoryboard` with
@@ -517,11 +524,17 @@ Left out, the notification shows the attached video with the native player contr
 
 - A card with an `http(s)` link opens it through the Bearound tracker, which records the
   click for that card and redirects.
-- A card with a deep link (`yourapp://...`) opens it directly.
+- A card with a deep link opens it directly, **only if your app declares that URL scheme**
+  in its `CFBundleURLTypes` (the content extension reads your app's Info.plist). Any other
+  scheme is ignored and the tap opens your app instead.
 - A card without a link opens your app, like tapping a regular notification.
 - A `PLAY` notification opens your app, like tapping a regular notification; your app
   decides what to do (the video already played in the expanded notification, so no custom
   player is needed).
+- A card tap that opens a link reports the open only after iOS confirms the link opened.
+
+Images and videos must be served over `https` (App Transport Security blocks plain `http`
+inside the extensions); tap links may be `http` or `https`.
 
 Opens keep being measured as described in [Push Receipt & Open Measurement](#push-receipt--open-measurement).
 

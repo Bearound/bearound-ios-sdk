@@ -43,19 +43,20 @@ jobs:
             echo "version=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
           fi
 
-      - name: Verify podspec version matches release
+      - name: Verify podspec versions match release
         run: |
           VERSION=${{ steps.get_version.outputs.version }}
-          SPEC_VERSION=$(grep -E 'spec\.version\s*=' BearoundSDK.podspec | head -1 | sed -E 's/.*"([0-9]+\.[0-9]+\.[0-9]+)".*/\1/')
-
           echo "Version from tag/dispatch: $VERSION"
-          echo "Version from podspec: $SPEC_VERSION"
 
-          if [ "$VERSION" != "$SPEC_VERSION" ]; then
-            echo "❌ Version mismatch between tag ($VERSION) and podspec ($SPEC_VERSION)"
-            exit 1
-          fi
-          echo "✅ Version matches: $VERSION"
+          for SPEC in BearoundSDK.podspec BearoundSDKNotificationExtensions.podspec; do
+            SPEC_VERSION=$(grep -E 'spec\.version\s*=' "$SPEC" | head -1 | sed -E 's/.*"([0-9]+\.[0-9]+\.[0-9]+)".*/\1/')
+            echo "Version from $SPEC: $SPEC_VERSION"
+            if [ "$VERSION" != "$SPEC_VERSION" ]; then
+              echo "❌ Version mismatch between tag ($VERSION) and $SPEC ($SPEC_VERSION)"
+              exit 1
+            fi
+          done
+          echo "✅ Versions match: $VERSION"
 
       - name: Verify Xcode MARKETING_VERSION matches release
         run: |
@@ -129,12 +130,14 @@ jobs:
           name: release-notes-${{ steps.get_version.outputs.version }}
           path: release_notes.md
 
-      - name: Lint podspec
+      - name: Lint podspecs
         run: |
-          pod lib lint BearoundSDK.podspec \
-            --allow-warnings \
-            --platforms=ios \
-            --skip-import-validation
+          for SPEC in BearoundSDK.podspec BearoundSDKNotificationExtensions.podspec; do
+            pod lib lint "$SPEC" \
+              --allow-warnings \
+              --platforms=ios \
+              --skip-import-validation
+          done
 
       - name: Build XCFramework
         run: |
@@ -171,8 +174,9 @@ jobs:
 
           VERSION=${{ needs.pre_release_validation.outputs.version }}
 
-          # Check if version is already published on CocoaPods (no auth needed)
-          PUBLISHED=$(curl -s "https://trunk.cocoapods.org/api/v1/pods/BearoundSDK" | python3 -c "
+          # "yes" when trunk already lists $VERSION for pod $1 (no auth needed).
+          is_published() {
+            curl -s "https://trunk.cocoapods.org/api/v1/pods/$1" | python3 -c "
           import sys, json
           try:
               data = json.load(sys.stdin)
@@ -180,17 +184,43 @@ jobs:
               print('yes' if '${VERSION}' in versions else 'no')
           except:
               print('no')
-          " 2>/dev/null)
+          " 2>/dev/null
+          }
 
-          if [ "$PUBLISHED" = "yes" ]; then
-            echo "✅ Version ${VERSION} is already published on CocoaPods — skipping push"
-            exit 0
-          fi
+          # Pushes one podspec. Skipped when the version is already on trunk. A failed push is
+          # re-checked before failing the job: trunk often accepts the spec and then times out
+          # the client, so the version shows up a few minutes later.
+          push_pod() {
+            local POD="$1" SPEC="$2"
+            if [ "$(is_published "$POD")" = "yes" ]; then
+              echo "✅ $POD ${VERSION} is already published on CocoaPods, skipping push"
+              return 0
+            fi
+            if pod trunk push "$SPEC" \
+                --allow-warnings \
+                --skip-import-validation \
+                --synchronous; then
+              echo "✅ $POD ${VERSION} pushed"
+              return 0
+            fi
+            echo "⚠️ pod trunk push $SPEC failed; checking whether trunk published it anyway"
+            for i in $(seq 1 10); do
+              sleep 30
+              if [ "$(is_published "$POD")" = "yes" ]; then
+                echo "✅ $POD ${VERSION} is on trunk despite the push error"
+                return 0
+              fi
+            done
+            echo "❌ $POD ${VERSION} is not on trunk"
+            return 1
+          }
 
-          pod trunk push BearoundSDK.podspec \
-            --allow-warnings \
-            --skip-import-validation \
-            --synchronous
+          # Independent pods (the extensions pod does not depend on the core): both always
+          # go out, and the job fails if either is missing.
+          STATUS=0
+          push_pod BearoundSDK BearoundSDK.podspec || STATUS=1
+          push_pod BearoundSDKNotificationExtensions BearoundSDKNotificationExtensions.podspec || STATUS=1
+          exit $STATUS
 
   create_github_release:
     name: Create GitHub Release

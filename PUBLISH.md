@@ -10,15 +10,18 @@
 
 ## Step-by-step
 
-### 1. Update the version in 4 files
+### 1. Update the version in 5 files
 
-The version must be identical in all four locations — the release workflow verifies each
-one against the tag and aborts on the first mismatch:
+The repo publishes **two pods** from the same tag: `BearoundSDK` (the core) and
+`BearoundSDKNotificationExtensions` (the rich push app extensions, which do not depend on the
+core). The version must be identical in all five locations; the release workflow verifies
+each one against the tag and aborts on the first mismatch:
 
 | File | Where | Example |
 |------|-------|---------|
 | `BearoundSDK.xcodeproj/project.pbxproj` | `MARKETING_VERSION = X.Y.Z;` (all occurrences) | `MARKETING_VERSION = 3.0.0;` |
 | `BearoundSDK.podspec` | `spec.version = "X.Y.Z"` | `spec.version = "3.0.0"` |
+| `BearoundSDKNotificationExtensions.podspec` | `spec.version = "X.Y.Z"` | `spec.version = "3.0.0"` |
 | `BearoundSDK/Constants.swift` | `SDKVersion.current = "X.Y.Z"` | `static let current = "3.0.0"` |
 | `CHANGELOG.md` | `## [X.Y.Z] - YYYY-MM-DD` | `## [3.0.0] - 2026-05-24` |
 
@@ -55,7 +58,7 @@ Add a new section at the top of the file (just below the header) using this form
 
 ```bash
 git add BearoundSDK.xcodeproj/project.pbxproj BearoundSDK.podspec \
-        BearoundSDK/Constants.swift CHANGELOG.md
+        BearoundSDKNotificationExtensions.podspec BearoundSDK/Constants.swift CHANGELOG.md
 git commit -m "bump: version X.Y.Z"
 git push origin main
 ```
@@ -75,13 +78,17 @@ The workflow runs 4 jobs in sequence:
 
 ```
 1. Pre-Release Validation
-   - Verifies tag version == podspec == changelog
-   - Runs pod lib lint
+   - Verifies tag version == both podspecs == changelog
+   - Runs pod lib lint on both podspecs
    - Builds the XCFramework
 
 2. Publish to CocoaPods
-   - Checks whether the version is already published (skipped if it is)
-   - Runs pod trunk push
+   - For each pod (BearoundSDK, then BearoundSDKNotificationExtensions):
+     checks whether the version is already published (skipped if it is), then runs
+     pod trunk push
+   - A failed push is re-checked on trunk for about 5 minutes before failing: trunk often
+     accepts the spec and then times out the client
+   - Fails if either pod is not on trunk at the end
 
 3. Create GitHub Release
    - Creates the release on GitHub with notes from the CHANGELOG
@@ -99,7 +106,10 @@ If the CocoaPods step in the workflow fails, publish manually from your Mac:
 
 ```bash
 pod trunk push BearoundSDK.podspec --allow-warnings --skip-import-validation --synchronous
+pod trunk push BearoundSDKNotificationExtensions.podspec --allow-warnings --skip-import-validation --synchronous
 ```
+
+Push only the one that is missing: a re-push of a published version is rejected.
 
 > Requires `COCOAPODS_TRUNK_TOKEN` configured or an active session via `pod trunk register`.
 
@@ -117,8 +127,9 @@ pod trunk push BearoundSDK.podspec --allow-warnings --skip-import-validation --s
 > Verify both ends landed:
 >
 > ```bash
-> # CocoaPods has the version?
+> # CocoaPods has the version, for both pods?
 > curl -s https://trunk.cocoapods.org/api/v1/pods/BearoundSDK | grep -o '"name":"X.Y.Z"'
+> curl -s https://trunk.cocoapods.org/api/v1/pods/BearoundSDKNotificationExtensions | grep -o '"name":"X.Y.Z"'
 > # GitHub Release object exists (200), not just the tag?
 > curl -s -o /dev/null -w '%{http_code}\n' \
 >   https://api.github.com/repos/Bearound/bearound-ios-sdk/releases/tags/vX.Y.Z
@@ -131,12 +142,14 @@ pod trunk push BearoundSDK.podspec --allow-warnings --skip-import-validation --s
 ```
 [ ] Version updated in project.pbxproj (MARKETING_VERSION, all occurrences)
 [ ] Version updated in BearoundSDK.podspec
+[ ] Version updated in BearoundSDKNotificationExtensions.podspec
+[ ] Version updated in BearoundSDK/Constants.swift
 [ ] CHANGELOG.md updated with a section for the new version
 [ ] Commit and push to main
 [ ] Tag created: git tag vX.Y.Z
 [ ] Tag pushed: git push origin vX.Y.Z
 [ ] Workflow green on GitHub Actions
-[ ] Version visible on CocoaPods (pod search BearoundSDK)
+[ ] Version visible on CocoaPods for both pods (BearoundSDK, BearoundSDKNotificationExtensions)
 [ ] GitHub Release created (not just the tag — check /releases/tag/vX.Y.Z)
 ```
 
@@ -145,7 +158,7 @@ pod trunk push BearoundSDK.podspec --allow-warnings --skip-import-validation --s
 ## Common Errors
 
 ### "Version mismatch between tag and podspec"
-The version in the tag (`vX.Y.Z`) does not match `spec.version` in the podspec. Fix the podspec, commit, then delete and recreate the tag:
+The version in the tag (`vX.Y.Z`) does not match `spec.version` in one of the two podspecs. Fix the podspec, commit, then delete and recreate the tag:
 ```bash
 git tag -d vX.Y.Z
 git push origin :refs/tags/vX.Y.Z
