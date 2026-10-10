@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.15.0] - 2026-10-09
+
+### Changed
+- Versão alinhada com o SDK Android 3.15.0, que passa a enviar os códigos de operadora do chip
+  e da rede. No iOS não há mudança de comportamento: a Apple não expõe a operadora desde o
+  iOS 16. Nenhuma permissão nova.
+
 ## [3.14.0] - 2026-09-30
 
 ### Added
