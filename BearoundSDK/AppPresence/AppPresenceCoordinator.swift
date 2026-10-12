@@ -38,6 +38,9 @@ final class AppPresenceCoordinator {
     private var roundInFlight = false
     /// Latest snapshot compatible with the current namespace and configuration.
     private var cache: AppPresenceSnapshot?
+    /// Snapshot of a completed round whose live delivery is still queued. A replay must not
+    /// deliver it first: it is a new round and reaches subscribers with cached = false.
+    private var pendingLiveId: UUID?
 
     // MARK: Subscriber dedupe
 
@@ -151,7 +154,7 @@ final class AppPresenceCoordinator {
         subscriberEpoch += 1
         epochLock.unlock()
         DispatchQueue.main.async {
-            guard let snapshot = self.lastSnapshot() else { return }
+            guard let snapshot = self.replaySnapshot() else { return }
             self.deliverOnMain(snapshot, generation: nil)
         }
     }
@@ -210,6 +213,7 @@ final class AppPresenceCoordinator {
                    message: "App presence storage is unavailable; the snapshot was not persisted.")
         }
         cache = snapshot
+        pendingLiveId = snapshot.snapshotId
         DispatchQueue.main.async {
             self.deliverOnMain(snapshot, generation: roundGeneration)
         }
@@ -221,8 +225,24 @@ final class AppPresenceCoordinator {
         queue.sync { roundGeneration == generation && isActive }
     }
 
+    /// The cached snapshot to replay to a new subscriber, unless its live delivery is still
+    /// queued (that one carries it with cached = false).
+    private func replaySnapshot() -> AppPresenceSnapshot? {
+        queue.sync {
+            guard let snapshot = compatibleCache(), snapshot.snapshotId != pendingLiveId else { return nil }
+            return snapshot.markedCached()
+        }
+    }
+
+    private func liveDeliveryReached(_ snapshotId: UUID) {
+        queue.sync {
+            if pendingLiveId == snapshotId { pendingLiveId = nil }
+        }
+    }
+
     private func deliverOnMain(_ snapshot: AppPresenceSnapshot, generation roundGeneration: Int?) {
         dispatchPrecondition(condition: .onQueue(.main))
+        if roundGeneration != nil { liveDeliveryReached(snapshot.snapshotId) }
         if let roundGeneration, !isCurrent(roundGeneration) { return }
         epochLock.lock()
         let epoch = subscriberEpoch

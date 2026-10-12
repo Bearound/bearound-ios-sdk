@@ -281,6 +281,8 @@ struct AppPresenceCoordinatorTests {
 
         let ids = recorder.snapshots.map(\.snapshotId)
         #expect(ids.count == 1)
+        // A new round, not a replay, even when the assignment's replay ran first.
+        #expect(recorder.snapshots.first?.cached == false)
     }
 
     // MARK: - Isolation and opt-out
