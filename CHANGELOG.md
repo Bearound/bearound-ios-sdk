@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.16.0] - 2026-10-13
+
+### Added
+- **App Presence (opt-in, só local).** Verificação local da existência de um handler para uma
+  lista curta de URL schemes que o integrador configura e declara no build
+  (`LSApplicationQueriesSchemes`). Desligada por padrão, sem interface e sem permissão nova.
+  O resultado vai apenas para o app integrador, por callback, e nunca entra no payload de
+  beacon, na fila offline nem na telemetria de erros. Antes de usar, leia a seção "Store policy
+  first" do README: a diretriz 5.1.2(iv) da App Store proíbe usar informação de apps instalados
+  para analytics, publicidade ou marketing, e o SDK não concede nem implica aprovação da loja.
+
 ## [3.15.0] - 2026-10-09
 
 ### Changed
