@@ -232,6 +232,29 @@ struct AppPresenceCoordinatorTests {
         #expect(coordinator.lastSnapshot() == nil)
     }
 
+    @MainActor
+    @Test("Repeating the same configuration while a reserved round is queued keeps the round")
+    func sameConfigurationKeepsReservedRound() async throws {
+        // SDK already active (a background relaunch auto-starts from storage), then the host
+        // configures a new client and repeats the same targets, both on the main thread.
+        let coordinator = makeCoordinator(initial: configuration)
+        coordinator.setBusinessToken("token-old")
+        coordinator.start()
+        await settle(coordinator)
+        let before = recorder.snapshots.count
+
+        coordinator.setBusinessToken("token-A")
+        // The round for token-A is reserved and queued on main, which this test holds.
+        Thread.sleep(forTimeInterval: 0.2)
+        try coordinator.configure(configuration)
+        await settle(coordinator)
+
+        let delivered = Array(recorder.snapshots.dropFirst(before))
+        #expect(delivered.count == 1)
+        #expect(delivered.first?.cached == false)
+        #expect(coordinator.lastSnapshot()?.snapshotId == delivered.first?.snapshotId)
+    }
+
     // MARK: - Replay
 
     @Test("Replay keeps snapshotId, checkedAt and fingerprint with cached=true, also after relaunch")

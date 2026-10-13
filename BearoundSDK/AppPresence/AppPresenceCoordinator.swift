@@ -155,7 +155,7 @@ final class AppPresenceCoordinator {
         epochLock.unlock()
         DispatchQueue.main.async {
             guard let snapshot = self.replaySnapshot() else { return }
-            self.deliverOnMain(snapshot, generation: nil)
+            self.deliverOnMain(snapshot, round: nil)
         }
     }
 
@@ -177,31 +177,26 @@ final class AppPresenceCoordinator {
         guard reservation == .reserved else { return }
 
         roundInFlight = true
-        let roundGeneration = generation
+        let round = Round(generation: generation, namespace: namespace, fingerprint: configuration.fingerprint)
         let targets = configuration.targets
-        let fingerprint = configuration.fingerprint
         DispatchQueue.main.async {
-            guard self.isCurrent(roundGeneration) else {
+            guard self.isCurrent(round) else {
                 self.queue.async { self.roundInFlight = false }
                 return
             }
             let results = self.collector.collect(targets)
             self.queue.async {
-                self.finishRound(results, fingerprint: fingerprint, generation: roundGeneration, namespace: namespace)
+                self.finishRound(results, round: round)
             }
         }
     }
 
-    private func finishRound(
-        _ results: [AppPresenceResult],
-        fingerprint: String,
-        generation roundGeneration: Int,
-        namespace roundNamespace: AppPresenceNamespace
-    ) {
+    private func finishRound(_ results: [AppPresenceResult], round: Round) {
         roundInFlight = false
-        guard roundGeneration == generation, isActive else { return }
+        guard roundStillApplies(round) else { return }
+        let roundNamespace = round.namespace
         let snapshot = AppPresenceSnapshot(
-            configurationFingerprint: fingerprint,
+            configurationFingerprint: round.fingerprint,
             checkedAt: collector.now(),
             results: results
         )
@@ -215,14 +210,33 @@ final class AppPresenceCoordinator {
         cache = snapshot
         pendingLiveId = snapshot.snapshotId
         DispatchQueue.main.async {
-            self.deliverOnMain(snapshot, generation: roundGeneration)
+            self.deliverOnMain(snapshot, round: round)
         }
     }
 
     // MARK: - Helpers
 
-    private func isCurrent(_ roundGeneration: Int) -> Bool {
-        queue.sync { roundGeneration == generation && isActive }
+    /// What a reserved round depends on.
+    private struct Round {
+        let generation: Int
+        let namespace: AppPresenceNamespace
+        let fingerprint: String
+    }
+
+    private func isCurrent(_ round: Round) -> Bool {
+        queue.sync { roundStillApplies(round) }
+    }
+
+    /// A round survives a generation bump that changed nothing it depends on: same namespace,
+    /// same targets, feature still enabled and active. A host that repeats its configuration
+    /// while the SDK is already active (configure, then configureAppPresence with the same
+    /// targets) must not lose the window the round already reserved. Queue only.
+    private func roundStillApplies(_ round: Round) -> Bool {
+        guard isActive else { return false }
+        return round.namespace == namespace
+            && configuration.enabled
+            && !configuration.targets.isEmpty
+            && configuration.fingerprint == round.fingerprint
     }
 
     /// The cached snapshot to replay to a new subscriber, unless its live delivery is still
@@ -240,10 +254,10 @@ final class AppPresenceCoordinator {
         }
     }
 
-    private func deliverOnMain(_ snapshot: AppPresenceSnapshot, generation roundGeneration: Int?) {
+    private func deliverOnMain(_ snapshot: AppPresenceSnapshot, round: Round?) {
         dispatchPrecondition(condition: .onQueue(.main))
-        if roundGeneration != nil { liveDeliveryReached(snapshot.snapshotId) }
-        if let roundGeneration, !isCurrent(roundGeneration) { return }
+        if round != nil { liveDeliveryReached(snapshot.snapshotId) }
+        if let round, !isCurrent(round) { return }
         epochLock.lock()
         let epoch = subscriberEpoch
         epochLock.unlock()
