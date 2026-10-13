@@ -10,6 +10,9 @@ class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCenterDele
 
         BeAroundSDK.shared.registerBackgroundTasks()
 
+        // App presence device E2E step: no push registration and no permission prompt.
+        if AppPresenceE2E.isActive { return true }
+
         // Silent push: register with APNs so the server can wake the app in background
         // to refresh the BLE scan + sync (handled in didReceiveRemoteNotification).
         application.registerForRemoteNotifications()
@@ -129,29 +132,41 @@ class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCenterDele
 @main
 struct BeAroundScanApp: App {
     @UIApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
-    @StateObject private var viewModel = BeaconViewModel()
 
     var body: some Scene {
         WindowGroup {
-            TabView {
-                ContentView(viewModel: viewModel)
-                    .tabItem {
-                        Image(systemName: "antenna.radiowaves.left.and.right")
-                        Text("Beacons")
-                    }
-
-                RetryQueueView(viewModel: viewModel)
-                    .tabItem {
-                        Image(systemName: "arrow.clockwise.circle")
-                        Text("Retry Queue")
-                    }
-
-                DetectionLogView(viewModel: viewModel)
-                    .tabItem {
-                        Image(systemName: "list.bullet.rectangle")
-                        Text("Log")
-                    }
+            if AppPresenceE2E.isActive {
+                AppPresenceE2EView()
+            } else {
+                BenchRootView()
             }
+        }
+    }
+}
+
+/// The bench UI. Owns the view model, so an app presence E2E launch never creates it.
+struct BenchRootView: View {
+    @StateObject private var viewModel = BeaconViewModel()
+
+    var body: some View {
+        TabView {
+            ContentView(viewModel: viewModel)
+                .tabItem {
+                    Image(systemName: "antenna.radiowaves.left.and.right")
+                    Text("Beacons")
+                }
+
+            RetryQueueView(viewModel: viewModel)
+                .tabItem {
+                    Image(systemName: "arrow.clockwise.circle")
+                    Text("Retry Queue")
+                }
+
+            DetectionLogView(viewModel: viewModel)
+                .tabItem {
+                    Image(systemName: "list.bullet.rectangle")
+                    Text("Log")
+                }
         }
     }
 }
