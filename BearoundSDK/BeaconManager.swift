@@ -48,6 +48,7 @@ class BeaconManager: NSObject {
     // MARK: - Callbacks
 
     var onBeaconsUpdated: (([Beacon]) -> Void)?
+    var onPhysicalBeacons: (([Beacon]) -> Void)?
     var onError: ((Error) -> Void)?
     var onScanningStateChanged: ((Bool) -> Void)?
 
@@ -575,6 +576,7 @@ class BeaconManager: NSObject {
         defer { beaconLock.unlock() }
 
         var updatedBeacons: [Beacon] = []
+        var physicalBeacons: [Beacon] = []
         var scanLogParts: [String] = []
         let now = Date()
         let currentBeaconIds = Set(beacons.map { "\($0.major.intValue).\($0.minor.intValue)" })
@@ -604,6 +606,7 @@ class BeaconManager: NSObject {
                 beaconLastSeen[identifier] = now
                 beaconMissCount[identifier] = 0
                 updatedBeacons.append(beacon)
+                physicalBeacons.append(beacon)
             } else if rangeWhenBluetoothUnavailable {
                 // CL-only mode (no usable Bluetooth for this app): iOS reports ranged
                 // beacons with rssi=0 in this profile, and dropping them meant
@@ -622,6 +625,7 @@ class BeaconManager: NSObject {
                 beaconLastSeen[identifier] = now
                 beaconMissCount[identifier] = 0
                 updatedBeacons.append(beacon)
+                physicalBeacons.append(beacon)
             } else if let lastSeen = beaconLastSeen[identifier],
                       let cachedBeacon = detectedBeacons[identifier] {
                 let timeSinceLastSeen = now.timeIntervalSince(lastSeen)
@@ -669,6 +673,8 @@ class BeaconManager: NSObject {
                 }
             }
         }
+
+        if !physicalBeacons.isEmpty { onPhysicalBeacons?(physicalBeacons) }
 
         let hasBeaconsNow = !updatedBeacons.isEmpty
 

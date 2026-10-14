@@ -173,7 +173,7 @@ final class ObservationSummary {
             guard rawTimestamp.isFinite, rawTimestamp > 0, rawTimestamp < Double(Int64.max),
                   (-127...0).contains(beacon.rssi), beacon.accuracy.isFinite, beacon.accuracy >= -1,
                   (0...65535).contains(beacon.major), (0...65535).contains(beacon.minor) else { continue }
-            let timestamp = Int64(rawTimestamp.rounded())
+            let timestamp = Int64(rawTimestamp)
             guard timestamp <= clock.wallTimeMs, clock.wallTimeMs - timestamp <= Self.liveAgeMs else { duplicates += 1; continue }
             let age = clock.wallTimeMs - timestamp
             guard clock.monotonicTimeMs >= age else { continue }

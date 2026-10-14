@@ -14,6 +14,15 @@ import Testing
 // ("com.bearound.sdk.config") — parallel execution makes them clobber each other.
 @Suite("SDKConfigStorage Tests", .serialized)
 struct SDKConfigStorageTests {
+    @Test("Adaptive sampling option persists and old configuration restores the enabled default")
+    func adaptiveOptionPersistence() {
+        SDKConfigStorage.save(SDKConfiguration(businessToken: "t", adaptiveSamplingEnabled: false))
+        #expect(SDKConfigStorage.load()?.adaptiveSamplingEnabled == false)
+        UserDefaults(suiteName: "com.bearound.sdk.config")?.removeObject(forKey: "adaptive_sampling_enabled")
+        #expect(SDKConfigStorage.load()?.adaptiveSamplingEnabled == true)
+        SDKConfigStorage.clear()
+    }
+
 
     @Test("Save and load configuration")
     func saveAndLoadConfiguration() {

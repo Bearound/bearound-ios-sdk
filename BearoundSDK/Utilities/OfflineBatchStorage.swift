@@ -291,13 +291,14 @@ class OfflineBatchStorage {
 
     func loadReplayGroup(
         tenantFingerprint: String, policy: DataCollectionPolicy = .allEnabled,
-        capabilityAvailable: Bool, limit: Int = 128
+        capabilityAvailable: Bool, limit: Int = 128, excludingBatchIds: Set<String> = []
     ) -> [ReplayRecord] {
         storageQueue.sync {
             guard SamplingTenantFingerprint.isValid(tenantFingerprint) else { return [] }
             let pending = _observationRecords(includeQuarantined: false)
             var eligible: [ObservationRecord] = []
             for record in pending {
+                guard !excludingBatchIds.contains(record.envelope.batchId) else { continue }
                 guard record.envelope.tenantFingerprint != nil else {
                     _ = _quarantineBatch(id: record.storageId, reason: "tenant_unverifiable")
                     continue

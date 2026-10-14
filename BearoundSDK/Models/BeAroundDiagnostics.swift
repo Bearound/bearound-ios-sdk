@@ -55,6 +55,7 @@ public struct BeAroundDiagnostics {
     /// and it decides whether the BLE eye survives backgrounding (`bluetooth-central`) and
     /// whether background location updates are legal at all (`location`).
     public let backgroundModes: [String]
+    public var adaptiveSampling = BeAroundSamplingDiagnostics()
 
     public func summary() -> String {
         let iso = ISO8601DateFormatter()
@@ -85,4 +86,41 @@ public struct BeAroundDiagnostics {
         }
         return lines.joined(separator: "\n")
     }
+}
+
+public struct BeAroundSamplingDiagnostics: Equatable {
+    public internal(set) var generation: UInt64 = 0
+    public internal(set) var state = "unknown"
+    public internal(set) var source = "none"
+    public internal(set) var confidence = "none"
+    public internal(set) var reason = "startup"
+    public internal(set) var evidenceAgeMs: Int64?
+    public internal(set) var contextStable = false
+    public internal(set) var mode = "legacy"
+    public internal(set) var capability = "absent"
+    public internal(set) var contextIntervalMs: Int64 = 60_000
+    public internal(set) var summaryIntervalMs: Int64 = 15_000
+    public internal(set) var liveIntervalMs: Int64 = 15_000
+    public internal(set) var uniqueSamples: Int64 = 0
+    public internal(set) var cachedCallbacks: Int64 = 0
+    public internal(set) var buckets = 0
+    public internal(set) var gaps = 0
+    public internal(set) var liveAttempts: Int64 = 0
+    public internal(set) var summaryAttempts: Int64 = 0
+    public internal(set) var transitionAttempts: Int64 = 0
+    public internal(set) var serializedBytes: Int64 = 0
+    public internal(set) var failures: Int64 = 0
+    public internal(set) var retryLagMs: Int64 = 0
+    public internal(set) var clockUncertainties: Int64 = 0
+    public internal(set) var policyDenials: Int64 = 0
+    public internal(set) var archiveOnlyAcknowledgements: Int64 = 0
+    public internal(set) var pendingHistoryAcknowledgements: Int64 = 0
+    public internal(set) var manifestGaps: Int64 = 0
+    public internal(set) var capabilityInvalidations: Int64 = 0
+    public internal(set) var nextContextDeadlineMonotonicMs: Int64? = nil
+    public internal(set) var nextSummaryDeadlineMonotonicMs: Int64? = nil
+    public internal(set) var nextLiveDeadlineMonotonicMs: Int64? = nil
+    public internal(set) var complementaryReads: Int64 = 0
+    public internal(set) var complementaryCacheReads: Int64 = 0
+    public init() {}
 }

@@ -14,6 +14,67 @@ import Testing
 @Suite("APIClient Tests")
 struct APIClientTests {
 
+    private func immutableEnvelope(protocol delivery: StoredObservationEnvelope.DeliveryProtocol = .adaptive) throws -> StoredObservationEnvelope {
+        let id = UUID().uuidString
+        let timestamp: Int64 = 1_791_907_200_000
+        let sampling = SamplingEnvelope(version: 1, kind: .live, batchId: id, captureStreamId: UUID().uuidString,
+            windowId: UUID().uuidString, observedFrom: timestamp, observedTo: timestamp, sentAt: timestamp,
+            motion: MotionEvidence(state: .unknown, source: .none, confidence: .none, reason: "no_evidence",
+                observedAtMs: nil, ageMs: nil, contextStable: false),
+            clock: SamplingEnvelopeClock(bootId: UUID().uuidString, wallTimeMs: timestamp, monotonicTimeMs: 1_000_000))
+        return try StoredObservationEnvelope(batchId: id, storedAtMs: timestamp, tenantFingerprint: String(repeating: "a", count: 64),
+            originalPayload: ["sdk": ["version": "test", "platform": "ios", "appId": "original.app", "build": 1],
+                "device": ["deviceId": "original.device", "timestamp": timestamp], "syncTrigger": "original-trigger",
+                "beacons": [["uuid": UUID().uuidString, "major": 1, "minor": 2, "rssi": -70, "accuracy": -1,
+                    "timestamp": timestamp, "sampleId": UUID().uuidString, "bucketId": UUID().uuidString, "sampleOrdinal": 1]]],
+            sampling: sampling, contextID: "original", deliveryProtocol: delivery)
+    }
+
+    @Test("Replay serializer preserves original clock sentAt IDs trigger context and explicit absence")
+    func immutableReplaySerialization() throws {
+        let envelope = try immutableEnvelope()
+        let manifest = SamplingReplayManifest(drainId: UUID().uuidString, batchIds: [envelope.batchId], index: 0, count: 1)
+        let body = try APIClient.observationPayload(envelope, manifest: manifest)
+        let wire = try #require(body["sampling"] as? [String: Any])
+        let decoded = try JSONDecoder().decode(SamplingEnvelope.self, from: JSONSerialization.data(withJSONObject: wire))
+        #expect(decoded.sentAt == envelope.sampling?.sentAt && decoded.clock == envelope.sampling?.clock)
+        #expect(decoded.batchId == envelope.batchId && decoded.replay == manifest)
+        #expect(body["location"] == nil && body["wifis"] == nil && body["userProperties"] == nil)
+        #expect(body["syncTrigger"] as? String == "original-trigger")
+        #expect((body["device"] as? [String: Any])?["deviceId"] as? String == "original.device")
+    }
+
+    @Test("Captured legacy retry remains legacy and cannot acquire new sampling context")
+    func legacySerializer() throws {
+        let envelope = try immutableEnvelope(protocol: .legacy)
+        let body = try APIClient.observationPayload(envelope,
+            manifest: SamplingReplayManifest(drainId: UUID().uuidString, batchIds: [envelope.batchId], index: 0, count: 1))
+        #expect(body["sampling"] == nil && body["location"] == nil)
+        #expect(((body["beacons"] as? [[String: Any]])?.first?["timestamp"] as? NSNumber)?.int64Value == envelope.sampling?.observedFrom)
+    }
+
+    @Test("Relaunched background ACK removes only the exact durable batch and captured tenant")
+    func exactBackgroundAck() throws {
+        let storage = OfflineBatchStorage(directoryName: "com.bearound.sdk.api.test.\(UUID().uuidString)")
+        defer { storage.clearAllBatches() }
+        let envelope = try immutableEnvelope()
+        let unrelated = try immutableEnvelope()
+        #expect(storage.saveObservation(envelope) != nil && storage.saveObservation(unrelated) != nil)
+        let descriptor = ObservationDeliveryReconciliation(storageIds: [], tenantFingerprint: envelope.tenantFingerprint,
+            adaptiveBatchId: envelope.batchId)
+        let description = String(data: try JSONEncoder().encode(descriptor), encoding: .utf8)!
+        func ack(_ id: String, durable: Bool = true) throws -> Data {
+            try JSONSerialization.data(withJSONObject: ["samplingAck": ["batchId": id,
+                "archive": durable ? "durable" : "pending", "projection": "archive_only",
+                "reason": "historical_already_closed", "fallback": "keep", "invalidateCapability": false]])
+        }
+        #expect(BackgroundSessionManager.reconcileObservation(description: description, responseBody: try ack(unrelated.batchId), successful: true, storage: storage) == 0)
+        #expect(BackgroundSessionManager.reconcileObservation(description: description, responseBody: try ack(envelope.batchId, durable: false), successful: true, storage: storage) == 0)
+        #expect(BackgroundSessionManager.reconcileObservation(description: description, responseBody: try ack(envelope.batchId), successful: false, storage: storage) == 0)
+        #expect(BackgroundSessionManager.reconcileObservation(description: description, responseBody: try ack(envelope.batchId), successful: true, storage: storage) == 1)
+        #expect(storage.observationRecords().map { $0.envelope.batchId } == [unrelated.batchId])
+    }
+
     @Test("APIError descriptions")
     func apiErrorDescriptions() {
         let invalidURLError = APIError.invalidURL

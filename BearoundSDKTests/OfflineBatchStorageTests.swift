@@ -471,6 +471,24 @@ struct OfflineBatchStorageTests {
         FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent(testDirectory)
     }
 
+    @Test("Retained stale legacy head does not starve supported adaptive history")
+    func excludesRetainedLegacyHead() throws {
+        let storage = makeStorage()
+        defer { storage.clearAllBatches() }
+        let original = try makeEnvelope()
+        let legacy = try StoredObservationEnvelope(batchId: original.batchId, storedAtMs: original.storedAtMs,
+            tenantFingerprint: tenantA, originalPayload: original.originalPayload.mapValues { $0.foundationValue },
+            sampling: original.sampling, contextID: original.contextID, deliveryProtocol: .legacy)
+        let historical = try makeEnvelope()
+        #expect(storage.saveObservation(legacy) != nil && storage.saveObservation(historical) != nil)
+        let replay = storage.loadReplayGroup(tenantFingerprint: tenantA, capabilityAvailable: true,
+            excludingBatchIds: [legacy.batchId])
+        #expect(replay.map { $0.envelope.batchId } == [historical.batchId])
+        #expect(storage.observationRecords().contains { $0.envelope.batchId == legacy.batchId })
+        #expect(storage.acknowledge(batchIds: [historical.batchId], tenantFingerprint: tenantA) == 1)
+        #expect(storage.observationRecords().map { $0.envelope.batchId } == [legacy.batchId])
+    }
+
     private func makeEnvelope(
         tenant: String? = nil, stream: String = UUID().uuidString,
         kind: SamplingEnvelope.Kind = .summary, contextLabel: String = "original",

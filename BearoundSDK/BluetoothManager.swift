@@ -213,6 +213,7 @@ class BluetoothManager: NSObject {
 
     /// Called when tracked beacons list changes (add/remove/update)
     var onBeaconsUpdated: (([TrackedBLEBeacon]) -> Void)?
+    var onPhysicalBeacons: (([TrackedBLEBeacon]) -> Void)?
 
     // MARK: - BLE-only Zone Detection (v2.5)
     //
@@ -729,6 +730,7 @@ class BluetoothManager: NSObject {
         }
 
         trackedBeacons[key] = tracked
+        onPhysicalBeacons?([tracked])
         // Mark "we just saw a beacon" on the cleanup-immune timeline so the zone /
         // active-grace evaluators see truth even after `cleanupExpiredBeacons` evicts
         // entries from `trackedBeacons` (which it does after `beaconGracePeriod` = 10s,

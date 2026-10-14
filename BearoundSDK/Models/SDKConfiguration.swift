@@ -251,6 +251,7 @@ public struct SDKConfiguration {
     ///
     /// Default: `true`.
     public let collectWifi: Bool
+    public let adaptiveSamplingEnabled: Bool
 
     /// The three switches above as one value, for the collectors.
     var dataCollectionPolicy: DataCollectionPolicy {
@@ -273,13 +274,18 @@ public struct SDKConfiguration {
         presenceHeartbeatInterval: TimeInterval = PresenceHeartbeatDefaults.interval,
         collectAdvertisingId: Bool = true,
         collectLocation: Bool = true,
-        collectWifi: Bool = true
+        collectWifi: Bool = true,
+        adaptiveSamplingEnabled: Bool = true
     ) {
         self.businessToken = businessToken
         self.scanPrecision = scanPrecision
         self.maxQueuedPayloads = maxQueuedPayloads
         self.technology = technology
+        #if DEBUG
+        self.apiBaseURL = AdaptiveSamplingBench.endpoint ?? "https://ingest.bearound.io"
+        #else
         self.apiBaseURL = "https://ingest.bearound.io"
+        #endif
         self.appId = Bundle.main.bundleIdentifier ?? "unknown"
         self.periodicReconciliationEnabled = periodicReconciliationEnabled
         self.periodicReconciliationInterval =
@@ -292,6 +298,7 @@ public struct SDKConfiguration {
         self.collectAdvertisingId = collectAdvertisingId
         self.collectLocation = collectLocation
         self.collectWifi = collectWifi
+        self.adaptiveSamplingEnabled = adaptiveSamplingEnabled
     }
 
     // MARK: - Per-precision duty-cycle values

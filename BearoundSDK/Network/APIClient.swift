@@ -8,6 +8,12 @@
 import Foundation
 import UIKit
 
+struct ObservationDeliveryReconciliation: Codable {
+    let storageIds: [String]
+    let tenantFingerprint: String?
+    let adaptiveBatchId: String?
+}
+
 /// Owns the single background `URLSession` used to upload beacon batches.
 ///
 /// A background session survives app suspension and termination: the OS continues the
@@ -29,6 +35,7 @@ final class BackgroundSessionManager: NSObject {
     /// Serializes access to the per-task maps below.
     private let lock = NSLock()
     private var completions: [Int: (Result<Void, Error>) -> Void] = [:]
+    private var observationCompletions: [Int: (Result<Data, Error>) -> Void] = [:]
     private var responseData: [Int: Data] = [:]
     /// Temp file backing each upload task — background sessions require a file body, not Data.
     private var taskFiles: [Int: URL] = [:]
@@ -130,6 +137,33 @@ final class BackgroundSessionManager: NSObject {
         lock.unlock()
         task.resume()
     }
+
+    func uploadObservation(
+        request: URLRequest, bodyData: Data, reconciliation: ObservationDeliveryReconciliation,
+        completion: @escaping (Result<Data, Error>) -> Void
+    ) {
+        let file = FileManager.default.temporaryDirectory.appendingPathComponent("bearound-upload-\(UUID().uuidString).json")
+        do { try bodyData.write(to: file, options: .atomic) }
+        catch { completion(.failure(error)); return }
+        let task = session.uploadTask(with: request, fromFile: file)
+        if let encoded = try? JSONEncoder().encode(reconciliation) { task.taskDescription = String(data: encoded, encoding: .utf8) }
+        lock.lock()
+        observationCompletions[task.taskIdentifier] = completion
+        taskFiles[task.taskIdentifier] = file
+        responseData[task.taskIdentifier] = Data()
+        lock.unlock()
+        task.resume()
+    }
+
+    static func reconcileObservation(description: String, responseBody: Data, successful: Bool, storage: OfflineBatchStorage = .shared) -> Int {
+        guard successful, let data = description.data(using: .utf8),
+              let reconciliation = try? JSONDecoder().decode(ObservationDeliveryReconciliation.self, from: data) else { return 0 }
+        if let batchId = reconciliation.adaptiveBatchId, let tenant = reconciliation.tenantFingerprint {
+            guard AdaptiveSamplingResponse.decode(responseBody)?.samplingAck?.confirms(batchId) == true else { return 0 }
+            return storage.acknowledge(batchIds: [batchId], tenantFingerprint: tenant)
+        }
+        return storage.removeBatches(ids: reconciliation.storageIds)
+    }
 }
 
 extension BackgroundSessionManager: URLSessionDataDelegate {
@@ -145,12 +179,23 @@ extension BackgroundSessionManager: URLSessionTaskDelegate {
         let taskId = task.taskIdentifier
 
         lock.lock()
+        let observationCompletion = observationCompletions.removeValue(forKey: taskId)
         let completion = completions.removeValue(forKey: taskId)
         let responseBody = responseData.removeValue(forKey: taskId)
         let fileURL = taskFiles.removeValue(forKey: taskId)
         lock.unlock()
 
         if let fileURL { try? FileManager.default.removeItem(at: fileURL) }
+
+        if let observationCompletion {
+            if let error { observationCompletion(.failure(error)); return }
+            guard let http = task.response as? HTTPURLResponse else { observationCompletion(.failure(APIError.invalidResponse)); return }
+            guard (200 ..< 300).contains(http.statusCode) else {
+                observationCompletion(.failure(APIError.httpError(statusCode: http.statusCode))); return
+            }
+            observationCompletion(.success(responseBody ?? Data()))
+            return
+        }
 
         guard let completion else {
             // Orphaned task: the process that created it died and this is the
@@ -160,7 +205,9 @@ extension BackgroundSessionManager: URLSessionTaskDelegate {
             // On failure we intentionally do nothing: the batch stays queued.
             let isSuccess = error == nil
                 && (task.response as? HTTPURLResponse).map { (200..<300).contains($0.statusCode) } == true
-            if isSuccess, let ids = task.taskDescription?.split(separator: ",").map(String.init), !ids.isEmpty {
+            if let description = task.taskDescription, description.hasPrefix("{") {
+                _ = Self.reconcileObservation(description: description, responseBody: responseBody ?? Data(), successful: isSuccess)
+            } else if isSuccess, let ids = task.taskDescription?.split(separator: ",").map(String.init), !ids.isEmpty {
                 let removed = OfflineBatchStorage.shared.removeBatches(ids: ids)
                 NSLog("[BeAroundSDK] Orphaned upload task %d succeeded after relaunch — reconciled %d persisted batch(es)", taskId, removed)
             } else {
@@ -239,6 +286,7 @@ enum DeliveryPath {
 
 class APIClient {
     private let configuration: SDKConfiguration
+    var responseObserver: ((Data, SamplingClock, SamplingClock) -> Void)?
 
     /// Short-timeout session for `.immediateFirst` deliveries. Ephemeral: no cache/cookies,
     /// nothing persisted — the durable path is the background session + OfflineBatchStorage.
@@ -256,6 +304,68 @@ class APIClient {
 
     init(configuration: SDKConfiguration) {
         self.configuration = configuration
+    }
+
+    static func observationPayload(_ envelope: StoredObservationEnvelope, manifest: SamplingReplayManifest? = nil) throws -> [String: Any] {
+        let filtered = envelope.filtered(policy: DataCollectionPolicyStore.current)
+        if let manifest {
+            guard let payload = try filtered.replayPayload(manifest: manifest) else { throw APIError.invalidResponse }
+            return payload
+        }
+        var payload = filtered.originalPayload.mapValues { $0.foundationValue }
+        if filtered.deliveryProtocol == .adaptive, let sampling = filtered.sampling {
+            payload["sampling"] = try JSONSerialization.jsonObject(with: JSONEncoder().encode(sampling))
+        }
+        return payload
+    }
+
+    func sendObservation(
+        _ envelope: StoredObservationEnvelope, storageId: String?, manifest: SamplingReplayManifest? = nil,
+        delivery: DeliveryPath = .immediateFirst, completion: @escaping (Result<Data, Error>) -> Void
+    ) {
+        guard let deviceId = envelope.originalPayload["device"]?.object?["deviceId"]?.foundationValue as? String,
+              envelope.tenantFingerprint == SamplingTenantFingerprint.make(endpoint: configuration.apiBaseURL,
+                  appID: configuration.appId, deviceID: deviceId, businessToken: configuration.businessToken),
+              let url = URL(string: "\(configuration.apiBaseURL)/ingest") else { completion(.failure(APIError.invalidURL)); return }
+        let body: Data
+        do { body = try JSONSerialization.data(withJSONObject: Self.observationPayload(envelope, manifest: manifest)) }
+        catch { completion(.failure(error)); return }
+        guard body.count <= 524_288 else { completion(.failure(APIError.invalidResponse)); return }
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue(configuration.businessToken, forHTTPHeaderField: "Authorization")
+        let requestedAt = SamplingClock.now()
+        let reconciliation = ObservationDeliveryReconciliation(storageIds: storageId.map { [$0] } ?? [],
+            tenantFingerprint: envelope.tenantFingerprint,
+            adaptiveBatchId: envelope.deliveryProtocol == .adaptive ? envelope.batchId : nil)
+        let observer = responseObserver
+        let finish: (Result<Data, Error>) -> Void = { result in
+            if case .success(let data) = result {
+                observer?(data, requestedAt, SamplingClock.now())
+                if envelope.deliveryProtocol == .adaptive,
+                   AdaptiveSamplingResponse.decode(data)?.samplingAck?.confirms(envelope.batchId) != true {
+                    completion(.failure(APIError.invalidResponse)); return
+                }
+            }
+            completion(result)
+        }
+        if delivery == .background {
+            sessionManager.uploadObservation(request: request, bodyData: body, reconciliation: reconciliation, completion: finish)
+            return
+        }
+        request.httpBody = body
+        Self.immediateSession.dataTask(with: request) { [sessionManager] data, response, error in
+            if error != nil {
+                var backgroundRequest = request
+                backgroundRequest.httpBody = nil
+                sessionManager.uploadObservation(request: backgroundRequest, bodyData: body, reconciliation: reconciliation, completion: finish)
+                return
+            }
+            guard let http = response as? HTTPURLResponse else { finish(.failure(APIError.invalidResponse)); return }
+            guard (200 ..< 300).contains(http.statusCode) else { finish(.failure(APIError.httpError(statusCode: http.statusCode))); return }
+            finish(.success(data ?? Data()))
+        }.resume()
     }
 
     /// Ensures the shared background session is instantiated (re-created after relaunch so
@@ -343,6 +453,66 @@ class APIClient {
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue(configuration.businessToken, forHTTPHeaderField: "Authorization")
 
+        let payload = Self.makeObservationPayload(beacons, sdkInfo: sdkInfo, userDevice: userDevice, userProperties: userProperties, syncTrigger: syncTrigger)
+
+        let bodyData: Data
+        do {
+            bodyData = try JSONSerialization.data(withJSONObject: payload)
+        } catch {
+            completion(.failure(error))
+            return
+        }
+
+        let requestedAt = SamplingClock.now()
+        let observer = responseObserver
+        let finish: (Result<Data, Error>) -> Void = { result in
+            switch result {
+            case .success(let data):
+                observer?(data, requestedAt, SamplingClock.now())
+                completion(.success(()))
+            case .failure(let error): completion(.failure(error))
+            }
+        }
+        let reconciliation = ObservationDeliveryReconciliation(storageIds: persistedBatchIds,
+            tenantFingerprint: nil, adaptiveBatchId: nil)
+        if delivery == .background {
+            sessionManager.uploadObservation(request: request, bodyData: bodyData,
+                reconciliation: reconciliation, completion: finish)
+        } else {
+            request.httpBody = bodyData
+            Self.immediateSession.dataTask(with: request) { [sessionManager] data, response, error in
+                if error != nil {
+                    var fallback = request
+                    fallback.httpBody = nil
+                    sessionManager.uploadObservation(request: fallback, bodyData: bodyData,
+                        reconciliation: reconciliation, completion: finish)
+                    return
+                }
+                guard let http = response as? HTTPURLResponse else { finish(.failure(APIError.invalidResponse)); return }
+                guard (200 ..< 300).contains(http.statusCode) else {
+                    finish(.failure(APIError.httpError(statusCode: http.statusCode))); return
+                }
+                finish(.success(data ?? Data()))
+            }.resume()
+        }
+    }
+
+    /// The `sdk` block of the /ingest payload. Extracted so a unit test can assert
+    /// exactly what goes on the wire (version + technology). No behavior change.
+    static func makeSdkPayload(_ sdkInfo: SDKInfo) -> [String: Any] {
+        return [
+            "version": sdkInfo.version,
+            "platform": sdkInfo.platform,
+            "appId": sdkInfo.appId,
+            "build": sdkInfo.build,
+            "technology": sdkInfo.technology,
+        ]
+    }
+
+    static func makeObservationPayload(
+        _ beacons: [Beacon], sdkInfo: SDKInfo, userDevice: UserDevice,
+        userProperties: UserProperties?, syncTrigger: String
+    ) -> [String: Any] {
         let beaconsPayload = beacons.map { beacon -> [String: Any] in
             let proximityString: String =
                 switch beacon.proximity {
@@ -396,7 +566,7 @@ class APIClient {
         var payload: [String: Any] = [
             "beacons": beaconsPayload,
             "sdk": Self.makeSdkPayload(sdkInfo),
-            "device": buildDevicePayload(userDevice),
+            "device": Self.buildDevicePayload(userDevice),
             "syncTrigger": syncTrigger,
         ]
 
@@ -422,83 +592,10 @@ class APIClient {
             payload["encounterIds"] = userDevice.encounterIds
         }
 
-        let bodyData: Data
-        do {
-            bodyData = try JSONSerialization.data(withJSONObject: payload)
-        } catch {
-            completion(.failure(error))
-            return
-        }
-
-        // Background sessions don't allow `httpBody` on upload tasks — the body must be
-        // passed as `Data`. Don't set request.httpBody here.
-        switch delivery {
-        case .background:
-            NSLog("[BeAroundSDK] Sending %d beacon(s) to %@ trigger=%@ (background upload)", beacons.count, url.absoluteString, syncTrigger)
-            sessionManager.upload(request: request, bodyData: bodyData, persistedBatchIds: persistedBatchIds, completion: completion)
-        case .immediateFirst:
-            NSLog("[BeAroundSDK] Sending %d beacon(s) to %@ trigger=%@ (immediate upload)", beacons.count, url.absoluteString, syncTrigger)
-            sendImmediate(request: request, bodyData: bodyData, persistedBatchIds: persistedBatchIds, completion: completion)
-        }
+        return payload
     }
 
-    /// `.immediateFirst` delivery: short-timeout data task now; background session only as
-    /// the transport-failure fallback. See `DeliveryPath` for the full rationale.
-    private func sendImmediate(
-        request: URLRequest,
-        bodyData: Data,
-        persistedBatchIds: [String],
-        completion: @escaping (Result<Void, Error>) -> Void
-    ) {
-        var immediateRequest = request
-        immediateRequest.httpBody = bodyData
-
-        let task = Self.immediateSession.dataTask(with: immediateRequest) { [sessionManager] responseBody, response, error in
-            if let error {
-                // Transport failure (offline, timeout, connection lost): the request may have
-                // never reached the backend — re-queue on the durable background session.
-                NSLog("[BeAroundSDK] Immediate upload transport failure (%@) — falling back to background session", error.localizedDescription)
-                DetectionLogStore.append(type: "Sync", detail: "envio imediato falhou (\(error.localizedDescription)) — fallback para background session")
-                sessionManager.upload(request: request, bodyData: bodyData, persistedBatchIds: persistedBatchIds, completion: completion)
-                return
-            }
-
-            guard let httpResponse = response as? HTTPURLResponse else {
-                completion(.failure(APIError.invalidResponse))
-                return
-            }
-
-            guard (200..<300).contains(httpResponse.statusCode) else {
-                // The backend answered — an identical retry on the background session would
-                // get the same status. Surface the error; persisted-batch retry owns it.
-                let body = responseBody.flatMap { String(data: $0, encoding: .utf8) }
-                    .map { String($0.prefix(512)) }
-                    .flatMap { $0.isEmpty ? nil : $0 }
-                NSLog("[BeAroundSDK] Immediate upload: HTTP %d body=%@", httpResponse.statusCode, body ?? "—")
-                completion(.failure(APIError.httpError(statusCode: httpResponse.statusCode, body: body)))
-                return
-            }
-
-            NSLog("[BeAroundSDK] Immediate upload succeeded (HTTP %d)", httpResponse.statusCode)
-            DetectionLogStore.append(type: "Sync", detail: "entregue via sessão imediata (HTTP \(httpResponse.statusCode))")
-            completion(.success(()))
-        }
-        task.resume()
-    }
-
-    /// The `sdk` block of the /ingest payload. Extracted so a unit test can assert
-    /// exactly what goes on the wire (version + technology). No behavior change.
-    static func makeSdkPayload(_ sdkInfo: SDKInfo) -> [String: Any] {
-        return [
-            "version": sdkInfo.version,
-            "platform": sdkInfo.platform,
-            "appId": sdkInfo.appId,
-            "build": sdkInfo.build,
-            "technology": sdkInfo.technology,
-        ]
-    }
-
-    private func buildDevicePayload(_ device: UserDevice) -> [String: Any] {
+    private static func buildDevicePayload(_ device: UserDevice) -> [String: Any] {
         let hardware: [String: Any] = [
             "manufacturer": device.manufacturer,
             "model": device.model,

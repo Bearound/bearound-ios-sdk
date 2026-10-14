@@ -48,6 +48,19 @@ struct ObservationSummaryTests {
         beacon["temporalBuckets"]?.array?.compactMap(\.object) ?? []
     }
 
+    @Test("Fractional source milliseconds use baseline truncation and remain eligible in the capture clock millisecond")
+    func fractionalSourceDate() throws {
+        let summary = ObservationSummary()
+        let source = Beacon(uuid: UUID(uuidString: boot)!, major: 1, minor: 1, rssi: -70,
+            proximity: .bt, accuracy: -1, timestamp: Date(timeIntervalSince1970: Double(base) / 1_000 + 0.0009))
+        let captured = summary.observe(beacons: [source], callbackID: "fractional", context: context(), at: clock(), isPhysical: true)
+        #expect(captured.acceptedSamples == 1)
+        let live = try #require(summary.liveBeacons(at: clock(), maxAgeMs: 30_000).first)
+        #expect(live["timestamp"] == .number(Double(base)))
+        let segment = try #require(summary.close(at: clock()))
+        #expect(segment.observedFrom == base && segment.observedTo == base)
+    }
+
     @Test("Empty and cached callbacks cannot create an observation window")
     func nonPhysical() {
         let summary = ObservationSummary()

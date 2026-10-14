@@ -27,6 +27,7 @@ public class SDKConfigStorage {
     private static let keyCollectAdvertisingId = "collect_advertising_id"
     private static let keyCollectLocation = "collect_location"
     private static let keyCollectWifi = "collect_wifi"
+    private static let keyAdaptiveSamplingEnabled = "adaptive_sampling_enabled"
 
     private static var defaults: UserDefaults? {
         UserDefaults(suiteName: suiteName)
@@ -50,6 +51,7 @@ public class SDKConfigStorage {
         defaults.set(config.collectAdvertisingId, forKey: keyCollectAdvertisingId)
         defaults.set(config.collectLocation, forKey: keyCollectLocation)
         defaults.set(config.collectWifi, forKey: keyCollectWifi)
+        defaults.set(config.adaptiveSamplingEnabled, forKey: keyAdaptiveSamplingEnabled)
         defaults.set(true, forKey: keyIsConfigured)
 
         defaults.synchronize()
@@ -117,7 +119,8 @@ public class SDKConfigStorage {
             requestTrackingOnStart: requestTrackingOnStart,
             collectAdvertisingId: collectAdvertisingId,
             collectLocation: collectLocation,
-            collectWifi: collectWifi
+            collectWifi: collectWifi,
+            adaptiveSamplingEnabled: defaults.object(forKey: keyAdaptiveSamplingEnabled) as? Bool ?? true
         )
     }
 
@@ -132,6 +135,7 @@ public class SDKConfigStorage {
         defaults.removeObject(forKey: keyCollectAdvertisingId)
         defaults.removeObject(forKey: keyCollectLocation)
         defaults.removeObject(forKey: keyCollectWifi)
+        defaults.removeObject(forKey: keyAdaptiveSamplingEnabled)
         defaults.removeObject(forKey: keyIsConfigured)
         defaults.removeObject(forKey: keyIsScanning)
         defaults.removeObject(forKey: keyInternalId)

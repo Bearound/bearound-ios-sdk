@@ -10,6 +10,13 @@ import Foundation
 
 @Suite("SDKConfiguration Tests")
 struct SDKConfigurationTests {
+    @Test("Adaptive sampling defaults on and local rollback preserves collection switches")
+    func adaptiveDefaultsAndRollback() {
+        #expect(SDKConfiguration(businessToken: "t").adaptiveSamplingEnabled)
+        let config = SDKConfiguration(businessToken: "t", collectLocation: false, adaptiveSamplingEnabled: false)
+        #expect(!config.adaptiveSamplingEnabled && !config.collectLocation && config.collectWifi)
+    }
+
 
     @Test("SDKConfiguration basic initialization")
     func configurationInitialization() {
