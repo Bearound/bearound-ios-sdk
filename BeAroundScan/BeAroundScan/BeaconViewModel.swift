@@ -47,6 +47,42 @@ struct AdaptiveBenchHostConfiguration {
 }
 #endif
 
+#if DEBUG && BEAROUND_ADAPTIVE_BENCH && !BEAROUND_ADAPTIVE_BASELINE
+enum AdaptiveBenchHostDiagnostics {
+    nonisolated static func syncError(_ error: NSError) -> [String: Any] {
+        let domain = [NSURLErrorDomain, NSCocoaErrorDomain, "BeAroundSDK", "BearoundSDK.APIError"].contains(error.domain)
+            ? error.domain : "unrecognized_error_domain"
+        let usesSystemDescription = error.domain == NSURLErrorDomain
+        var description = usesSystemDescription ? error.localizedDescription
+            : NSError(domain: domain, code: error.code, userInfo: nil).localizedDescription
+        for pattern in [#"https?://\S+"#, #"fixture-[A-Za-z0-9_-]+"#,
+                        #"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}"#,
+                        #"\b[0-9A-Fa-f]{8}-[0-9A-Fa-f-]{27,}\b"#,
+                        #"\b[0-9A-Fa-f]{16,}\b"#, #"-?\d+\.\d+"#] {
+            description = description.replacingOccurrences(of: pattern, with: "[redacted]", options: .regularExpression)
+        }
+        description = String(description.prefix(512))
+        return ["domain": domain, "code": error.code, "description": description,
+                "descriptionPolicy": usesSystemDescription ? "sanitized_system" : "domain_code_only"]
+    }
+
+    nonisolated static func encode(counters: Data, endpoint: String, locationAuthorization: Int,
+                                   permissionRequestInvoked: Bool, lastSync: [String: Any]?) -> Data? {
+        guard let original = try? JSONSerialization.jsonObject(with: counters) as? [String: Any] else { return nil }
+        let keys = ["schemaVersion", "pid", "deviceTimestampMs", "counterScope", "generation", "httpAttempts",
+                    "serializedBytes", "uniqueSamples", "complementaryReads", "complementaryCacheReads", "cachedCallbacks",
+                    "liveAttempts", "summaryAttempts", "transitionAttempts", "failures", "policyDenials", "clockUncertainties"]
+        var value = original.filter { keys.contains($0.key) }
+        value["hostEndpoint"] = endpoint
+        value["hostLocationAuthorization"] = locationAuthorization
+        value["hostForegroundLocationRequestInvoked"] = permissionRequestInvoked
+        value["hostLastSync"] = lastSync ?? NSNull()
+        guard let data = try? JSONSerialization.data(withJSONObject: value, options: [.sortedKeys]), data.count <= 4096 else { return nil }
+        return data
+    }
+}
+#endif
+
 private enum UserDefaultsKeys {
     static let scanPrecision = "scanPrecision"
     static let queueSize = "queueSize"
@@ -296,6 +332,8 @@ class BeaconViewModel: NSObject, ObservableObject, BeAroundSDKDelegate {
     private var diagnosticTimer: Timer?
     #if DEBUG && BEAROUND_ADAPTIVE_BENCH && !BEAROUND_ADAPTIVE_BASELINE
     private var adaptiveBenchDiagnosticsURL: URL?
+    private var adaptiveBenchPermissionRequestInvoked = false
+    private var adaptiveBenchLastSync: [String: Any]?
     #endif
 
     override init() {
@@ -501,6 +539,13 @@ class BeaconViewModel: NSObject, ObservableObject, BeAroundSDKDelegate {
         guard configureAdaptiveBench() else { return }
         BeAroundSDK.shared.delegate = self
         statusMessage = "Bancada local configurada"
+        #if !BEAROUND_ADAPTIVE_BASELINE
+        if !adaptiveBenchPermissionRequestInvoked,
+           ProcessInfo.processInfo.arguments.contains("--adaptive-bench-request-existing-permissions") {
+            adaptiveBenchPermissionRequestInvoked = true
+            BeAroundSDK.shared.requestLocationAuthorization(.whenInUse)
+        }
+        #endif
         startScanning()
         return
         #else
@@ -627,9 +672,16 @@ class BeaconViewModel: NSObject, ObservableObject, BeAroundSDKDelegate {
         diagnosticTimer = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) { [weak self] _ in
             self?.bleDiagnostic = BeAroundSDK.shared.bleDiagnosticInfo
             #if DEBUG && BEAROUND_ADAPTIVE_BENCH && !BEAROUND_ADAPTIVE_BASELINE
-            guard AdaptiveSamplingBench.isEnabled, let file = self?.adaptiveBenchDiagnosticsURL else { return }
+            guard AdaptiveSamplingBench.isEnabled, let self, let file = self.adaptiveBenchDiagnosticsURL,
+                  AdaptiveBenchHostConfiguration.load() != nil,
+                  let endpoint = Bundle.main.object(forInfoDictionaryKey: "BEAROUND_ADAPTIVE_BENCH_ENDPOINT") as? String else { return }
+            let authorization = Int(self.locationManager.authorizationStatus.rawValue)
+            let requestInvoked = self.adaptiveBenchPermissionRequestInvoked
+            let lastSync = self.adaptiveBenchLastSync
             AdaptiveSamplingBench.counterSnapshot { data in
-                guard let data else { return }
+                guard let counters = data,
+                      let data = AdaptiveBenchHostDiagnostics.encode(counters: counters, endpoint: endpoint,
+                          locationAuthorization: authorization, permissionRequestInvoked: requestInvoked, lastSync: lastSync) else { return }
                 do {
                     try data.write(to: file, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
                     try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: file.path)
@@ -789,6 +841,10 @@ extension BeaconViewModel {
             self.lastSyncTime = Date()
             self.lastSyncBeaconCount = beaconCount
             self.retryBatchCount = BeAroundSDK.shared.pendingBatchCount
+            #if DEBUG && BEAROUND_ADAPTIVE_BENCH && !BEAROUND_ADAPTIVE_BASELINE
+            self.adaptiveBenchLastSync = ["completedAtMs": Int64(Date().timeIntervalSince1970 * 1000), "success": success,
+                "error": error.map { AdaptiveBenchHostDiagnostics.syncError($0 as NSError) } ?? NSNull()]
+            #endif
             if success {
                 NSLog("[BeaconViewModel] Sync completed successfully: %d beacons", beaconCount)
                 self.lastSyncResult = "Sucesso"
