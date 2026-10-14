@@ -17,7 +17,9 @@ final class AdaptiveSamplingPolicy {
     private var native: Timed<NativeActivityObservation>?
     private var locations: [Timed<SamplingLocationObservation>] = []
     private var contexts: [Timed<SamplingContextObservation>] = []
-    private var seenContextIDs = Set<String>()
+    private var recentContextIDs: [String] = []
+    private(set) var latestContextObservedAtMs: Int64?
+    var retainedContextIDCount: Int { recentContextIDs.count }
     private var candidateStarted: SamplingClock?
     private var noveltyUntilMs: Int64?
     private var noveltySource: MotionSource = .none
@@ -101,13 +103,16 @@ final class AdaptiveSamplingPolicy {
         if !policy.wifi { filteredContext.connectedAP = nil }
         guard generation == self.generation, prepare(at: now, policy: policy),
               context.isFresh, !context.isCoalesced, !context.windowID.isEmpty,
-              !seenContextIDs.contains(context.windowID), !context.beaconRSSIs.isEmpty,
+              !recentContextIDs.contains(context.windowID), !context.beaconRSSIs.isEmpty,
+              latestContextObservedAtMs.map({ context.observedAtMs > $0 }) ?? true,
               context.beaconRSSIs.values.allSatisfy({ (-127 ..< 0).contains($0) }),
               let observation = timed(filteredContext, timestamp: context.observedAtMs, at: now, ttl: 30_000)
         else { return }
         let previous = contexts.last
         guard previous.map({ context.observedAtMs > $0.observedAtMs }) ?? true else { return }
-        seenContextIDs.insert(context.windowID)
+        latestContextObservedAtMs = context.observedAtMs
+        recentContextIDs.append(context.windowID)
+        if recentContextIDs.count > 32 { recentContextIDs.removeFirst() }
         if let previous, !matchesContext(previous.value, context, wifiEnabled: policy.wifi) {
             contexts.removeAll()
             locations.removeAll()
@@ -120,7 +125,7 @@ final class AdaptiveSamplingPolicy {
         }
         contexts.append(observation)
         contexts = Array(contexts.suffix(16))
-        // IDs are retained across TTL expiry so replay cannot become a new window.
+        // The original timestamp watermark survives TTL expiry and ID eviction.
     }
 
     func evidence(
@@ -239,7 +244,8 @@ final class AdaptiveSamplingPolicy {
         invalidateNativeActivity(reason: "startup")
         locations.removeAll()
         contexts.removeAll()
-        seenContextIDs.removeAll()
+        recentContextIDs.removeAll()
+        latestContextObservedAtMs = nil
         noveltyUntilMs = nil
         noveltySource = .none
         pendingTransition = false

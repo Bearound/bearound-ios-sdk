@@ -188,6 +188,39 @@ struct AdaptiveSamplingPolicyTests {
         #expect(policy.evidence(at: clock(140)).contextStable)
     }
 
+    @Test("Long running context history stays bounded and expired windows cannot replay")
+    func boundedContextReplayHistory() {
+        let policy = AdaptiveSamplingPolicy()
+        for seconds: Int64 in 0 ..< 10_000 {
+            policy.observeContext(context(seconds), at: clock(seconds), generation: 0)
+        }
+        #expect(policy.retainedContextIDCount == 32)
+        #expect(policy.latestContextObservedAtMs == clock(9_999).wallTimeMs)
+        #expect(policy.evidence(at: clock(9_999)).contextStable)
+
+        let wifiDisabled = DataCollectionPolicy(wifi: false)
+        #expect(!policy.evidence(at: clock(10_000), policy: wifiDisabled).contextStable)
+        policy.observeContext(context(9_960), at: clock(10_000), generation: 0, policy: wifiDisabled)
+        policy.observeContext(context(9_970, id: "unseen_old_timestamp"), at: clock(10_000),
+                              generation: 0, policy: wifiDisabled)
+        policy.observeContext(context(9_999, id: "older_timestamp"), at: clock(10_000),
+                              generation: 0, policy: wifiDisabled)
+        #expect(policy.plan(at: clock(10_000), configuration: configuration, policy: wifiDisabled).mode == .conservative)
+        #expect(policy.latestContextObservedAtMs == clock(9_999).wallTimeMs)
+
+        policy.observeContext(context(10_001), at: clock(10_001), generation: 0, policy: wifiDisabled)
+        #expect(!policy.evidence(at: clock(10_122), policy: wifiDisabled).contextStable)
+        #expect(policy.retainedContextIDCount == 32)
+        #expect(policy.latestContextObservedAtMs == clock(10_001).wallTimeMs)
+        policy.observeContext(context(0), at: clock(10_122), generation: 0, policy: wifiDisabled)
+        #expect(policy.plan(at: clock(10_122), configuration: configuration, policy: wifiDisabled).mode == .conservative)
+        #expect(!policy.evidence(at: clock(10_122), policy: wifiDisabled).contextStable)
+        var coalesced = context(10_123)
+        coalesced.isCoalesced = true
+        policy.observeContext(coalesced, at: clock(10_123), generation: 0, policy: wifiDisabled)
+        #expect(policy.latestContextObservedAtMs == clock(10_001).wallTimeMs)
+    }
+
     @Test("Only stable context plus three distinct unresolved fixes supports inferred stillness")
     func stationaryInference() {
         let policy = stablePolicy(withLocations: true)
