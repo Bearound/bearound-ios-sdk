@@ -24,6 +24,7 @@ final class ObservationSummary {
         let closedSegments: [Segment]
         let acceptedSamples: Int
         let duplicateSamples: Int
+        let closedLiveSegments: [Segment]
     }
 
     private struct Statistics {
@@ -130,16 +131,21 @@ final class ObservationSummary {
         lock.lock()
         defer { lock.unlock() }
         guard isPhysical, clock.isReliable, clock.wallTimeMs > 0, clock.monotonicTimeMs >= 0 else {
-            return CaptureResult(liveBeacons: [], closedSegments: [], acceptedSamples: 0, duplicateSamples: beacons.count)
+            return CaptureResult(liveBeacons: [], closedSegments: [], acceptedSamples: 0, duplicateSamples: beacons.count, closedLiveSegments: [])
         }
         guard !callbackIDs.contains(callbackID) else {
-            return CaptureResult(liveBeacons: [], closedSegments: [], acceptedSamples: 0, duplicateSamples: beacons.count)
+            return CaptureResult(liveBeacons: [], closedSegments: [], acceptedSamples: 0, duplicateSamples: beacons.count, closedLiveSegments: [])
         }
         var closed: [Segment] = []
+        var closedLive: [Segment] = []
+        func seal() {
+            if let live = drainLiveSegment(at: clock, maxAgeMs: Self.liveAgeMs) { closedLive.append(live) }
+            if let segment = close(at: clock) { closed.append(segment) }
+        }
         if let previous = lastClock,
            previous.bootIdentifier != clock.bootIdentifier || clock.monotonicTimeMs < previous.monotonicTimeMs ||
             abs(Double(clock.wallTimeMs - previous.wallTimeMs) - Double(clock.monotonicTimeMs - previous.monotonicTimeMs)) > 120_000 {
-            if let segment = close(at: clock) { closed.append(segment) }
+            seal()
             watermarks.removeAll()
             callbackIDs.removeAll()
             minimumSourceElapsed = clock.bootIdentifier == previous.bootIdentifier && clock.monotonicTimeMs >= previous.monotonicTimeMs
@@ -150,13 +156,13 @@ final class ObservationSummary {
         if callbackIDs.count > Self.maxCallbackIDs { callbackIDs.removeFirst() }
         watermarks = watermarks.filter { clock.monotonicTimeMs < $0.value.elapsed || clock.monotonicTimeMs - $0.value.elapsed <= Self.watermarkTtlMs }
         if let existing = window, !sameContext(existing.context, context) {
-            if let segment = close(at: clock) { closed.append(segment) }
+            seal()
         }
         var payload = context.originalPayload
         payload.removeValue(forKey: "beacons")
         payload.removeValue(forKey: "sampling")
         guard let contextBytes = encodedSize(payload), contextBytes + Self.envelopeBytes < Self.maxPayloadBytes else {
-            return CaptureResult(liveBeacons: [], closedSegments: closed, acceptedSamples: 0, duplicateSamples: 0)
+            return CaptureResult(liveBeacons: [], closedSegments: closed, acceptedSamples: 0, duplicateSamples: 0, closedLiveSegments: closedLive)
         }
         let frozenContext = Context(tenantFingerprint: context.tenantFingerprint, contextID: context.contextID,
                                     originalPayload: payload, motion: context.motion, policy: context.policy)
@@ -184,7 +190,7 @@ final class ObservationSummary {
                max(existing.last, timestamp) - min(existing.first, timestamp) >= Self.windowMs ||
                 elapsed - existing.firstElapsed >= Self.windowMs || gap {
                 if gap { window?.gapCount += 1 }
-                if let segment = close(at: clock) { closed.append(segment) }
+                seal()
             }
             if window == nil { open(frozenContext, contextBytes: contextBytes) }
             let index = timestamp / Self.bucketMs
@@ -195,7 +201,7 @@ final class ObservationSummary {
             if (signal == nil && window!.signals.count >= Self.maxBeacons) ||
                 (newBucket && (signal?.buckets.count ?? 0) >= Self.maxBuckets) ||
                 window!.sampleCount >= Self.maxSamples || estimate > Self.maxPayloadBytes {
-                if let segment = close(at: clock) { closed.append(segment) }
+                seal()
                 open(frozenContext, contextBytes: contextBytes)
             }
             var target = window!.signals[key] ?? Signal()
@@ -223,7 +229,7 @@ final class ObservationSummary {
             accepted += 1
         }
         return CaptureResult(liveBeacons: liveBeacons(at: clock, maxAgeMs: Self.liveAgeMs, consume: false),
-                             closedSegments: closed, acceptedSamples: accepted, duplicateSamples: duplicates)
+                             closedSegments: closed, acceptedSamples: accepted, duplicateSamples: duplicates, closedLiveSegments: closedLive)
     }
 
     func close(at clock: SamplingClock) -> Segment? {
@@ -273,6 +279,22 @@ final class ObservationSummary {
             }
         }
         return hasNewSample ? result : []
+    }
+
+    func drainLiveSegment(at clock: SamplingClock, maxAgeMs: Int64) -> Segment? {
+        lock.lock()
+        defer { lock.unlock() }
+        guard let existing = window, clock.isReliable, maxAgeMs > 0,
+              lastClock?.bootIdentifier == clock.bootIdentifier else { return nil }
+        let fresh = existing.signals.values.compactMap(\.latest).filter {
+            clock.monotonicTimeMs >= $0.elapsed && clock.monotonicTimeMs - $0.elapsed <= min(Self.liveAgeMs, maxAgeMs)
+        }
+        let unseen = fresh.filter { !$0.emitted }.count
+        guard unseen > 0, let first = fresh.map(\.timestamp).min(), let last = fresh.map(\.timestamp).max() else { return nil }
+        let beacons = liveBeacons(at: clock, maxAgeMs: maxAgeMs)
+        guard !beacons.isEmpty else { return nil }
+        return Segment(windowId: existing.id, observedFrom: first, observedTo: last, beacons: beacons,
+                       context: existing.context, sampleCount: unseen, gapCount: 0)
     }
 
     func reset(captureStreamId: String) {

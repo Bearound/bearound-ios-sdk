@@ -393,4 +393,75 @@ struct ObservationSummaryTests {
         #expect(sampling["clock"]?.object?["offsetUncertaintyMs"] == .null && sampling["motion"]?.object?["observedAtMs"] == .null)
         #expect(wire["wifis"] == segment.context.originalPayload["wifis"])
     }
+
+    @Test("Draining a live segment freezes the original window context and consumes only unseen IDs")
+    func drainOriginalLiveSegment() throws {
+        let summary = ObservationSummary()
+        observe(summary)
+        let old = try #require(summary.drainLiveSegment(at: clock(), maxAgeMs: 30_000))
+        observe(summary, 5_000, beacons: [beacon(5_000, minor: 2)])
+        let live = try #require(summary.drainLiveSegment(at: clock(5_000), maxAgeMs: 30_000))
+        #expect(live.windowId == old.windowId && live.context.contextID == "original")
+        #expect(live.beacons.count == 2 && live.sampleCount == 1 && live.beacons[0]["sampleId"] == old.beacons[0]["sampleId"])
+        #expect(live.observedFrom == base && live.observedTo == base + 5_000)
+        #expect(summary.drainLiveSegment(at: clock(5_000), maxAgeMs: 30_000) == nil)
+        #expect(try #require(summary.close(at: clock(5_000))).sampleCount == 2)
+    }
+
+    @Test("Context closure returns fresh unseen rows under their original context before the summary")
+    func closedContextLiveProvenance() throws {
+        let summary = ObservationSummary()
+        observe(summary)
+        let originalWindow = summary.activeWindowId
+        let result = observe(summary, 5_000, beacons: [beacon(5_000, minor: 2)], context: context("next"))
+        let live = try #require(result.closedLiveSegments.first)
+        #expect(live.windowId == originalWindow && live.windowId == result.closedSegments[0].windowId)
+        #expect(live.context.contextID == "original" && live.observedFrom == base && live.observedTo == base)
+        #expect(live.beacons.count == 1 && live.beacons[0]["minor"] == .number(1) && live.sampleCount == 1)
+        #expect(result.liveBeacons.count == 1 && result.liveBeacons[0]["minor"] == .number(2))
+    }
+
+    @Test("Capacity closure preserves the full original live roster before the hundred first beacon")
+    func closedCapacityLiveProvenance() throws {
+        let summary = ObservationSummary()
+        let result = observe(summary, beacons: (1...101).map { beacon(minor: $0) })
+        let live = try #require(result.closedLiveSegments.first)
+        #expect(live.beacons.count == 100 && live.sampleCount == 100 && live.windowId == result.closedSegments[0].windowId)
+        #expect(live.beacons.allSatisfy { $0["sampleId"] != nil && $0["temporalBuckets"] == nil })
+        #expect(result.liveBeacons.count == 1 && result.liveBeacons[0]["minor"] == .number(101))
+    }
+
+    @Test("Duration closure emits only fresh unseen original rows and preserves physical timestamps")
+    func closedDurationLiveProvenance() throws {
+        let summary = ObservationSummary()
+        observe(summary)
+        _ = summary.drainLiveSegment(at: clock(), maxAgeMs: 30_000)
+        for offset in stride(from: Int64(10_000), to: 300_000, by: 10_000) { observe(summary, offset) }
+        let result = observe(summary, 300_000)
+        let live = try #require(result.closedLiveSegments.first)
+        #expect(live.observedFrom == base + 290_000 && live.observedTo == base + 290_000)
+        #expect(live.beacons[0]["timestamp"] == .number(Double(base + 290_000)))
+        #expect(live.windowId == result.closedSegments[0].windowId && live.windowId != summary.activeWindowId)
+    }
+
+    @Test("Gap closure never revives expired original rows as current live observations")
+    func expiredClosedLive() {
+        let summary = ObservationSummary()
+        observe(summary)
+        let result = observe(summary, 31_000)
+        #expect(result.closedSegments.count == 1 && result.closedLiveSegments.isEmpty)
+        #expect(result.liveBeacons.count == 1 && result.liveBeacons[0]["timestamp"] == .number(Double(base + 31_000)))
+    }
+
+    @Test("A consumed roster and a new boot cannot produce a duplicate closed live segment")
+    func noDuplicateClosedLive() {
+        let summary = ObservationSummary()
+        observe(summary)
+        _ = summary.drainLiveSegment(at: clock(), maxAgeMs: 30_000)
+        let result = observe(summary, 5_000, context: context("next"))
+        #expect(result.closedLiveSegments.isEmpty)
+        let reboot = clock(6_000, boot: UUID().uuidString)
+        #expect(summary.drainLiveSegment(at: reboot, maxAgeMs: 30_000) == nil)
+    }
+
 }
