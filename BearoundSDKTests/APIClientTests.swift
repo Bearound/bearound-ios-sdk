@@ -360,4 +360,312 @@ struct APIClientTests {
         
         #expect(config.apiBaseURL == "https://ingest.bearound.io")
     }
+    private func encodingFixture() throws -> (APIClient, StoredObservationEnvelope, SamplingClock, RequestEncodingLease) {
+        let configuration = SDKConfiguration(businessToken: "fixture-token-gzip")
+        let original = try immutableEnvelope()
+        var payload = original.originalPayload.mapValues { $0.foundationValue }
+        payload["location"] = ["latitude": -23.5, "longitude": -46.6, "accuracy": 10]
+        payload["wifis"] = [["apId": "fixture-ap", "timestamp": original.storedAtMs]]
+        payload["userProperties"] = ["internalId": "fixture-person", "padding": String(repeating: "café / ☃", count: 300)]
+        let tenant = SamplingTenantFingerprint.make(endpoint: configuration.apiBaseURL, appID: configuration.appId,
+            deviceID: "original.device", businessToken: configuration.businessToken)
+        let envelope = try StoredObservationEnvelope(batchId: original.batchId, storedAtMs: original.storedAtMs,
+            tenantFingerprint: tenant, originalPayload: payload, sampling: original.sampling, contextID: "original")
+        let clock = SamplingClock(wallTimeMs: original.storedAtMs, monotonicTimeMs: 1_000_000,
+            bootIdentifier: original.sampling!.clock.bootId)
+        let lease = RequestEncodingLease(bootIdentifier: clock.bootIdentifier, expiresAtMonotonicMs: 1_300_000)
+        let client = APIClient(configuration: configuration)
+        client.clockProvider = { clock }
+        client.submissionContextProvider = { $0(RequestSubmissionContext(policy: .allEnabled, gzipLease: lease)) }
+        return (client, envelope, clock, lease)
+    }
+
+    private func durableAck(_ envelope: StoredObservationEnvelope) -> Data {
+        try! JSONSerialization.data(withJSONObject: ["samplingAck": ["batchId": envelope.batchId,
+            "archive": "durable", "projection": "applied", "fallback": "keep", "invalidateCapability": false]])
+    }
+
+    private func deliver(_ client: APIClient, _ envelope: StoredObservationEnvelope,
+                         path: DeliveryPath = .immediateFirst, logical: (() -> Void)? = nil) async -> Result<Data, Error> {
+        await withCheckedContinuation { continuation in
+            client.sendObservation(envelope, storageId: nil, delivery: path, attemptObserver: logical) {
+                continuation.resume(returning: $0)
+            }
+        }
+    }
+
+    @Test("Negotiated request headers and submitted gzip preserve complete immutable original JSON")
+    func gzipObservationRepresentation() async throws {
+        let (client, envelope, _, _) = try encodingFixture()
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = .sortedKeys
+        let stored = try encoder.encode(envelope)
+        var requests: [(URLRequest, Data)] = []
+        var measured: [Int] = []
+        client.bodyAttemptObserver = { measured.append($0) }
+        client.transport = { request, data, _, descriptor, submit, finish in
+            requests.append((request, data))
+            #expect(descriptor.adaptiveBatchId == envelope.batchId && descriptor.requestContentEncoding == "gzip")
+            submit(); finish(.success(durableAck(envelope)))
+        }
+        _ = try await deliver(client, envelope).get()
+        let (request, compressed) = try #require(requests.first)
+        #expect(request.value(forHTTPHeaderField: "Content-Encoding") == "gzip")
+        #expect(request.value(forHTTPHeaderField: "Content-Type") == "application/octet-stream")
+        let decoded = try JSONSerialization.jsonObject(with: RequestBodyEncodingTests.gunzip(compressed)) as! NSDictionary
+        #expect(decoded == (try APIClient.observationPayload(envelope) as NSDictionary))
+        let unchanged = try encoder.encode(envelope)
+        #expect(measured == [compressed.count] && stored == unchanged)
+    }
+
+    @Test("Gzip 415 submits exactly one identity retry with original IDs and counts both actual bodies")
+    func gzip415IdentityRetry() async throws {
+        let (client, envelope, _, lease) = try encodingFixture()
+        var requests: [(URLRequest, Data)] = []
+        var measured: [Int] = []
+        var rejected: [RequestEncodingLease] = []
+        var logicalCount = 0
+        client.bodyAttemptObserver = { measured.append($0) }
+        client.gzipRejectionObserver = { rejected.append($0); $1() }
+        client.transport = { request, data, _, _, submit, finish in
+            requests.append((request, data)); submit()
+            finish(requests.count == 1 ? .failure(APIError.httpError(statusCode: 415)) : .success(durableAck(envelope)))
+        }
+        _ = try await deliver(client, envelope, logical: { logicalCount += 1 }).get()
+        #expect(requests.count == 2 && measured == requests.map { $0.1.count } && logicalCount == 1)
+        #expect(rejected == [lease])
+        #expect(requests[1].0.value(forHTTPHeaderField: "Content-Encoding") == nil)
+        #expect(requests[1].0.value(forHTTPHeaderField: "Content-Type") == "application/json")
+        #expect(requests[0].0.value(forHTTPHeaderField: "Authorization") == requests[1].0.value(forHTTPHeaderField: "Authorization"))
+        #expect((try JSONSerialization.jsonObject(with: RequestBodyEncodingTests.gunzip(requests[0].1)) as! NSDictionary)
+            == (try JSONSerialization.jsonObject(with: requests[1].1) as! NSDictionary))
+    }
+
+    @Test("Identity fallback reapplies revoked sources without collectors or mutation of offline original")
+    func fallbackPolicyRevocation() async throws {
+        let (client, envelope, _, lease) = try encodingFixture()
+        var preparations = 0
+        var bodies: [Data] = []
+        client.submissionContextProvider = { prepare in
+            preparations += 1
+            prepare(RequestSubmissionContext(policy: preparations == 1 ? .allEnabled :
+                DataCollectionPolicy(advertisingId: false, location: false, wifi: false), gzipLease: lease))
+        }
+        client.transport = { _, data, _, _, submit, finish in
+            bodies.append(data); submit()
+            finish(bodies.count == 1 ? .failure(APIError.httpError(statusCode: 415)) : .success(durableAck(envelope)))
+        }
+        _ = try await deliver(client, envelope).get()
+        let first = try JSONSerialization.jsonObject(with: RequestBodyEncodingTests.gunzip(bodies[0])) as! [String: Any]
+        let second = try JSONSerialization.jsonObject(with: bodies[1]) as! [String: Any]
+        #expect(first["location"] != nil && first["wifis"] != nil)
+        #expect(second["location"] == nil && second["wifis"] == nil)
+        #expect((first["sampling"] as! NSDictionary) == (second["sampling"] as! NSDictionary))
+        #expect(envelope.originalPayload["location"] != nil && envelope.originalPayload["wifis"] != nil && preparations == 2)
+    }
+
+    @Test("Generation invalidation between gzip and identity blocks another HTTP submission")
+    func fallbackGenerationGate() async throws {
+        let (client, envelope, _, lease) = try encodingFixture()
+        var preparations = 0
+        var measured: [Int] = []
+        client.submissionContextProvider = { prepare in
+            preparations += 1
+            prepare(preparations == 1 ? RequestSubmissionContext(policy: .allEnabled, gzipLease: lease) : nil)
+        }
+        client.bodyAttemptObserver = { measured.append($0) }
+        client.transport = { _, _, _, _, submit, finish in submit(); finish(.failure(APIError.httpError(statusCode: 415))) }
+        let result = await deliver(client, envelope)
+        if case .success = result { Issue.record("Invalid generation submitted identity retry") }
+        #expect(preparations == 2 && measured.count == 1)
+    }
+
+    @Test("400 and 413 do not cause an identity or background retry", arguments: [400, 413])
+    func rejectedBodyNoRetry(status: Int) async throws {
+        let (client, envelope, _, _) = try encodingFixture()
+        var attempts = 0
+        client.transport = { _, _, _, _, submit, finish in
+            attempts += 1; submit(); finish(.failure(APIError.httpError(statusCode: status)))
+        }
+        let result = await deliver(client, envelope)
+        if case .success = result { Issue.record("Rejected body reported success") }
+        #expect(attempts == 1)
+    }
+
+    @Test("Failed identity retry cannot create a third background attempt")
+    func identityRetryBound() async throws {
+        let (client, envelope, _, _) = try encodingFixture()
+        var attempts = 0
+        client.transport = { _, _, _, _, submit, finish in
+            attempts += 1; submit()
+            finish(attempts == 1 ? .failure(APIError.httpError(statusCode: 415)) : .failure(URLError(.timedOut)))
+        }
+        _ = await deliver(client, envelope)
+        #expect(attempts == 2)
+    }
+
+    @Test("Network fallback rechecks lease at actual background submission and counts both representations")
+    func backgroundSubmissionLeaseGate() async throws {
+        let (client, envelope, clock, _) = try encodingFixture()
+        var now = clock
+        let expires = RequestEncodingLease(bootIdentifier: clock.bootIdentifier, expiresAtMonotonicMs: clock.monotonicTimeMs + 1)
+        client.clockProvider = { now }
+        client.submissionContextProvider = { $0(RequestSubmissionContext(policy: .allEnabled, gzipLease: expires)) }
+        var paths: [DeliveryPath] = []
+        var encodings: [String?] = []
+        var sizes: [Int] = []
+        var measured: [Int] = []
+        client.bodyAttemptObserver = { measured.append($0) }
+        client.transport = { request, data, path, _, submit, finish in
+            paths.append(path); encodings.append(request.value(forHTTPHeaderField: "Content-Encoding")); sizes.append(data.count); submit()
+            if paths.count == 1 {
+                now = SamplingClock(wallTimeMs: clock.wallTimeMs + 2, monotonicTimeMs: clock.monotonicTimeMs + 2,
+                    bootIdentifier: clock.bootIdentifier)
+                finish(.failure(URLError(.networkConnectionLost)))
+            } else { finish(.success(durableAck(envelope))) }
+        }
+        _ = try await deliver(client, envelope).get()
+        #expect(paths == [.immediateFirst, .background] && encodings == ["gzip", nil])
+        #expect(measured == sizes && measured.count == 2)
+    }
+
+    @Test("Budget and generation failures count no HTTP bodies and stage no background file")
+    func nonSubmittedAttempts() async throws {
+        for budgetFailure in [false, true] {
+            let (client, envelope, _, lease) = try encodingFixture()
+            client.submissionContextProvider = {
+                $0(budgetFailure ? RequestSubmissionContext(policy: .allEnabled, gzipLease: lease, maximumJSONBytes: 100) : nil)
+            }
+            var attempts = 0
+            var measured = 0
+            client.bodyAttemptObserver = { measured += $0 }
+            client.transport = { _, _, _, _, _, _ in attempts += 1 }
+            _ = await deliver(client, envelope, path: .background)
+            #expect(attempts == 0 && measured == 0)
+        }
+    }
+
+    @Test("Background gzip file contains exact submitted bytes while orphan 415 retains original until exact ACK")
+    func orphan415RetainsCanonicalOriginal() throws {
+        let (_, envelope, _, _) = try encodingFixture()
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let original = try JSONSerialization.data(withJSONObject: APIClient.observationPayload(envelope))
+        let body = try RequestBodyEncoding.encode(original, gzipAllowed: true)
+        let file = try BackgroundSessionManager.stageUploadBody(body.data, directory: directory)
+        #expect(try Data(contentsOf: file) == body.data)
+        #expect(try RequestBodyEncodingTests.gunzip(Data(contentsOf: file)) == original)
+        let directoryName = "com.bearound.sdk.gzip.test.\(UUID().uuidString)"
+        let storage = OfflineBatchStorage(directoryName: directoryName)
+        defer { storage.clearAllBatches() }
+        let id = try #require(storage.saveObservation(envelope))
+        let canonicalFile = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
+            .appendingPathComponent(directoryName).appendingPathComponent(id)
+        let canonical = try Data(contentsOf: canonicalFile)
+        var descriptor = ObservationDeliveryReconciliation(storageIds: [id], tenantFingerprint: envelope.tenantFingerprint,
+            adaptiveBatchId: envelope.batchId)
+        descriptor.requestContentEncoding = "gzip"
+        let description = String(data: try JSONEncoder().encode(descriptor), encoding: .utf8)!
+        #expect(BackgroundSessionManager.reconcileObservation(description: description, responseBody: Data(),
+            successful: false, statusCode: 415, storage: storage) == 0)
+        #expect(BackgroundSessionManager.requiresIdentity(descriptor))
+        #expect(try Data(contentsOf: canonicalFile) == canonical)
+        #expect(FileManager.default.fileExists(atPath: file.path))
+        let unrelated = ObservationDeliveryReconciliation(storageIds: [], tenantFingerprint: String(repeating: "b", count: 64),
+            adaptiveBatchId: envelope.batchId)
+        #expect(!BackgroundSessionManager.requiresIdentity(unrelated))
+        #expect(BackgroundSessionManager.reconcileObservation(description: description, responseBody: Data("{}".utf8),
+            successful: true, storage: storage) == 0)
+        #expect(BackgroundSessionManager.reconcileObservation(description: description, responseBody: durableAck(envelope),
+            successful: true, storage: storage) == 1)
+        #expect(storage.observationRecords().isEmpty && !BackgroundSessionManager.requiresIdentity(descriptor))
+    }
+
+    @Test("Initial register stays identity even with a negotiated lease and counts its actual body")
+    func initialRegisterIdentity() async throws {
+        let (client, _, _, _) = try encodingFixture()
+        let device = UserDevice(deviceId: "fixture-device", pushToken: nil, apnsEnvironment: "sandbox",
+            manufacturer: "Apple", model: "fixture", osVersion: "26.5", timestamp: 1_791_907_200_000,
+            timezone: "UTC", batteryLevel: -1, isCharging: false, bluetoothState: "powered_on",
+            locationPermission: "not_determined", notificationsPermission: "not_determined", networkType: "wifi",
+            cellularGeneration: nil, ramTotalMb: 1, ramAvailableMb: 1, screenWidth: 1, screenHeight: 1,
+            appInForeground: true, appUptimeMs: 0, coldStart: true, lowPowerMode: nil, locationAccuracy: nil,
+            apId: nil, wifiSSID: nil, connectionMetered: nil, connectionExpensive: nil, os: "ios",
+            deviceName: "fixture", carrierName: nil, availableStorageMb: nil, systemLanguage: "en",
+            thermalState: "nominal", systemUptimeMs: 0)
+        var measured: [Int] = []
+        var sent: [Data] = []
+        client.bodyAttemptObserver = { measured.append($0) }
+        client.transport = { request, data, _, _, submit, finish in
+            #expect(request.value(forHTTPHeaderField: "Content-Encoding") == nil)
+            #expect(request.value(forHTTPHeaderField: "Content-Type") == "application/json")
+            sent.append(data); submit(); finish(.success(Data("{}".utf8)))
+        }
+        let result: Result<Void, Error> = await withCheckedContinuation { continuation in
+            client.sendBeacons([], sdkInfo: SDKInfo(appId: "fixture-app", build: 1), userDevice: device,
+                userProperties: nil, syncTrigger: "register", delivery: .immediateFirst) {
+                continuation.resume(returning: $0)
+            }
+        }
+        try result.get()
+        #expect(measured == sent.map { $0.count } && sent.count == 1)
+    }
+
+    @Test("Expired physical live evidence cannot reach the background fallback")
+    func backgroundPhysicalFreshnessGate() async throws {
+        let (client, envelope, clock, _) = try encodingFixture()
+        var now = clock
+        client.clockProvider = { now }
+        var attempts = 0
+        var measured: [Int] = []
+        client.bodyAttemptObserver = { measured.append($0) }
+        client.transport = { _, _, _, _, submit, finish in
+            attempts += 1; submit()
+            now = SamplingClock(wallTimeMs: clock.wallTimeMs + 30_001, monotonicTimeMs: clock.monotonicTimeMs + 30_001,
+                bootIdentifier: clock.bootIdentifier)
+            finish(.failure(URLError(.timedOut)))
+        }
+        _ = await deliver(client, envelope)
+        #expect(attempts == 1 && measured.count == 1)
+    }
+
+    @Test("Encoding expiry during staging uses one identity submission while generation and policy changes block resume")
+    func stagedBackgroundResumeGate() async throws {
+        for boundary in ["lease", "generation", "policy"] {
+            let (client, envelope, clock, _) = try encodingFixture()
+            var now = clock
+            var generationCurrent = true
+            var policy = DataCollectionPolicy.allEnabled
+            let lease = RequestEncodingLease(bootIdentifier: clock.bootIdentifier, expiresAtMonotonicMs: clock.monotonicTimeMs + 1)
+            client.clockProvider = { now }
+            client.submissionContextProvider = { prepare in
+                prepare(RequestSubmissionContext(policy: .allEnabled, gzipLease: lease,
+                    isCurrent: { generationCurrent && policy == .allEnabled }))
+            }
+            var measured: [Int] = []
+            var logical = 0
+            var resumed = 0
+            client.bodyAttemptObserver = { measured.append($0) }
+            client.transport = { _, data, _, _, submit, finish in
+                do {
+                    let file = try BackgroundSessionManager.stageUploadBody(data)
+                    defer { try? FileManager.default.removeItem(at: file) }
+                    if boundary == "lease" {
+                        now = SamplingClock(wallTimeMs: clock.wallTimeMs + 2, monotonicTimeMs: clock.monotonicTimeMs + 2,
+                            bootIdentifier: clock.bootIdentifier)
+                    } else if boundary == "generation" { generationCurrent = false }
+                    else { policy = DataCollectionPolicy(location: false) }
+                    if submit() { resumed += 1; finish(.success(durableAck(envelope))) }
+                    else { finish(.failure(APIError.invalidResponse)) }
+                } catch { finish(.failure(error)) }
+            }
+            _ = await deliver(client, envelope, path: .background, logical: { logical += 1 })
+            if boundary == "lease" {
+                #expect(resumed == 1 && measured.count == 1 && logical == 1)
+                #expect(measured.first == (try JSONSerialization.data(withJSONObject: APIClient.observationPayload(envelope)).count))
+            } else { #expect(resumed == 0 && measured.isEmpty && logical == 0) }
+        }
+    }
+
 }

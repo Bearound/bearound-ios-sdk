@@ -384,4 +384,58 @@ struct AdaptiveSamplingDiagnosticsTests {
         #expect(AdaptiveSamplingBench.endpoint == nil)
     }
     #endif
+    private func encodingResponse(_ encoding: Any?, lease: Int64 = 300_000, offset: Int64 = 0) throws -> Data {
+        var root = try JSONSerialization.jsonObject(with: response(lease: lease, serverOffset: offset)) as! [String: Any]
+        var capability = (root["capabilities"] as! [String: Any])["adaptiveSampling"] as! [String: Any]
+        capability["requestContentEncodings"] = encoding
+        root["capabilities"] = ["adaptiveSampling": capability]
+        return try JSONSerialization.data(withJSONObject: root)
+    }
+
+    @Test("Only the exact optional gzip array enables encoding without invalidating adaptive capability")
+    func optionalRequestEncodings() throws {
+        let invalid: [Any?] = [nil, NSNull(), [], ["br"], ["gzip", "gzip"], ["gzip", "br"], ["gzip", 1], "gzip", 1, ["gzip": true]]
+        for value in invalid {
+            let runtime = runtime()
+            runtime.acceptResponse(try encodingResponse(value), requestedAt: clock(), receivedAt: clock(), generation: 1)
+            #expect(runtime.hasCapability(at: clock()))
+            #expect(runtime.requestEncodingLease(at: clock()) == nil)
+        }
+        let runtime = runtime()
+        runtime.acceptResponse(try encodingResponse(["gzip"]), requestedAt: clock(), receivedAt: clock(), generation: 1)
+        #expect(runtime.requestEncodingLease(at: clock())?.expiresAtMonotonicMs == 1_300_000)
+        #expect(runtime.requestEncodingLease(at: clock(300_000)) == nil)
+        #expect(runtime.requestEncodingLease(at: clock(1, boot: UUID().uuidString)) == nil)
+    }
+
+    @Test("415 suppression retains original expiry despite new advertisements and stays client bound")
+    func gzipSuppression() throws {
+        let runtime = runtime()
+        runtime.acceptResponse(try encodingResponse(["gzip"], lease: 100_000), requestedAt: clock(), receivedAt: clock(), generation: 1)
+        let rejected = try #require(runtime.requestEncodingLease(at: clock()))
+        runtime.rejectRequestEncoding(rejected)
+        runtime.acceptResponse(try encodingResponse(["gzip"], lease: 100_000, offset: 50_000),
+            requestedAt: clock(50_000), receivedAt: clock(50_000), generation: 1)
+        #expect(runtime.requestEncodingLease(at: clock(99_999)) == nil)
+        #expect(runtime.requestEncodingLease(at: clock(100_000))?.expiresAtMonotonicMs == 1_150_000)
+        let other = self.runtime(generation: 2)
+        other.acceptResponse(try encodingResponse(["gzip"]), requestedAt: clock(), receivedAt: clock(), generation: 1)
+        #expect(other.requestEncodingLease(at: clock()) == nil)
+        other.acceptResponse(try encodingResponse(["gzip"]), requestedAt: clock(), receivedAt: clock(), generation: 2)
+        #expect(other.requestEncodingLease(at: clock()) != nil)
+    }
+
+    @Test("HTTP representation counters include every submission while logical attempts stay once")
+    func submittedRepresentationCounters() throws {
+        let runtime = runtime()
+        try negotiate(runtime)
+        observe(runtime)
+        let envelope = try #require(runtime.takePending(at: clock()).first)
+        runtime.recordAttempt(envelope, bytes: 0, failed: false, at: clock())
+        runtime.recordHTTPAttempt(bytes: 120)
+        runtime.recordHTTPAttempt(bytes: 4_200)
+        #expect(runtime.httpAttempts == 2 && runtime.diagnostics.serializedBytes == 4_320)
+        #expect(runtime.diagnostics.liveAttempts == 1 && runtime.diagnostics.failures == 0)
+    }
+
 }

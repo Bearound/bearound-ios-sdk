@@ -1,6 +1,14 @@
 import Foundation
 
 struct AdaptiveSamplingResponse: Decodable {
+    struct RequestEncodings: Decodable {
+        let values: [String]
+        init(from decoder: Decoder) throws {
+            let container = try decoder.singleValueContainer()
+            let decoded = try? container.decode([String].self)
+            values = decoded == ["gzip"] ? ["gzip"] : []
+        }
+    }
     struct Capability: Decodable {
         let version: Int
         let modes: [String]
@@ -12,6 +20,7 @@ struct AdaptiveSamplingResponse: Decodable {
         let liveEvidenceMaxAgeMs: Int64
         let clockSkewToleranceMs: Int64
         let maxPayloadBytes: Int
+        let requestContentEncodings: RequestEncodings?
 
         func isValid(baselineMs: Int64) -> Bool {
             version == 1 && Set(modes) == Set(["live", "summary", "transition"])
@@ -56,6 +65,8 @@ final class AdaptiveSamplingRuntime {
     private var summary: ObservationSummary
     private var capability: AdaptiveSamplingResponse.Capability?
     private var leaseClock: SamplingClock?
+    private var rejectedGzipLease: RequestEncodingLease?
+    private(set) var httpAttempts: Int64 = 0
     private var serverOffsetMs: Int64?
     private var offsetUncertaintyMs: Int64?
     private var contextPayload: [String: ObservationJSONValue]?
@@ -96,6 +107,28 @@ final class AdaptiveSamplingRuntime {
     }
 
     var liveEvidenceMaxAgeMs: Int64 { capability?.liveEvidenceMaxAgeMs ?? 30_000 }
+    var maximumJSONBytes: Int { capability?.maxPayloadBytes ?? 524_288 }
+
+    func requestEncodingLease(at now: SamplingClock) -> RequestEncodingLease? {
+        guard hasCapability(at: now), capability?.requestContentEncodings?.values == ["gzip"],
+              let capability, let leaseClock else { return nil }
+        if let rejectedGzipLease, rejectedGzipLease.bootIdentifier == now.bootIdentifier,
+           now.monotonicTimeMs < rejectedGzipLease.expiresAtMonotonicMs { return nil }
+        let expiry = leaseClock.monotonicTimeMs.addingReportingOverflow(capability.leaseMs)
+        guard !expiry.overflow else { return nil }
+        return RequestEncodingLease(bootIdentifier: now.bootIdentifier, expiresAtMonotonicMs: expiry.partialValue)
+    }
+
+    func rejectRequestEncoding(_ lease: RequestEncodingLease) {
+        if let previous = rejectedGzipLease, previous.bootIdentifier == lease.bootIdentifier,
+           previous.expiresAtMonotonicMs >= lease.expiresAtMonotonicMs { return }
+        rejectedGzipLease = lease
+    }
+
+    func recordHTTPAttempt(bytes: Int) {
+        httpAttempts += 1
+        diagnostics.serializedBytes += Int64(bytes)
+    }
 
     func payloadFitsCapability(_ bytes: Int) -> Bool {
         guard bytes > 0, bytes <= (capability?.maxPayloadBytes ?? 524_288) else {

@@ -1906,10 +1906,14 @@ public class BeAroundSDK {
             let persistedBatchId = self.offlineBatchStorage.saveObservation(envelope, policy: DataCollectionPolicyStore.current)
             if persistedBatchId == nil { DiagnosticsStore.shared.recordError("persist-before-send failed") }
             let deliveryRuntime = self.samplingRuntime
-            let serializedBytes = (try? JSONSerialization.data(withJSONObject: APIClient.observationPayload(envelope)).count) ?? 0
-            deliveryRuntime?.recordAttempt(envelope, bytes: serializedBytes, failed: false, at: SamplingClock.now())
-            if let deliveryRuntime { DiagnosticsStore.shared.recordSampling(deliveryRuntime.diagnostics) }
-            apiClient.sendObservation(envelope, storageId: persistedBatchId, delivery: .immediateFirst) { [weak self] result in
+            apiClient.sendObservation(envelope, storageId: persistedBatchId, delivery: .immediateFirst,
+                attemptObserver: { [weak self, weak deliveryRuntime] in
+                    self?.beaconQueue.async { [weak self, weak deliveryRuntime] in
+                        guard let self, let deliveryRuntime, self.samplingRuntime === deliveryRuntime else { return }
+                        deliveryRuntime.recordAttempt(envelope, bytes: 0, failed: false, at: SamplingClock.now())
+                        DiagnosticsStore.shared.recordSampling(deliveryRuntime.diagnostics)
+                    }
+                }) { [weak self] result in
                 guard let self else { return }
 
                 switch result {
@@ -2082,8 +2086,6 @@ public class BeAroundSDK {
             }
         }
         let runtime = samplingRuntime
-        let bytes = (try? JSONSerialization.data(withJSONObject: APIClient.observationPayload(envelope, manifest: manifest)).count) ?? 0
-        if envelope.deliveryProtocol == .adaptive, runtime?.payloadFitsCapability(bytes) != true { return }
         beginBackgroundTask()
         isSyncing = true
         syncGeneration += 1
@@ -2097,9 +2099,14 @@ public class BeAroundSDK {
             self.notifySyncSettled(success: false)
             self.syncDidFinishCoordination()
         }
-        runtime?.recordAttempt(envelope, bytes: bytes, failed: false, at: dispatchClock)
-        if let runtime { DiagnosticsStore.shared.recordSampling(runtime.diagnostics) }
-        apiClient.sendObservation(envelope, storageId: storageId, manifest: manifest) { [weak self] result in
+        apiClient.sendObservation(envelope, storageId: storageId, manifest: manifest,
+            attemptObserver: { [weak self, weak runtime] in
+                self?.beaconQueue.async { [weak self, weak runtime] in
+                    guard let self, let runtime, self.samplingRuntime === runtime else { return }
+                    runtime.recordAttempt(envelope, bytes: 0, failed: false, at: SamplingClock.now())
+                    DiagnosticsStore.shared.recordSampling(runtime.diagnostics)
+                }
+            }) { [weak self] result in
             guard let self else { return }
             let successful: Bool
             switch result {
@@ -2178,6 +2185,55 @@ public class BeAroundSDK {
             let runtime = AdaptiveSamplingRuntime(configuration: config, deviceID: DeviceIdentifier.getDeviceId(),
                 generation: self.samplingGeneration)
             self.samplingRuntime = runtime
+            let client = self.apiClient
+            client?.submissionContextProvider = { [weak self, weak runtime, weak client] prepare in
+                guard let self else { prepare(nil); return }
+                self.beaconQueue.async { [weak self, weak runtime, weak client] in
+                    guard let self, let runtime, let client, self.apiClient === client,
+                          self.samplingRuntime === runtime, self.samplingGeneration == runtime.generation else {
+                        prepare(nil); return
+                    }
+                    let clock = SamplingClock.now()
+                    let currentPolicy = DataCollectionPolicyStore.current
+                    let adaptiveAllowed = runtime.hasCapability(at: clock)
+                    prepare(RequestSubmissionContext(policy: currentPolicy,
+                        gzipLease: runtime.requestEncodingLease(at: clock),
+                        maximumJSONBytes: runtime.maximumJSONBytes,
+                        adaptiveAllowed: adaptiveAllowed,
+                        liveEvidenceMaxAgeMs: runtime.liveEvidenceMaxAgeMs,
+                        isCurrent: { [weak self, weak runtime, weak client] in
+                            guard let self, let runtime, let client else { return false }
+                            return self.apiClient === client && self.samplingRuntime === runtime
+                                && self.samplingGeneration == runtime.generation
+                                && DataCollectionPolicyStore.current == currentPolicy
+                        }, adaptiveAllowedAtSubmission: { [weak runtime] in
+                            runtime?.hasCapability(at: SamplingClock.now()) == true
+                        }))
+                }
+            }
+            client?.gzipRejectionObserver = { [weak self, weak runtime, weak client] lease, retry in
+                guard let self else { retry(); return }
+                self.beaconQueue.async { [weak self, weak runtime, weak client] in
+                    if let self, let runtime, let client, self.apiClient === client,
+                       self.samplingRuntime === runtime, self.samplingGeneration == runtime.generation {
+                        runtime.rejectRequestEncoding(lease)
+                    }
+                    retry()
+                }
+            }
+            client?.bodyAttemptObserver = { [weak self, weak runtime, weak client] bytes in
+                self?.beaconQueue.async { [weak self, weak runtime, weak client] in
+                    guard let self, let runtime, let client, self.apiClient === client,
+                          self.samplingRuntime === runtime else { return }
+                    runtime.recordHTTPAttempt(bytes: bytes)
+                    DiagnosticsStore.shared.recordSampling(runtime.diagnostics)
+                }
+            }
+            client?.budgetRejectionObserver = { [weak self, weak runtime] bytes in
+                guard let self, let runtime, self.samplingRuntime === runtime else { return }
+                _ = runtime.payloadFitsCapability(bytes)
+                DiagnosticsStore.shared.recordSampling(runtime.diagnostics)
+            }
             self.apiClient?.responseObserver = { [weak self, weak runtime] data, requested, received in
                 self?.beaconQueue.async { [weak self, weak runtime] in
                     guard let self, let runtime, self.samplingGeneration == runtime.generation else { return }
