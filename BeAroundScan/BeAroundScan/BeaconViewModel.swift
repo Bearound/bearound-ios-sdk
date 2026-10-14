@@ -65,6 +65,32 @@ enum AdaptiveBenchHostDiagnostics {
         return String(description.prefix(limit))
     }
 
+    nonisolated static func capturedTrust(_ trust: SecTrust) -> [String: Any] {
+        var result = SecTrustResultType.invalid
+        let status = SecTrustGetTrustResult(trust, &result)
+        var value: [String: Any] = ["peerTrustPresent": true, "readStatus": status, "recordedTrustResult": result.rawValue,
+            "evaluationAvailable": status == errSecSuccess && result != .invalid]
+        guard status == errSecSuccess, result != .invalid else {
+            value["certificateDERSHA256"] = [String]()
+            value["failureReasons"] = [String]()
+            return value
+        }
+        let certificates = SecTrustCopyCertificateChain(trust) as? [SecCertificate] ?? []
+        value["chainCount"] = certificates.count
+        value["certificateDERSHA256"] = certificates.prefix(4).map {
+            SHA256.hash(data: SecCertificateCopyData($0) as Data).map { String(format: "%02x", $0) }.joined()
+        }
+        let recorded = SecTrustCopyResult(trust) as? [String: Any]
+        value["copiedTrustResult"] = recorded?[kSecTrustResultValue as String] ?? NSNull()
+        let properties = SecTrustCopyProperties(trust) as? [[String: Any]] ?? []
+        value["failureReasons"] = Array(properties.prefix(4).compactMap { property -> String? in
+            let reason = property["type"] as? String == "error" ? property["value"] as? String
+                : property[kSecPropertyTypeError as String] as? String
+            return reason.map { sanitized($0, limit: 160) }
+        }.prefix(3))
+        return value
+    }
+
     nonisolated private static func peerTrust(_ error: NSError) -> [String: Any] {
         guard error.domain == NSURLErrorDomain, (-1206 ... -1200).contains(error.code) else {
             return ["peerTrustPresent": false, "reason": "not_urlsession_tls_failure"]
@@ -76,29 +102,8 @@ enum AdaptiveBenchHostDiagnostics {
             if let raw = candidate.userInfo[NSURLErrorFailingURLPeerTrustErrorKey] {
                 if CFGetTypeID(raw as CFTypeRef) == SecTrustGetTypeID() {
                     let trust = raw as! SecTrust
-                    var result = SecTrustResultType.invalid
-                    let status = SecTrustGetTrustResult(trust, &result)
-                    var value: [String: Any] = ["peerTrustPresent": true, "sourceErrorDepth": depth,
-                        "readStatus": status, "recordedTrustResult": result.rawValue,
-                        "evaluationAvailable": status == errSecSuccess && result != .invalid]
-                    guard status == errSecSuccess, result != .invalid else {
-                        value["certificateDERSHA256"] = [String]()
-                        value["failureReasons"] = [String]()
-                        return value
-                    }
-                    let certificates = SecTrustCopyCertificateChain(trust) as? [SecCertificate] ?? []
-                    value["chainCount"] = certificates.count
-                    value["certificateDERSHA256"] = certificates.prefix(4).map {
-                        SHA256.hash(data: SecCertificateCopyData($0) as Data).map { String(format: "%02x", $0) }.joined()
-                    }
-                    let recorded = SecTrustCopyResult(trust) as? [String: Any]
-                    value["copiedTrustResult"] = recorded?[kSecTrustResultValue as String] ?? NSNull()
-                    let properties = SecTrustCopyProperties(trust) as? [[String: Any]] ?? []
-                    value["failureReasons"] = Array(properties.prefix(4).compactMap { property -> String? in
-                        let reason = property["type"] as? String == "error" ? property["value"] as? String
-                            : property[kSecPropertyTypeError as String] as? String
-                        return reason.map { sanitized($0, limit: 160) }
-                    }.prefix(3))
+                    var value = capturedTrust(trust)
+                    value["sourceErrorDepth"] = depth
                     return value
                 }
                 invalidType = true
@@ -153,6 +158,89 @@ enum AdaptiveBenchHostDiagnostics {
         value["hostLastSync"] = lastSync ?? NSNull()
         guard let data = try? JSONSerialization.data(withJSONObject: value, options: [.sortedKeys]), data.count <= 4096 else { return nil }
         return data
+    }
+}
+
+final class AdaptiveBenchDefaultTLSProbe: NSObject, URLSessionDelegate, URLSessionTaskDelegate, @unchecked Sendable {
+    nonisolated static let endpoint = URL(string: "https://192.168.15.25:18081/health")!
+    nonisolated private let lock = NSLock()
+    nonisolated private let outputFile: URL
+    nonisolated(unsafe) private var retainedTrust: SecTrust?
+    nonisolated(unsafe) private var session: URLSession?
+    nonisolated(unsafe) private var started = false
+    nonisolated(unsafe) private var unexpectedChallenge = false
+
+    init(outputFile: URL) { self.outputFile = outputFile }
+
+    nonisolated func start() {
+        lock.lock()
+        guard !started else { lock.unlock(); return }
+        started = true
+        lock.unlock()
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.timeoutIntervalForRequest = 10
+        configuration.timeoutIntervalForResource = 15
+        configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
+        configuration.urlCache = nil
+        configuration.httpCookieStorage = nil
+        configuration.httpShouldSetCookies = false
+        let queue = OperationQueue()
+        queue.maxConcurrentOperationCount = 1
+        let activeSession = URLSession(configuration: configuration, delegate: self, delegateQueue: queue)
+        lock.lock(); session = activeSession; lock.unlock()
+        var request = URLRequest(url: Self.endpoint)
+        request.httpMethod = "GET"
+        request.timeoutInterval = 10
+        activeSession.dataTask(with: request) { [weak self] _, response, error in
+            self?.completed(response: response, error: error)
+        }.resume()
+    }
+
+    nonisolated func urlSession(_ session: URLSession, didReceive challenge: URLAuthenticationChallenge,
+                               completionHandler: @escaping (URLSession.AuthChallengeDisposition, URLCredential?) -> Void) {
+        if challenge.protectionSpace.authenticationMethod == NSURLAuthenticationMethodServerTrust,
+           challenge.protectionSpace.host == Self.endpoint.host,
+           challenge.protectionSpace.port == Self.endpoint.port {
+            lock.lock(); retainedTrust = challenge.protectionSpace.serverTrust; lock.unlock()
+        } else {
+            lock.lock(); unexpectedChallenge = true; lock.unlock()
+        }
+        completionHandler(.performDefaultHandling, nil)
+    }
+
+    nonisolated func urlSession(_ session: URLSession, task: URLSessionTask, didReceive challenge: URLAuthenticationChallenge,
+                               completionHandler: @escaping (URLSession.AuthChallengeDisposition, URLCredential?) -> Void) {
+        urlSession(session, didReceive: challenge, completionHandler: completionHandler)
+    }
+
+    nonisolated func urlSession(_ session: URLSession, task: URLSessionTask, willPerformHTTPRedirection response: HTTPURLResponse,
+                               newRequest request: URLRequest, completionHandler: @escaping (URLRequest?) -> Void) {
+        completionHandler(request.url == Self.endpoint ? request : nil)
+    }
+
+    nonisolated private func completed(response: URLResponse?, error: Error?) {
+        lock.lock()
+        let trust = retainedTrust
+        let unusual = unexpectedChallenge
+        let activeSession = session
+        session = nil
+        retainedTrust = nil
+        lock.unlock()
+        var value: [String: Any] = ["schemaVersion": 1, "pid": ProcessInfo.processInfo.processIdentifier,
+            "deviceTimestampMs": Int64(Date().timeIntervalSince1970 * 1000), "probeScope": "auxiliary_health_get",
+            "observationBodyCountersIncluded": false, "endpoint": Self.endpoint.absoluteString,
+            "defaultHandling": true, "unexpectedChallenge": unusual,
+            "httpStatus": (response as? HTTPURLResponse)?.statusCode as Any? ?? NSNull(),
+            "transportError": error.map { AdaptiveBenchHostDiagnostics.syncError($0 as NSError) } ?? NSNull()]
+        value["challengeTrust"] = trust.map { AdaptiveBenchHostDiagnostics.capturedTrust($0) }
+            ?? ["peerTrustPresent": false, "reason": "no_allowed_server_trust_challenge"]
+        if let data = try? JSONSerialization.data(withJSONObject: value, options: [.sortedKeys]), data.count <= 4096 {
+            do {
+                try data.write(to: outputFile, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
+                try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: outputFile.path)
+            } catch {}
+        }
+        activeSession?.finishTasksAndInvalidate()
     }
 }
 #endif
@@ -408,6 +496,7 @@ class BeaconViewModel: NSObject, ObservableObject, BeAroundSDKDelegate {
     private var adaptiveBenchDiagnosticsURL: URL?
     private var adaptiveBenchPermissionRequestInvoked = false
     private var adaptiveBenchLastSync: [String: Any]?
+    private var adaptiveBenchDefaultTLSProbe: AdaptiveBenchDefaultTLSProbe?
     #endif
 
     override init() {
@@ -618,6 +707,13 @@ class BeaconViewModel: NSObject, ObservableObject, BeAroundSDKDelegate {
            ProcessInfo.processInfo.arguments.contains("--adaptive-bench-request-existing-permissions") {
             adaptiveBenchPermissionRequestInvoked = true
             BeAroundSDK.shared.requestLocationAuthorization(.whenInUse)
+        }
+        if adaptiveBenchDefaultTLSProbe == nil,
+           ProcessInfo.processInfo.arguments.contains("--adaptive-bench-probe-default-tls"),
+           let file = adaptiveBenchDiagnosticsURL?.deletingLastPathComponent().appendingPathComponent("adaptive-bench-default-tls.json") {
+            let probe = AdaptiveBenchDefaultTLSProbe(outputFile: file)
+            adaptiveBenchDefaultTLSProbe = probe
+            probe.start()
         }
         #endif
         startScanning()
