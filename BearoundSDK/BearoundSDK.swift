@@ -2310,6 +2310,11 @@ public class BeAroundSDK {
     }
 
     #if DEBUG
+    internal func captureAdaptiveBenchCounters(completion: @escaping (Data?) -> Void) {
+        AdaptiveSamplingBench.captureCounters(on: beaconQueue, enabled: AdaptiveSamplingBench.isEnabled,
+            runtime: { [weak self] in self?.samplingRuntime }, completion: completion)
+    }
+
     internal func injectAdaptiveBenchBeacon(_ beacon: Beacon, physical: Bool) {
         guard AdaptiveSamplingBench.isEnabled else { return }
         if physical {

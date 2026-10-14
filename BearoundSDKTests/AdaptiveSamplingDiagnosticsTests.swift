@@ -438,4 +438,50 @@ struct AdaptiveSamplingDiagnosticsTests {
         #expect(runtime.diagnostics.liveAttempts == 1 && runtime.diagnostics.failures == 0)
     }
 
+    #if DEBUG
+    @Test("Opted in bench getter exports bounded queue confined counters without payload or collector reads")
+    func benchCounterSnapshot() async throws {
+        let runtime = runtime(generation: 7)
+        runtime.recordHTTPAttempt(bytes: 120)
+        runtime.recordHTTPAttempt(bytes: 4_200)
+        let queue = DispatchQueue(label: "io.bearound.sdk.bench-counter-test")
+        let queueKey = DispatchSpecificKey<Bool>()
+        queue.setSpecific(key: queueKey, value: true)
+        var reads = 0
+        let data: Data? = await withCheckedContinuation { continuation in
+            AdaptiveSamplingBench.captureCounters(on: queue, enabled: true, runtime: {
+                #expect(DispatchQueue.getSpecific(key: queueKey) == true)
+                reads += 1
+                return runtime
+            }, clock: { clock() }, completion: { continuation.resume(returning: $0) })
+        }
+        let serialized = try #require(data)
+        let wire = try #require(try JSONSerialization.jsonObject(with: serialized) as? [String: Any])
+        #expect(serialized.count <= 4_096 && reads == 1)
+        #expect(Set(wire.keys) == Set(["schemaVersion", "pid", "deviceTimestampMs", "counterScope", "generation",
+            "httpAttempts", "serializedBytes", "uniqueSamples", "complementaryReads", "complementaryCacheReads",
+            "cachedCallbacks", "liveAttempts", "summaryAttempts", "transitionAttempts", "failures", "policyDenials",
+            "clockUncertainties"]))
+        #expect(wire["counterScope"] as? String == "all_observation_bodies")
+        #expect((wire["pid"] as? NSNumber)?.int32Value == ProcessInfo.processInfo.processIdentifier)
+        #expect((wire["deviceTimestampMs"] as? NSNumber)?.int64Value == base)
+        #expect((wire["generation"] as? NSNumber)?.uint64Value == 7)
+        #expect((wire["httpAttempts"] as? NSNumber)?.int64Value == 2)
+        #expect((wire["serializedBytes"] as? NSNumber)?.int64Value == 4_320)
+        #expect(runtime.diagnostics.uniqueSamples == 0 && runtime.diagnostics.complementaryReads == 0)
+        let disabled: Data? = await withCheckedContinuation { continuation in
+            AdaptiveSamplingBench.captureCounters(on: queue, enabled: false, runtime: {
+                reads += 1
+                return runtime
+            }, completion: { continuation.resume(returning: $0) })
+        }
+        #expect(disabled == nil && reads == 1)
+        #expect(!AdaptiveSamplingBench.isEnabled)
+        let normalDebug: Data? = await withCheckedContinuation { continuation in
+            AdaptiveSamplingBench.counterSnapshot { continuation.resume(returning: $0) }
+        }
+        #expect(normalDebug == nil)
+    }
+    #endif
+
 }

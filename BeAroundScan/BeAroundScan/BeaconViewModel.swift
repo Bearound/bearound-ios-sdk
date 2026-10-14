@@ -294,6 +294,9 @@ class BeaconViewModel: NSObject, ObservableObject, BeAroundSDKDelegate {
     private let notificationManager = NotificationManager.shared
     private var bluetoothManager: CBCentralManager?
     private var diagnosticTimer: Timer?
+    #if DEBUG && BEAROUND_ADAPTIVE_BENCH && !BEAROUND_ADAPTIVE_BASELINE
+    private var adaptiveBenchDiagnosticsURL: URL?
+    #endif
 
     override init() {
         super.init()
@@ -479,6 +482,15 @@ class BeaconViewModel: NSObject, ObservableObject, BeAroundSDKDelegate {
         userPropertyName = ""
         userPropertyCustom = ""
         sdk.setUserProperties(UserProperties(internalId: bench.user))
+        #if !BEAROUND_ADAPTIVE_BASELINE
+        if adaptiveBenchDiagnosticsURL == nil,
+           let directory = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first {
+            do {
+                try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+                adaptiveBenchDiagnosticsURL = directory.appendingPathComponent("adaptive-bench-diagnostics.json")
+            } catch { statusMessage = "Could not prepare bench diagnostics" }
+        }
+        #endif
         return true
     }
     #endif
@@ -614,6 +626,16 @@ class BeaconViewModel: NSObject, ObservableObject, BeAroundSDKDelegate {
     private func startDiagnosticTimer() {
         diagnosticTimer = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) { [weak self] _ in
             self?.bleDiagnostic = BeAroundSDK.shared.bleDiagnosticInfo
+            #if DEBUG && BEAROUND_ADAPTIVE_BENCH && !BEAROUND_ADAPTIVE_BASELINE
+            guard AdaptiveSamplingBench.isEnabled, let file = self?.adaptiveBenchDiagnosticsURL else { return }
+            AdaptiveSamplingBench.counterSnapshot { data in
+                guard let data else { return }
+                do {
+                    try data.write(to: file, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
+                    try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: file.path)
+                } catch {}
+            }
+            #endif
         }
     }
 
