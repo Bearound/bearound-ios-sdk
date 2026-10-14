@@ -5,6 +5,11 @@ import CoreLocation
 import SwiftUI
 import UserNotifications
 
+#if DEBUG && BEAROUND_ADAPTIVE_BENCH && !BEAROUND_ADAPTIVE_BASELINE
+import CryptoKit
+import Security
+#endif
+
 #if DEBUG && BEAROUND_ADAPTIVE_BENCH
 struct AdaptiveBenchHostConfiguration {
     let token: String
@@ -49,21 +54,90 @@ struct AdaptiveBenchHostConfiguration {
 
 #if DEBUG && BEAROUND_ADAPTIVE_BENCH && !BEAROUND_ADAPTIVE_BASELINE
 enum AdaptiveBenchHostDiagnostics {
+    nonisolated private static func sanitized(_ text: String, limit: Int) -> String {
+        var description = String(text.prefix(1024))
+        for pattern in [#"https?://\S+"#, #"fixture-[A-Za-z0-9_-]+"#,
+                        #"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}"#,
+                        #"\b[0-9A-Fa-f]{8}-[0-9A-Fa-f-]{27,}\b"#,
+                        #"\b[0-9A-Fa-f]{16,}\b"#, #"-?\d+\.\d+"#, #"[\"\u201c\u201d'][^\"\u201c\u201d']*[\"\u201c\u201d']"#] {
+            description = description.replacingOccurrences(of: pattern, with: "[redacted]", options: .regularExpression)
+        }
+        return String(description.prefix(limit))
+    }
+
+    nonisolated private static func peerTrust(_ error: NSError) -> [String: Any] {
+        guard error.domain == NSURLErrorDomain, (-1206 ... -1200).contains(error.code) else {
+            return ["peerTrustPresent": false, "reason": "not_urlsession_tls_failure"]
+        }
+        var current: NSError? = error
+        var invalidType = false
+        for depth in 0 ..< 3 {
+            guard let candidate = current else { break }
+            if let raw = candidate.userInfo[NSURLErrorFailingURLPeerTrustErrorKey] {
+                if CFGetTypeID(raw as CFTypeRef) == SecTrustGetTypeID() {
+                    let trust = raw as! SecTrust
+                    var result = SecTrustResultType.invalid
+                    let status = SecTrustGetTrustResult(trust, &result)
+                    var value: [String: Any] = ["peerTrustPresent": true, "sourceErrorDepth": depth,
+                        "readStatus": status, "recordedTrustResult": result.rawValue,
+                        "evaluationAvailable": status == errSecSuccess && result != .invalid]
+                    guard status == errSecSuccess, result != .invalid else {
+                        value["certificateDERSHA256"] = [String]()
+                        value["failureReasons"] = [String]()
+                        return value
+                    }
+                    let certificates = SecTrustCopyCertificateChain(trust) as? [SecCertificate] ?? []
+                    value["chainCount"] = certificates.count
+                    value["certificateDERSHA256"] = certificates.prefix(4).map {
+                        SHA256.hash(data: SecCertificateCopyData($0) as Data).map { String(format: "%02x", $0) }.joined()
+                    }
+                    let recorded = SecTrustCopyResult(trust) as? [String: Any]
+                    value["copiedTrustResult"] = recorded?[kSecTrustResultValue as String] ?? NSNull()
+                    let properties = SecTrustCopyProperties(trust) as? [[String: Any]] ?? []
+                    value["failureReasons"] = Array(properties.prefix(4).compactMap { property -> String? in
+                        let reason = property["type"] as? String == "error" ? property["value"] as? String
+                            : property[kSecPropertyTypeError as String] as? String
+                        return reason.map { sanitized($0, limit: 160) }
+                    }.prefix(3))
+                    return value
+                }
+                invalidType = true
+            }
+            current = candidate.userInfo[NSUnderlyingErrorKey] as? NSError
+        }
+        return ["peerTrustPresent": false, "reason": invalidType ? "invalid_type" : "key_absent_within_depth_bound"]
+    }
+
+    nonisolated private static func failingEndpoint(_ error: NSError) -> [String: Any] {
+        var current: NSError? = error
+        for depth in 0 ..< 3 {
+            guard let candidate = current else { break }
+            let direct = candidate.userInfo[NSURLErrorFailingURLErrorKey] as? URL
+            let text = candidate.userInfo[NSURLErrorFailingURLStringErrorKey] as? String
+            if let url = direct ?? text.flatMap({ URL(string: $0) }) {
+                guard url.scheme == "https", let host = url.host?.lowercased(),
+                      ["192.168.15.25", "127.0.0.1", "localhost"].contains(host),
+                      let port = url.port, [18080, 18081].contains(port) else {
+                    return ["available": false, "unexpectedEndpoint": true]
+                }
+                let path = ["", "/", "/ingest", "/sdk/places/nearby", "/health"].contains(url.path) ? url.path : "[redacted]"
+                return ["available": true, "unexpectedEndpoint": false, "sourceErrorDepth": depth,
+                        "host": host, "port": port, "path": path]
+            }
+            current = candidate.userInfo[NSUnderlyingErrorKey] as? NSError
+        }
+        return ["available": false, "reason": "key_absent_within_depth_bound"]
+    }
+
     nonisolated static func syncError(_ error: NSError) -> [String: Any] {
         let domain = [NSURLErrorDomain, NSCocoaErrorDomain, "BeAroundSDK", "BearoundSDK.APIError"].contains(error.domain)
             ? error.domain : "unrecognized_error_domain"
         let usesSystemDescription = error.domain == NSURLErrorDomain
-        var description = usesSystemDescription ? error.localizedDescription
+        let description = usesSystemDescription ? error.localizedDescription
             : NSError(domain: domain, code: error.code, userInfo: nil).localizedDescription
-        for pattern in [#"https?://\S+"#, #"fixture-[A-Za-z0-9_-]+"#,
-                        #"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}"#,
-                        #"\b[0-9A-Fa-f]{8}-[0-9A-Fa-f-]{27,}\b"#,
-                        #"\b[0-9A-Fa-f]{16,}\b"#, #"-?\d+\.\d+"#] {
-            description = description.replacingOccurrences(of: pattern, with: "[redacted]", options: .regularExpression)
-        }
-        description = String(description.prefix(512))
-        return ["domain": domain, "code": error.code, "description": description,
-                "descriptionPolicy": usesSystemDescription ? "sanitized_system" : "domain_code_only"]
+        return ["domain": domain, "code": error.code, "description": sanitized(description, limit: 512),
+                "descriptionPolicy": usesSystemDescription ? "sanitized_system" : "domain_code_only",
+                "tls": peerTrust(error), "failingEndpoint": failingEndpoint(error)]
     }
 
     nonisolated static func encode(counters: Data, endpoint: String, locationAuthorization: Int,
