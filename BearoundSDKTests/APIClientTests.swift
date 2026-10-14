@@ -11,7 +11,7 @@ import Testing
 
 @testable import BearoundSDK
 
-@Suite("APIClient Tests")
+@Suite("APIClient Tests", .serialized)
 struct APIClientTests {
 
     private func immutableEnvelope(protocol delivery: StoredObservationEnvelope.DeliveryProtocol = .adaptive) throws -> StoredObservationEnvelope {
@@ -668,4 +668,97 @@ struct APIClientTests {
         }
     }
 
+    @Test("Completed failed upload staging is deleted while canonical original remains until identity exact ACK")
+    func completedTransportFileCleanup() async throws {
+        for status in [415, 500, 0] {
+            let (_, envelope, _, _) = try encodingFixture()
+            let stagingDirectory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+            try FileManager.default.createDirectory(at: stagingDirectory, withIntermediateDirectories: true)
+            defer { try? FileManager.default.removeItem(at: stagingDirectory) }
+            let directoryName = "com.bearound.sdk.completed-upload.test.\(UUID().uuidString)"
+            let storage = OfflineBatchStorage(directoryName: directoryName)
+            defer { storage.clearAllBatches() }
+            let id = try #require(storage.saveObservation(envelope))
+            let canonicalFile = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
+                .appendingPathComponent(directoryName).appendingPathComponent(id)
+            let canonical = try Data(contentsOf: canonicalFile)
+            let configuration = URLSessionConfiguration.ephemeral
+            configuration.protocolClasses = [CompletedUploadFixtureProtocol.self]
+            let manager = BackgroundSessionManager(ephemeralConfiguration: configuration)
+            defer { manager.session.invalidateAndCancel() }
+            let ack = durableAck(envelope)
+            CompletedUploadFixtureProtocol.configure([(status, Data()), (200, ack)])
+            var request = URLRequest(url: URL(string: "http://127.0.0.1:18783/ingest")!)
+            request.httpMethod = "POST"
+            guard request.url?.host == "127.0.0.1", request.url?.port == 18783 else {
+                throw URLError(.unsupportedURL)
+            }
+            let original = try JSONSerialization.data(withJSONObject: APIClient.observationPayload(envelope))
+            let gzip = try RequestBodyEncoding.encode(original, gzipAllowed: true)
+            var descriptor = ObservationDeliveryReconciliation(storageIds: [id], tenantFingerprint: envelope.tenantFingerprint,
+                adaptiveBatchId: envelope.batchId)
+            descriptor.requestContentEncoding = "gzip"
+            request.setValue(gzip.contentEncoding, forHTTPHeaderField: "Content-Encoding")
+            request.setValue(gzip.contentType, forHTTPHeaderField: "Content-Type")
+            let failed: Result<Data, Error> = await withCheckedContinuation { continuation in
+                manager.uploadObservation(request: request, bodyData: gzip.data, reconciliation: descriptor,
+                    stagingDirectory: stagingDirectory) { continuation.resume(returning: $0) }
+            }
+            if case .success = failed { Issue.record("Failed fixture upload reported success") }
+            #expect(try FileManager.default.contentsOfDirectory(atPath: stagingDirectory.path).isEmpty)
+            #expect(try Data(contentsOf: canonicalFile) == canonical)
+            let failedDescription = String(data: try JSONEncoder().encode(descriptor), encoding: .utf8)!
+            #expect(BackgroundSessionManager.reconcileObservation(description: failedDescription, responseBody: Data(),
+                successful: false, statusCode: status, storage: storage) == 0)
+            if status == 415 { #expect(BackgroundSessionManager.requiresIdentity(descriptor)) }
+            descriptor.requestContentEncoding = nil
+            request.setValue(nil, forHTTPHeaderField: "Content-Encoding")
+            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            let successful: Result<Data, Error> = await withCheckedContinuation { continuation in
+                manager.uploadObservation(request: request, bodyData: original, reconciliation: descriptor,
+                    stagingDirectory: stagingDirectory) { continuation.resume(returning: $0) }
+            }
+            let response = try successful.get()
+            #expect(try FileManager.default.contentsOfDirectory(atPath: stagingDirectory.path).isEmpty)
+            #expect(try Data(contentsOf: canonicalFile) == canonical)
+            let identityDescription = String(data: try JSONEncoder().encode(descriptor), encoding: .utf8)!
+            #expect(BackgroundSessionManager.reconcileObservation(description: identityDescription, responseBody: response,
+                successful: true, statusCode: 200, storage: storage) == 1)
+            #expect(!FileManager.default.fileExists(atPath: canonicalFile.path))
+        }
+    }
+
+}
+
+private final class CompletedUploadFixtureProtocol: URLProtocol {
+    private static let lock = NSLock()
+    private static var responses: [(Int, Data)] = []
+
+    static func configure(_ values: [(Int, Data)]) {
+        lock.lock(); responses = values; lock.unlock()
+    }
+
+    override class func canInit(with request: URLRequest) -> Bool {
+        request.url?.host == "127.0.0.1" && request.url?.port == 18783
+    }
+
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+
+    override func startLoading() {
+        guard request.url?.host == "127.0.0.1", request.url?.port == 18783 else {
+            client?.urlProtocol(self, didFailWithError: URLError(.unsupportedURL)); return
+        }
+        Self.lock.lock()
+        let next = Self.responses.isEmpty ? nil : Self.responses.removeFirst()
+        Self.lock.unlock()
+        guard let next else { client?.urlProtocol(self, didFailWithError: URLError(.badServerResponse)); return }
+        guard next.0 != 0 else { client?.urlProtocol(self, didFailWithError: URLError(.networkConnectionLost)); return }
+        let response = HTTPURLResponse(url: request.url!, statusCode: next.0, httpVersion: "HTTP/1.1",
+            headerFields: ["Content-Type": "application/json"])!
+        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+        client?.urlProtocol(self, didLoad: next.1)
+        client?.urlProtocolDidFinishLoading(self)
+    }
+
+    override func stopLoading() {}
 }

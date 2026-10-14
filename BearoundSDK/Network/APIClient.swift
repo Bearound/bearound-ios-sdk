@@ -99,6 +99,12 @@ final class BackgroundSessionManager: NSObject {
         session = URLSession(configuration: config, delegate: self, delegateQueue: nil)
     }
 
+    init(ephemeralConfiguration: URLSessionConfiguration) {
+        precondition(ephemeralConfiguration.identifier == nil)
+        super.init()
+        session = URLSession(configuration: ephemeralConfiguration, delegate: self, delegateQueue: nil)
+    }
+
     /// Touching the singleton instantiates it (and therefore the session, created in
     /// init) so pending delegate callbacks from a background-relaunch are delivered.
     /// Safe to call repeatedly — `static let shared` guarantees a single instance.
@@ -169,11 +175,12 @@ final class BackgroundSessionManager: NSObject {
 
     func uploadObservation(
         request: URLRequest, bodyData: Data, reconciliation: ObservationDeliveryReconciliation,
+        stagingDirectory: URL = FileManager.default.temporaryDirectory,
         willSubmit: (() -> Bool)? = nil,
         completion: @escaping (Result<Data, Error>) -> Void
     ) {
         let file: URL
-        do { file = try Self.stageUploadBody(bodyData) }
+        do { file = try Self.stageUploadBody(bodyData, directory: stagingDirectory) }
         catch { completion(.failure(error)); return }
         guard willSubmit?() != false else {
             try? FileManager.default.removeItem(at: file)
@@ -236,7 +243,7 @@ extension BackgroundSessionManager: URLSessionTaskDelegate {
         lock.unlock()
 
         let status = (task.response as? HTTPURLResponse)?.statusCode
-        if error == nil, status.map({ (200..<300).contains($0) }) == true, let fileURL {
+        if let fileURL {
             try? FileManager.default.removeItem(at: fileURL)
         }
 
