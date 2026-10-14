@@ -1,86 +1,103 @@
 #!/bin/bash
-#
-# Builds and installs the BeAroundScan example on a physical device, in the ONLY order that
-# produces a correct binary.
-#
-# Why this script exists: the example does not compile the SDK. It links the prebuilt
-# build/BearoundSDK.xcframework. Building the example after editing SDK source therefore
-# ships the OLD SDK, silently — a field test once "validated" a fix that was never in the
-# binary. This script rebuilds the framework whenever the sources moved, and prints the
-# version that actually went onto the phone.
-#
-# Usage:
-#   ./install_example.sh                 # first available device
-#   ./install_example.sh <UDID>          # a specific device
-#   ./install_example.sh --list          # show devices and exit
-
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-XCFRAMEWORK="${REPO_ROOT}/build/BearoundSDK.xcframework"
-PLIST="${XCFRAMEWORK}/ios-arm64/BearoundSDK.framework/Info.plist"
-DERIVED="${REPO_ROOT}/BeAroundScan/build_device"
-
-bold() { printf '\033[1m%s\033[0m\n' "$1"; }
-fail() { printf '\033[0;31m%s\033[0m\n' "$1" >&2; exit 1; }
-
-if [ "${1:-}" = "--list" ]; then
+HELPER="${REPO_ROOT}/scripts/adaptive-bench-build.py"
+BENCH=false
+BASELINE=false
+BUILD_ONLY=false
+ALLOW_PROVISIONING=false
+LIST=false
+DEVICE_ID=''
+ENDPOINT=''
+FIXTURE_TOKEN=''
+FIXTURE_USER=''
+ADAPTIVE=''
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+        --bench) BENCH=true; shift ;;
+        --baseline) BASELINE=true; shift ;;
+        --build-only) BUILD_ONLY=true; shift ;;
+        --allow-provisioning-updates) ALLOW_PROVISIONING=true; shift ;;
+        --list) LIST=true; shift ;;
+        --endpoint|--fixture-token|--fixture-user|--adaptive)
+            [ "$#" -ge 2 ] || { echo 'Missing bench option value' >&2; exit 2; }
+            case "$1" in
+                --endpoint) ENDPOINT="$2" ;;
+                --fixture-token) FIXTURE_TOKEN="$2" ;;
+                --fixture-user) FIXTURE_USER="$2" ;;
+                --adaptive) ADAPTIVE="$2" ;;
+            esac
+            shift 2 ;;
+        --help) echo 'Usage: install_example.sh [UDID|--list|--build-only] [--bench --endpoint HTTPS --fixture-token fixture-* --fixture-user fixture-* --adaptive true|false [--baseline]] [--allow-provisioning-updates]'; exit 0 ;;
+        --*) echo 'Unknown example build flag' >&2; exit 2 ;;
+        *) [ -z "$DEVICE_ID" ] || { echo 'Only one device ID is allowed' >&2; exit 2; }; DEVICE_ID="$1"; shift ;;
+    esac
+done
+fail() { echo "$1" >&2; exit 1; }
+if [ "$LIST" = true ]; then
+    [ "$BENCH" = false ] && [ "$BUILD_ONLY" = false ] && [ "$BASELINE" = false ] && [ -z "$DEVICE_ID$ENDPOINT$FIXTURE_TOKEN$FIXTURE_USER$ADAPTIVE" ] && [ "$ALLOW_PROVISIONING" = false ] || fail 'Device listing cannot be combined with build options'
     xcrun devicectl list devices
     exit 0
 fi
-
-# ---------------------------------------------------------------- 1. framework
-if [ ! -f "$PLIST" ] || [ -n "$(find "${REPO_ROOT}/BearoundSDK" -name '*.swift' -newer "$PLIST" -print -quit 2>/dev/null)" ]; then
-    bold "==> XCFramework desatualizado (ou ausente) — reconstruindo do fonte"
-    "${REPO_ROOT}/build_framework.sh"
+[ "$BUILD_ONLY" = false ] || { [ -z "$DEVICE_ID" ] && [ "$ALLOW_PROVISIONING" = false ] || fail 'Build-only cannot install or update provisioning'; }
+[ "$BASELINE" = false ] || [ "$BENCH" = true ] || fail 'Baseline requires bench mode'
+CONFIGURATION=Release
+FLAGS=()
+FRAMEWORK_FLAGS=()
+APP_FLAGS=DEBUG
+HOST_SETTINGS=()
+HOST_FLAGS=()
+BUILD_DIR="${REPO_ROOT}/build"
+if [ "$BENCH" = true ]; then
+    [ -n "$ENDPOINT" ] && [ -n "$FIXTURE_TOKEN" ] && [ -n "$FIXTURE_USER" ] && [ -n "$ADAPTIVE" ] || fail 'Bench endpoint, synthetic token, user, and adaptive boolean are required'
+    [ "$ADAPTIVE" = true ] || [ "$ADAPTIVE" = false ] || fail 'Adaptive value must be true or false'
+    CONFIGURATION=Debug
+    FLAGS+=(--bench)
+    FRAMEWORK_FLAGS+=(--bench)
+    APP_FLAGS+=' BEAROUND_ADAPTIVE_BENCH'
+    if [ "$BASELINE" = true ]; then FLAGS+=(--baseline); HOST_FLAGS+=(--baseline); FRAMEWORK_FLAGS+=(--baseline); APP_FLAGS+=' BEAROUND_ADAPTIVE_BASELINE'; fi
+    mkdir -p "${BUILD_DIR}/bench-host"
+    python3 "$HELPER" host-info --input "${REPO_ROOT}/BeAroundScan/App-Info.plist" \
+        --output "${BUILD_DIR}/bench-host/Info.plist" --endpoint "$ENDPOINT" \
+        --fixture-token "$FIXTURE_TOKEN" --fixture-user "$FIXTURE_USER" --adaptive "$ADAPTIVE" ${HOST_FLAGS[@]+"${HOST_FLAGS[@]}"}
+    HOST_SETTINGS+=("INFOPLIST_FILE=${BUILD_DIR}/bench-host/Info.plist" 'PRODUCT_BUNDLE_IDENTIFIER=io.bearound.BeAround-Scan.adaptivebench' 'CODE_SIGN_ENTITLEMENTS=')
 else
-    bold "==> XCFramework já está à frente do fonte — reaproveitando"
+    [ -z "$ENDPOINT$FIXTURE_TOKEN$FIXTURE_USER$ADAPTIVE" ] || fail 'Fixture options require explicit bench mode'
 fi
-
-FW_VERSION=$(/usr/libexec/PlistBuddy -c 'Print CFBundleShortVersionString' "$PLIST")
-bold "    BearoundSDK ${FW_VERSION}"
-
-# ---------------------------------------------------------------- 2. device
-DEVICE_ID="${1:-}"
-if [ -z "$DEVICE_ID" ]; then
-    DEVICE_ID=$(xcrun devicectl list devices 2>/dev/null \
-        | awk '/available/ {print $(NF-3)}' \
-        | grep -E '^[0-9A-F-]{36}$' | head -1) || true
-    [ -z "$DEVICE_ID" ] && fail "Nenhum aparelho disponível. Plugue um e rode ./install_example.sh --list"
+FRAMEWORK="${BUILD_DIR}/BearoundSDK.xcframework/ios-arm64/BearoundSDK.framework"
+MANIFEST="${BUILD_DIR}/framework-build-manifest.json"
+if ! python3 "$HELPER" check-source --repo "$REPO_ROOT" --configuration "$CONFIGURATION" ${FLAGS[@]+"${FLAGS[@]}"} \
+    --framework "$FRAMEWORK" --manifest "$MANIFEST" >/dev/null 2>&1; then
+    "${REPO_ROOT}/build_framework.sh" ${FRAMEWORK_FLAGS[@]+"${FRAMEWORK_FLAGS[@]}"}
 fi
-bold "==> Aparelho ${DEVICE_ID}"
+python3 "$HELPER" check-source --repo "$REPO_ROOT" --configuration "$CONFIGURATION" ${FLAGS[@]+"${FLAGS[@]}"} \
+    --framework "$FRAMEWORK" --manifest "$MANIFEST"
 
-# ---------------------------------------------------------------- 3. build
-# clean: um bundle vindo de build incremental já chegou ao device SEM assinatura
-# ("code object is not signed at all"), e o erro só aparece na instalação.
-bold "==> Buildando o example (clean)"
-rm -rf "$DERIVED"
-xcodebuild \
-    -project "${REPO_ROOT}/BeAroundScan/BeAroundScan.xcodeproj" \
-    -scheme BeAroundScan \
-    -configuration Debug \
-    -destination "platform=iOS,id=${DEVICE_ID}" \
-    -derivedDataPath "$DERIVED" \
-    -allowProvisioningUpdates \
-    clean build > /tmp/beAroundScan-build.log 2>&1 \
-    || { tail -40 /tmp/beAroundScan-build.log; fail "Build falhou — log completo em /tmp/beAroundScan-build.log"; }
-
+DERIVED="${BUILD_DIR}/example-${CONFIGURATION}-${BENCH}-${BASELINE}"
+DESTINATION='generic/platform=iOS'
+SIGNING=()
+if [ "$BUILD_ONLY" = true ]; then
+    SIGNING+=('CODE_SIGNING_ALLOWED=NO' 'CODE_SIGNING_REQUIRED=NO' 'CODE_SIGN_IDENTITY=')
+else
+    if [ -z "$DEVICE_ID" ]; then
+        DEVICE_ID=$(xcrun devicectl list devices 2>/dev/null | awk '/available/ {print $(NF-3)}' | rg '^[0-9A-F-]{36}$' | head -1) || true
+    fi
+    [ -n "$DEVICE_ID" ] || fail 'No physical device available; use --build-only for an unsigned generic build'
+    DESTINATION="platform=iOS,id=${DEVICE_ID}"
+    [ "$ALLOW_PROVISIONING" = false ] || SIGNING+=(-allowProvisioningUpdates)
+fi
+xcodebuild -project "${REPO_ROOT}/BeAroundScan/BeAroundScan.xcodeproj" -scheme BeAroundScan \
+    -configuration Debug -destination "$DESTINATION" -derivedDataPath "$DERIVED" \
+    "SWIFT_ACTIVE_COMPILATION_CONDITIONS=${APP_FLAGS}" ${HOST_SETTINGS[@]+"${HOST_SETTINGS[@]}"} ${SIGNING[@]+"${SIGNING[@]}"} clean build
 APP="${DERIVED}/Build/Products/Debug-iphoneos/BeAroundScan.app"
-[ -d "$APP" ] || fail "Build terminou mas o .app não apareceu em ${APP}"
-
-# ---------------------------------------------------------------- 4. conferência
-EMBEDDED=$(/usr/libexec/PlistBuddy -c 'Print CFBundleShortVersionString' \
-    "${APP}/Frameworks/BearoundSDK.framework/Info.plist" 2>/dev/null || echo "?")
-[ "$EMBEDDED" = "$FW_VERSION" ] \
-    || fail "O .app embarcou ${EMBEDDED}, mas o fonte gerou ${FW_VERSION}. Não instalando."
-
-codesign -dv "$APP" >/dev/null 2>&1 \
-    || fail "O .app saiu SEM assinatura — a instalação falharia com ApplicationVerificationFailed."
-
-# ---------------------------------------------------------------- 5. install
-bold "==> Instalando"
-xcrun devicectl device install app --device "$DEVICE_ID" "$APP" >/dev/null \
-    || fail "Instalação falhou. Aparelho desbloqueado? Rode ./install_example.sh --list"
-
-bold "==> OK — BeAroundScan no ar com BearoundSDK ${FW_VERSION}"
-echo "    Confira em Ajustes dentro do app: a versão exibida tem de ser ${FW_VERSION}."
+[ -d "$APP" ] || fail 'Example build produced no app'
+python3 "$HELPER" verify-app --repo "$REPO_ROOT" --configuration "$CONFIGURATION" ${FLAGS[@]+"${FLAGS[@]}"} \
+    --framework "$FRAMEWORK" --manifest "$MANIFEST" --app "$APP" --output "${BUILD_DIR}/example-build-proof.json"
+if [ "$BUILD_ONLY" = true ]; then
+    echo "Unsigned build verified; installation not run. Proof: ${BUILD_DIR}/example-build-proof.json"
+    exit 0
+fi
+codesign -dv "$APP" >/dev/null 2>&1 || fail 'Example app is not signed; refusing installation'
+xcrun devicectl device install app --device "$DEVICE_ID" "$APP"
+echo "Physical installation complete; preserve the proof and device receipt before recording a bench result."

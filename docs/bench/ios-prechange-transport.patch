@@ -1,0 +1,32 @@
+diff --git a/BearoundSDK/Models/SDKConfiguration.swift b/BearoundSDK/Models/SDKConfiguration.swift
+index 806804d..b9616bb 100644
+--- a/BearoundSDK/Models/SDKConfiguration.swift
++++ b/BearoundSDK/Models/SDKConfiguration.swift
+@@ -281,0 +282,3 @@ public struct SDKConfiguration {
++        #if DEBUG
++        self.apiBaseURL = AdaptiveSamplingBench.endpoint ?? "https://ingest.bearound.io"
++        #else
+@@ -282,0 +286 @@ public struct SDKConfiguration {
++        #endif
+diff --git a/BearoundSDK/Testing/AdaptiveSamplingBench.swift b/BearoundSDK/Testing/AdaptiveSamplingBench.swift
+new file mode 100644
+index 0000000..f0ee959
+--- /dev/null
++++ b/BearoundSDK/Testing/AdaptiveSamplingBench.swift
+@@ -0,0 +1,16 @@
++#if DEBUG
++import Foundation
++
++public enum AdaptiveSamplingBench {
++    public static var isEnabled: Bool {
++        Bundle.main.object(forInfoDictionaryKey: "BEAROUND_ADAPTIVE_BENCH") as? Bool == true
++    }
++
++    static var endpoint: String? {
++        guard isEnabled, let value = Bundle.main.object(forInfoDictionaryKey: "BEAROUND_ADAPTIVE_BENCH_ENDPOINT") as? String,
++              let url = URL(string: value), url.scheme == "https", url.host != nil,
++              url.user == nil, url.password == nil, url.query == nil, url.fragment == nil else { return nil }
++        return value.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
++    }
++}
++#endif

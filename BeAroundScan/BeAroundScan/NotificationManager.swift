@@ -44,6 +44,9 @@ class NotificationManager {
     }
 
     func requestAuthorization() {
+        #if DEBUG && BEAROUND_ADAPTIVE_BENCH
+        return
+        #else
         UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound, .badge]) { granted, error in
             if granted {
                 NSLog("[NotificationManager] Permissão de notificação concedida")
@@ -53,6 +56,7 @@ class NotificationManager {
                 NSLog("[NotificationManager] Permissão de notificação negada")
             }
         }
+        #endif
     }
 
     func notifyScanningStarted() {

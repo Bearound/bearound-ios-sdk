@@ -5,6 +5,48 @@ import CoreLocation
 import SwiftUI
 import UserNotifications
 
+#if DEBUG && BEAROUND_ADAPTIVE_BENCH
+struct AdaptiveBenchHostConfiguration {
+    let token: String
+    let user: String
+    let adaptiveEnabled: Bool
+
+    static func load() -> AdaptiveBenchHostConfiguration? {
+        let info = Bundle.main
+        guard info.object(forInfoDictionaryKey: "BEAROUND_ADAPTIVE_BENCH") as? Bool == true,
+              let endpoint = info.object(forInfoDictionaryKey: "BEAROUND_ADAPTIVE_BENCH_ENDPOINT") as? String,
+              let url = URL(string: endpoint), url.scheme == "https", let host = url.host,
+              url.user == nil, url.password == nil, url.query == nil, url.fragment == nil,
+              url.path.isEmpty || url.path == "/", isLocalHost(host),
+              let token = info.object(forInfoDictionaryKey: "BEAROUND_ADAPTIVE_BENCH_TOKEN") as? String,
+              let user = info.object(forInfoDictionaryKey: "BEAROUND_ADAPTIVE_BENCH_USER") as? String,
+              token.hasPrefix("fixture-"), user.hasPrefix("fixture-"),
+              let enabled = info.object(forInfoDictionaryKey: "BEAROUND_ADAPTIVE_BENCH_ENABLED") as? Bool,
+              info.bundleIdentifier?.hasSuffix(".adaptivebench") == true,
+              AdaptiveSamplingBench.isEnabled else { return nil }
+        #if BEAROUND_ADAPTIVE_BASELINE
+        guard info.object(forInfoDictionaryKey: "BEAROUND_ADAPTIVE_BENCH_BASELINE") as? Bool == true, !enabled else { return nil }
+        #else
+        guard info.object(forInfoDictionaryKey: "BEAROUND_ADAPTIVE_BENCH_BASELINE") as? Bool == false else { return nil }
+        #endif
+        return AdaptiveBenchHostConfiguration(token: token, user: user, adaptiveEnabled: enabled)
+    }
+
+    private static func isLocalHost(_ host: String) -> Bool {
+        let value = host.lowercased().trimmingCharacters(in: CharacterSet(charactersIn: "[]"))
+        if value == "localhost" || value.hasSuffix(".local") || value == "::1" { return true }
+        let parts = value.split(separator: ".")
+        let octets = parts.compactMap { Int($0) }
+        if parts.count == 4, octets.count == 4, octets.allSatisfy({ (0 ... 255).contains($0) }) {
+            return octets[0] == 127 || octets[0] == 10 || (octets[0] == 172 && (16 ... 31).contains(octets[1]))
+                || (octets[0] == 192 && octets[1] == 168)
+        }
+        return value.contains(":") && (value.hasPrefix("fc") || value.hasPrefix("fd") || value.hasPrefix("fe8")
+            || value.hasPrefix("fe9") || value.hasPrefix("fea") || value.hasPrefix("feb"))
+    }
+}
+#endif
+
 private enum UserDefaultsKeys {
     static let scanPrecision = "scanPrecision"
     static let queueSize = "queueSize"
@@ -255,6 +297,12 @@ class BeaconViewModel: NSObject, ObservableObject, BeAroundSDKDelegate {
 
     override init() {
         super.init()
+        #if DEBUG && BEAROUND_ADAPTIVE_BENCH
+        guard AdaptiveBenchHostConfiguration.load() != nil else {
+            statusMessage = "Configuração de bancada inválida"
+            return
+        }
+        #endif
         locationManager.delegate = self
 
         // If the process is starting while not active, iOS relaunched us in the background
@@ -265,8 +313,10 @@ class BeaconViewModel: NSObject, ObservableObject, BeAroundSDKDelegate {
         loadPersistedLogs()
         setupLockObservers()
 
+        #if !(DEBUG && BEAROUND_ADAPTIVE_BENCH)
         locationManager.requestAlwaysAuthorization()
         notificationManager.requestAuthorization()
+        #endif
         updatePermissionStatus()
         checkBluetoothStatus()
         checkNotificationStatus()
@@ -408,8 +458,40 @@ class BeaconViewModel: NSObject, ObservableObject, BeAroundSDKDelegate {
         permissionStatus = status
     }
 
+    #if DEBUG && BEAROUND_ADAPTIVE_BENCH
+    @MainActor
+    private func configureAdaptiveBench() -> Bool {
+        guard let bench = AdaptiveBenchHostConfiguration.load() else {
+            statusMessage = "Configuração de bancada inválida"
+            return false
+        }
+        let sdk = BeAroundSDK.shared
+        sdk.setErrorReportingEnabled(false)
+        #if BEAROUND_ADAPTIVE_BASELINE
+        sdk.configure(businessToken: bench.token, scanPrecision: scanPrecision, maxQueuedPayloads: queueSize,
+            requestTrackingOnStart: false)
+        #else
+        sdk.configure(businessToken: bench.token, scanPrecision: scanPrecision, maxQueuedPayloads: queueSize,
+            requestTrackingOnStart: false, adaptiveSamplingEnabled: bench.adaptiveEnabled)
+        #endif
+        userPropertyInternalId = bench.user
+        userPropertyEmail = ""
+        userPropertyName = ""
+        userPropertyCustom = ""
+        sdk.setUserProperties(UserProperties(internalId: bench.user))
+        return true
+    }
+    #endif
+
     @MainActor
     private func initializeSDK() {
+        #if DEBUG && BEAROUND_ADAPTIVE_BENCH
+        guard configureAdaptiveBench() else { return }
+        BeAroundSDK.shared.delegate = self
+        statusMessage = "Bancada local configurada"
+        startScanning()
+        return
+        #else
         BeAroundSDK.shared.configure(
             businessToken: "ee2ec9c46d2b2ad99bddcdd0afe224e6",
             scanPrecision: scanPrecision,
@@ -434,10 +516,18 @@ class BeaconViewModel: NSObject, ObservableObject, BeAroundSDKDelegate {
         statusMessage = "Configurado"
 
         startScanning()
+        #endif
     }
     
     @MainActor
     func applySettings() {
+        #if DEBUG && BEAROUND_ADAPTIVE_BENCH
+        let wasScanning = isScanning
+        if wasScanning { stopScanning() }
+        guard configureAdaptiveBench() else { return }
+        if wasScanning { startScanning() }
+        return
+        #else
         let wasScanning = isScanning
 
         if wasScanning {
@@ -469,6 +559,7 @@ class BeaconViewModel: NSObject, ObservableObject, BeAroundSDKDelegate {
         if wasScanning {
             startScanning()
         }
+        #endif
     }
 
     @MainActor
