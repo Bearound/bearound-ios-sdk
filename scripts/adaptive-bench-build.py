@@ -164,12 +164,16 @@ def verify_app(args):
     host_source = {"frameworkSourceFingerprint": value["sourceFingerprint"], "hostPlistSHA256": file_hash(args.app / "Info.plist"),
                    "sources": [{"path": p.relative_to(args.repo).as_posix(), "sha256": file_hash(p)} for p in sorted(app_files)]}
     executable = args.app / host["CFBundleExecutable"]
+    # Xcode Debug hosts can put application code in a separate .debug.dylib.
+    macho_magic = {bytes.fromhex(value) for value in ["feedface", "feedfacf", "cefaedfe", "cffaedfe", "cafebabe", "cafebabf", "bebafeca", "bfbafeca"]}
+    app_code = [{"path": str(path), "sha256": file_hash(path), "machOUUID": uuids(path)}
+                for path in sorted(args.app.iterdir()) if path.is_file() and path.read_bytes()[:4] in macho_magic]
     proof = {"schema": 1, "sourceCommit": value["sourceCommit"], "configuration": args.configuration,
              "benchEnabled": args.bench, "baseline": args.baseline, "bundleIdentifier": bundle,
              "sourceFingerprint": value["sourceFingerprint"], "frameworkFingerprint": plist["BEAROUND_SOURCE_FINGERPRINT"],
              "appSourceFingerprint": digest(canonical(host_source)), "machOUUID": expected_uuid,
              "embeddedFramework": {"path": str(embedded / "BearoundSDK"), "sha256": file_hash(embedded / "BearoundSDK")},
-             "binary": {"path": str(executable), "sha256": file_hash(executable)},
+             "binary": {"path": str(executable), "sha256": file_hash(executable)}, "appCodeBinaries": app_code,
              "hostPlistSHA256": file_hash(args.app / "Info.plist"), "installation": {"status": "not_run"}}
     if args.bench:
         proof.update({"adaptiveEnabled": host["BEAROUND_ADAPTIVE_BENCH_ENABLED"],
