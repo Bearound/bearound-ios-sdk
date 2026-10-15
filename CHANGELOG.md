@@ -5,33 +5,155 @@ All notable changes to BearoundSDK for iOS will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [3.9.1] - 2026-09-11
+## [Unreleased]
+
+## [3.16.0] - 2026-10-13
+
+### Added
+- **App Presence (opt-in, só local).** Verificação local da existência de um handler para uma
+  lista curta de URL schemes que o integrador configura e declara no build
+  (`LSApplicationQueriesSchemes`). Desligada por padrão, sem interface e sem permissão nova.
+  O resultado vai apenas para o app integrador, por callback, e nunca entra no payload de
+  beacon, na fila offline nem na telemetria de erros. Antes de usar, leia a seção "Store policy
+  first" do README: a diretriz 5.1.2(iv) da App Store proíbe usar informação de apps instalados
+  para analytics, publicidade ou marketing, e o SDK não concede nem implica aprovação da loja.
+
+## [3.15.0] - 2026-10-09
+
+### Changed
+- Versão alinhada com o SDK Android 3.15.0, que passa a enviar os códigos de operadora do chip
+  e da rede. No iOS não há mudança de comportamento: a Apple não expõe a operadora desde o
+  iOS 16. Nenhuma permissão nova.
+
+## [3.14.0] - 2026-09-30
+
+### Added
+- **Visita por Wi-Fi.** Nos lugares configurados para isso, o SDK também detecta a visita pela
+  rede Wi-Fi em que o aparelho está conectado, e a reporta como evento `visit` comum.
+- `diagnostics().wifiStatus`: `ready`, `notConnected`, `missingEntitlement` ou
+  `locationNotAuthorized`. Exige o entitlement **Access WiFi Information** e localização
+  Always; sem eles fica inerte, e o diagnóstico diz por quê.
+
+### Changed
+- `VisitEvent` passa a aceitar evento sem localização. Configurações e estado salvos pela
+  3.13.0 continuam carregando. Nenhuma permissão nova.
+
+## [3.13.0] - 2026-09-29
+
+### Added
+- **Push rico: imagem, duas imagens, carrossel e vídeo.** Um pod novo e separado,
+  `BearoundSDKNotificationExtensions` (módulo próprio, mesma versão e mesma tag), para os
+  targets de extensão do app hospedeiro. Ele traz `BearoundNotificationService` (uma
+  Notification Service Extension) e `BearoundNotificationViewController` (uma Notification
+  Content Extension), e não depende do core: só usa APIs seguras para extensão
+  (`APPLICATION_EXTENSION_API_ONLY`), sem BLE, localização nem background modes. O
+  hospedeiro cria os dois targets, põe `pod 'BearoundSDKNotificationExtensions'` nos
+  **dois** e subclassifica as classes em uma linha cada, com
+  `import BearoundSDKNotificationExtensions`. `pod 'BearoundSDK'` continua instalando
+  exatamente o core, sem mudança.
+  - **Por que um pod separado.** Com `use_frameworks!` dinâmico, o CocoaPods copia os
+    frameworks das extensões para o `Frameworks/` do app. Se as extensões gerassem um
+    módulo `BearoundSDK` (como subspecs do core), o último `BearoundSDK.framework` copiado
+    sobrescreveria o do app, e o app fecharia ao abrir. Com módulo próprio isso não
+    acontece, com ou sem `:linkage => :static`. O pod não tem subspecs de propósito: um
+    subspec por target geraria duas variantes do mesmo framework, e uma extensão perderia
+    a sua classe.
+  - A Service Extension lê `bearound_rich` (contrato v1), baixa o card 0 (a capa, no
+    PLAY) e o anexa à notificação. Com o marcador `bearound { d, tr }`, o download passa pelo
+    tracker (`/v1/push:view?d=&r=&idx=`) e conta como visualização do card. A extensão do
+    arquivo vem do `Content-Type` (com a assinatura dos bytes como reserva). WebP, HEIC e
+    outros formatos que o `UNNotificationAttachment` não aceita são reduzidos pelo ImageIO
+    direto do arquivo baixado (no máximo 2048 px no lado maior, nunca decodificados em
+    resolução cheia) e recodificados como JPEG.
+  - Imagens e vídeo precisam de `https`: o App Transport Security bloqueia `http` dentro das
+    extensões. Um `mb` em `http` invalida o `bearound_rich`, um vídeo em `http` cai para a
+    capa, e um `image_url` legado em `http` não é anexado. Os links de toque continuam
+    aceitando `http(s)`.
+  - O MP4 só é aceito com a assinatura `ftyp` nos bytes, mesmo quando o `Content-Type` diz
+    `video/mp4`.
+  - Os arquivos temporários da Service Extension são removidos: a capa quando o vídeo
+    vence, o arquivo quando o anexo é recusado, e o que sobrar de notificações anteriores
+    (mais de 5 minutos) na próxima execução.
+  - Sem `bearound_rich`, a Service Extension anexa o `image_url` legado do topo do payload:
+    a imagem de fallback passa a aparecer também nos pushes antigos.
+  - **PLAY é vídeo de verdade.** A Service Extension baixa o MP4 do card (`u`, até 15 MB)
+    para um arquivo `.mp4` temporário e o anexa com a dica de tipo MPEG-4 e miniatura em
+    cerca de 1 s: ao expandir, o iOS toca o vídeo no player do sistema. O download é
+    cancelado assim que o servidor anuncia, ou envia, mais que o limite, e tem prazo dentro
+    do orçamento de tempo da extensão. A capa (`m`) é baixada em paralelo, sempre: pelo
+    tracker, esse download é a visualização. Se o vídeo falhar, passar do limite ou não
+    for MP4, a capa vira o anexo. Não há imagem parada com ícone de play em nenhum caso.
+  - A Content Extension desenha os cards por código (sem storyboard) conforme a categoria:
+    `BEAROUND_IMAGE`, `BEAROUND_TWO_IMAGES` (dois cards lado a lado com legenda) e
+    `BEAROUND_CAROUSEL` (páginas horizontais com anterior/próximo, imagem carregada ao
+    aparecer, até 5 MB, baixada para arquivo e decodificada reduzida; uma falha é tentada de
+    novo quando o card volta à tela). A legenda segue o Dynamic Type, e a altura da
+    notificação e a posição das setas são recalculadas quando o tamanho muda. Ela **não**
+    declara `BEAROUND_PLAY`: se declarasse, esconderia o player nativo. O toque num card
+    abre a URL: http(s) pelo clique do tracker com `idx`; deep link direto, só se o esquema
+    estiver declarado no `CFBundleURLTypes` do app hospedeiro. Qualquer outro esquema, e o
+    card sem URL, abrem o app, como um toque comum. A abertura só é contada depois que o
+    iOS confirma que abriu o link. O toque numa notificação PLAY abre o app, e o hospedeiro
+    decide o que fazer. Os ids ficam em
+    `BearoundPushCategory`; a lista para o Info.plist da Content Extension é
+    `BearoundPushCategory.contentExtension`.
+  - Se o servidor não mandar `aps.category`, a Service Extension define a categoria a
+    partir do `bearound_rich`, e o layout rico aparece mesmo assim.
+  - Sem as extensões instaladas, o aparelho continua recebendo a notificação padrão.
+- **`sdkVersion` no `userDevice`.** O bloco `userDevice` do payload leva sempre a versão
+  nativa do SDK (até 32 caracteres), com ou sem push token, para o backend saber quais
+  aparelhos já têm as extensões de push rico.
+  Depois de uma atualização do SDK, o token é reenviado uma vez mesmo sem ter mudado: o
+  `PushTokenStore` guarda a versão que acompanhou o último envio, e sem isso um aparelho
+  atualizado continuaria marcado como antigo até o token rotacionar, o que pode nunca
+  acontecer.
+
+## [3.12.0] - 2026-09-28
 
 ### Fixed
+- **O retry mantém o contexto capturado.** Lotes guardados offline passam a carregar a
+  localização, o Wi-Fi, os dados do device e o `syncTrigger` do momento da captura. Antes o
+  reenvio remontava esses dados na hora do retry e juntava lotes, então um evento reenviado
+  chegava com a posição de quando a rede voltou. Lotes gravados por versões anteriores
+  continuam sendo lidos. Eventos de visita nunca são descartados pelo limite da fila.
+
 - **`whenInUse` não é um despertador, e o SDK tratava como se fosse.** O olho BLE tem um
   ciclo ocioso (espiada de 10 s a cada 5 min) que só é seguro porque o region monitoring
   acorda o app na entrada da região. O gate que decidia isso aceitava qualquer autorização
-  de Location — inclusive `whenInUse`, com a qual o iOS **recusa** armar o monitoramento
+  de Location, inclusive `whenInUse`, com a qual o iOS **recusa** armar o monitoramento
   (`kCLErrorDomain` 4). Nessas instalações os dois olhos ficavam degradados ao mesmo tempo:
   sem acordar por região, e com o BLE ocioso esperando um acorde que nunca vinha. O gate
-  agora é `hasLocationWaker()` — `authorizedAlways` **e** precisão total, o par exato que o
+  agora é `hasLocationWaker()`: `authorizedAlways` **e** precisão total, o par exato que o
   iOS exige para `startMonitoring(for:)`. Fora disso o olho BLE fica contínuo.
 
   Efeito colateral aceito: em device com `whenInUse` o BLE passa a varrer continuamente
-  enquanto o app estiver vivo. É mais bateria do que antes, e é o preço de detectar — antes
+  enquanto o app estiver vivo. É mais bateria do que antes, e é o preço de detectar: antes
   a alternativa não era "menos bateria", era "quase nenhuma detecção".
 
 - **O monitoramento negado vira erro tipado em vez de frase opaca.** `monitoringDidFailFor`
   com `kCLErrorDomain` 4 (`CLError.regionMonitoringDenied`) chegava ao app hospedeiro como
-  `"A operação não pôde ser concluída. (kCLErrorDomain erro 4.)"` — localizado no idioma do
-  device, sem nada estável para casar. Medido em campo (cutpro 1.1.42, iPhone XR, iOS 18.7.2),
+  `"A operação não pôde ser concluída. (kCLErrorDomain erro 4.)"`, localizado no idioma do
+  device, sem nada estável para casar. Medido em campo (app de um cliente, iPhone XR, iOS 18.7.2),
   registrado como não-fatal e sem ação possível. Agora é re-embrulhado como
   `BeAroundSDK` / `BearoundErrorCode.regionMonitoringDenied` (11), com o status de
   autorização na mensagem e o erro original em `NSUnderlyingErrorKey`. Os demais erros do
   CoreLocation continuam passando intactos.
 
 ### Added
-- **`BeAroundSDK.shared.detectionReadiness`** — o que esta instalação consegue de fato
+- **Detecção de visita por GPS.** Com autorização `Always` e precisão total, o SDK passa a
+  detectar paradas também fora do alcance de beacon: combina `CLVisit` com regiões circulares
+  nos ambientes mais próximos, que ele obtém do backend da Bearound em
+  `GET {apiBaseURL}/sdk/places/nearby` e atualiza ao sair da cerca de atualização ou quando a
+  lista expira (a última lista boa fica guardada se a consulta falhar). Cada parada gera dois
+  eventos, chegada e saída, com `syncTrigger: "visit"`, `source: "gnss"` e o horário real do
+  fix. Não há API nova: a detecção liga sozinha, o backend pode desligá-la por conta, e ela
+  para no aparelho com `collectLocation: false` ou sem `Always`/precisão total. A detecção por
+  beacon não muda.
+- **Orçamento de regiões.** A detecção de visita usa no máximo 10 regiões de ambiente mais a
+  cerca de atualização, sempre deixa 5 das 20 regiões do iOS livres para o app, e nunca para
+  nem substitui regiões do app. O prefixo `bearound.visit.` é reservado ao SDK (ver README,
+  "Monitored regions and the 20-region limit").
+- **`BeAroundSDK.shared.detectionReadiness`**: o que esta instalação consegue de fato
   detectar, em um valor só: `full` (Sempre + precisão total: acorda o app até depois de
   force-quit), `backgroundBle` (sem despertador do CoreLocation, mas o app declara
   `bluetooth-central`: varre em background e o state restoration religa depois de um
@@ -41,23 +163,94 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
   Existe porque detecção no iOS não é booleano: depende de uma autorização de runtime e de
   um background mode de build time, e nenhum dos dois é do SDK. Ele pode pedir o primeiro e
-  ler o segundo — então agora ele **nomeia o regime** em vez de deixar o app hospedeiro
+  ler o segundo, então agora ele **nomeia o regime** em vez de deixar o app hospedeiro
   deduzir a partir de string de erro. A decisão é função pura
   (`BeAroundDetectionReadiness.evaluate`), testada na matriz inteira.
 
-- `BeAroundDiagnostics` ganha `detectionReadiness` e `backgroundModes` — o `summary()` passa
+- `BeAroundDiagnostics` ganha `detectionReadiness` e `backgroundModes`; o `summary()` passa
   a mostrar as duas linhas. `backgroundModes` é o Info.plist do hospedeiro: sem
   `bluetooth-central` não há varredura em background nem state restoration, e isso não
   aparecia em lugar nenhum do diagnóstico.
 
-- `BearoundErrorCode.regionMonitoringDenied` (11) — o iOS recusou armar a região de beacon
+- `BearoundErrorCode.regionMonitoringDenied` (11): o iOS recusou armar a região de beacon
   porque o app não tem `Always`. Não é crash nem transitório: o olho de Location fica fora
   do ar para aquela instalação até a autorização mudar.
-- `BeAroundSDK.hasLocationWaker()` (internal) — única fonte de verdade sobre existir ou não
+- `BeAroundSDK.hasLocationWaker()` (internal): única fonte de verdade sobre existir ou não
   um despertador do CoreLocation. Um `regionMonitoringDenied` observado também derruba o
   ciclo ocioso na hora: a falha medida vale mais que a consulta de status, que pode dizer
   `authorizedAlways` enquanto o iOS recusa (Location Services desligado no device,
   restrição de MDM/Tempo de Uso).
+
+## [3.11.0] - 2026-09-28
+
+### Added
+- **Medição de recebimento e abertura de push.** O SDK passa a reportar dois eventos por
+  envio mensurável (marcador `bearound: { sid, d, tr }`) ao tracker da Bearound, em
+  `GET {tr}/v1/push:received?d=` e `GET {tr}/v1/push:open?d=`, sem credencial (o `d` é o
+  contexto de entrega que o backend selou para o aparelho): `received`, quando a notificação
+  chega (reaproveita o `didReceiveRemoteNotification` já existente), e `opened`, quando o
+  usuário toca nela. A abertura é detectada por um swizzle de
+  `UNUserNotificationCenter.setDelegate:`, que remenda o delegate do host (ou instala um
+  mínimo, se nenhum existir) sem alterar o comportamento padrão para pushes que não são do
+  Bearound. Os eventos ficam numa fila persistida própria (separada da fila de beacons),
+  com envio imediato best-effort, retry com backoff exponencial, limite de 200 itens / 7
+  dias e desduplicação local por `(sid, tipo)`: sobrevive a um toque que reabre o app antes
+  do `configure()`.
+- Novas APIs públicas: `BeAroundSDK.shared.handleNotificationResponse(_:)`,
+  `trackNotificationOpened(userInfo:)` e `trackNotificationReceived(userInfo:)`, para hosts
+  que desativam o proxy automático (`BearoundAppDelegateProxyEnabled = NO`) ou para pontes
+  (Expo/React Native) que precisam reportar manualmente.
+
+## [3.10.0] - 2026-09-28
+
+### Changed
+- **O SDK deixa de levantar sozinho o prompt de App Tracking Transparency.** Até a 3.9.x,
+  bastava declarar `NSUserTrackingUsageDescription` para o prompt aparecer logo depois do
+  `configure()`. Agora quem decide quando (e se) pedir é o app integrador: ele chama
+  `requestTrackingAuthorization()` no ponto do fluxo que escolher, ou usa o
+  `ATTrackingManager` diretamente. O SDK apenas lê o status resultante e passa a reportar o
+  IDFA quando autorizado.
+
+  **Ação para quem dependia do prompt automático:** chamar
+  `BeAroundSDK.shared.requestTrackingAuthorization()` com o app em primeiro plano. Sem essa
+  chamada (ou uma equivalente do próprio app), o aparelho fica em `notDetermined` e o
+  payload segue sem IDFA.
+
+### Deprecated
+- `configure(requestTrackingOnStart:)`: o parâmetro é ignorado e existe só para não quebrar
+  a compilação de quem o passa. `SDKConfiguration.requestTrackingOnStart` foi removido, e o
+  valor persistido pela 3.9.x é apagado no próximo `configure()`.
+
+### Fixed
+- **A janela de encontros não era reiniciada após o envio.** `snapshotEncounters()` não era
+  destrutivo e `evictStalePeers` só rodava dentro do desvio de capacidade
+  (`guard peers.count < maxTrackedPeers`, 64): um aparelho que vê um ou dois peers nunca
+  chega lá. O agregado vivia enquanto o processo vivesse: cada payload repetia as leituras
+  anteriores e `firstSeen` nunca avançava. Como um RPI rotaciona a cada 15 minutos, uma
+  leitura repetida é irresolvível por construção.
+
+  O método passa a se chamar `drainEncounters()`: emite uma janela por peer identificado,
+  reinicia o acumulador e remove os peers ociosos incondicionalmente, fora do desvio de
+  capacidade. `maxTrackedPeers` e `peerStaleEviction` não mudaram; o defeito era **onde** a
+  remoção rodava. Um encontro que atravessa N sincronizações agora chega como N janelas
+  adjacentes, o mesmo contrato que as estatísticas de beacon físico já têm.
+
+  `hasFreshEncounters(since:)` passa a exigir `sampleCount > 0`: um peer já drenado ainda
+  carrega o `lastSeen` antigo e abriria envios de encontro vazios.
+
+  Corrigido de passagem: quando o desvio de capacidade liberava um slot, o código inseria um
+  agregado vazio e retornava, descartando a própria amostra que abriu o slot.
+
+- **Uma instância criada por relaunch em background não entrava na malha.** A malha só era
+  iniciada pelo `startScanning()` público; `autoConfigureFromStorage()` iniciava o olho de
+  beacon e nunca a malha, então o aparelho voltava escaneando beacons sem anunciar nem
+  reconhecer peers; e, com `encounterMesh` nulo, o filtro de scan em background também saía
+  sem o service UUID da malha. Os dois caminhos passam por
+  `BluetoothManager.startScanSurfaces(bluetoothAuthorized:)`, que sobe o olho de beacon e a
+  malha juntos sob a mesma condição de autorização de Bluetooth. Um único ponto de entrada,
+  para que os dois caminhos não voltem a divergir.
+
+  Estas correções estavam preparadas como 3.9.1, que não chegou a ser publicada.
 
 ## [3.9.0] - 2026-08-19
 

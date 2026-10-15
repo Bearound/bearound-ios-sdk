@@ -5,7 +5,7 @@ import Foundation
 /// Sightings are reported as observed — "saw `rpi` at `rssi`" — with no local matching.
 /// `rpi` is the peer's rotating identifier: 16 random bytes renewed every
 /// ``EncounterMeshManager/rpiRotationInterval``, so nothing stable goes on the air.
-struct EncounterObservation {
+struct EncounterObservation: Codable, Equatable {
     /// Peer's rotating identifier (32 lowercase hex chars) read over GATT.
     let rpi: String
     /// Most recent signal strength, in dBm.

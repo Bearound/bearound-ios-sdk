@@ -493,7 +493,7 @@ class BeaconManager: NSObject {
         let constraint = CLBeaconIdentityConstraint(uuid: beaconUUID)
         let region = CLBeaconRegion(
             beaconIdentityConstraint: constraint,
-            identifier: "BeAroundRegion"
+            identifier: BeaconConstants.regionIdentifier
         )
 
         // CRITICAL: These settings enable iOS to wake terminated app
@@ -949,7 +949,7 @@ extension BeaconManager: CLLocationManagerDelegate {
             let constraint = CLBeaconIdentityConstraint(uuid: beaconUUID)
             let bootRegion = CLBeaconRegion(
                 beaconIdentityConstraint: constraint,
-                identifier: "BeAroundRegion"
+                identifier: BeaconConstants.regionIdentifier
             )
             bootRegion.notifyOnEntry = true
             bootRegion.notifyOnExit = true
@@ -1101,6 +1101,13 @@ extension BeaconManager: CLLocationManagerDelegate {
     /// host app can see the eye is down.
     func locationManager(_ manager: CLLocationManager, monitoringDidFailFor region: CLRegion?, withError error: Error) {
         let regionId = region?.identifier ?? "nil"
+        // Region events are delivered to every CLLocationManager in the process. A visit
+        // geofence failing (usually the shared 20-region cap) is owned by VisitMonitor and
+        // must not surface as a beacon-eye error to the host.
+        if RegionBudget.isSDKVisitIdentifier(regionId) {
+            NSLog("[BeAroundSDK] Visit region monitoring failed for %@: %@", regionId, error.localizedDescription)
+            return
+        }
         NSLog("[BeAroundSDK] REGION MONITORING FAILED for %@: %@", regionId, error.localizedDescription)
         DiagnosticsStore.shared.recordError("monitoringDidFail(\(regionId)): \(error.localizedDescription)")
         onError?(Self.translatedMonitoringFailure(error, manager: manager))
@@ -1109,11 +1116,11 @@ extension BeaconManager: CLLocationManagerDelegate {
     /// Re-wraps the one CoreLocation monitoring failure that is a permission state, not a bug.
     ///
     /// `kCLErrorDomain` code 4 (`CLError.regionMonitoringDenied`) is iOS refusing to arm the
-    /// beacon region because the app does not hold `Always` — the level region monitoring
+    /// beacon region because the app does not hold `Always`, the level region monitoring
     /// requires. `startScanning()` accepts `whenInUse` (foreground ranging is still worth
     /// having), so this failure is reachable by design and the host app must be able to tell
     /// it apart from a real fault. Forwarded raw it reaches the host as the opaque
-    /// "The operation couldn't be completed. (kCLErrorDomain error 4.)" — measured in the
+    /// "The operation couldn't be completed. (kCLErrorDomain error 4.)", measured in the
     /// field, a non-fatal with nothing to act on. Re-wrapped, it carries a stable code, the
     /// authorization status that caused it, and the original error in `NSUnderlyingErrorKey`.
     ///
@@ -1137,7 +1144,7 @@ extension BeaconManager: CLLocationManagerDelegate {
             userInfo: [
                 NSLocalizedDescriptionKey:
                     "Region monitoring denied by iOS (authorization=\(authorizationName(status))). "
-                    + "Beacon region monitoring requires 'Always' location authorization — without it "
+                    + "Beacon region monitoring requires 'Always' location authorization; without it "
                     + "there is no wake-up for a backgrounded or terminated app. Ask for Always "
                     + "(requestLocationAuthorization(.always)) or send the user to Settings.",
                 NSUnderlyingErrorKey: nsError,

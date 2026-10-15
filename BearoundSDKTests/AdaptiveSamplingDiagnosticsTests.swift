@@ -258,6 +258,29 @@ struct AdaptiveSamplingDiagnosticsTests {
         }
     }
 
+    @Test("Legacy physical capture never drains encounter windows needed by the existing sender")
+    func legacyCaptureDoesNotDrainEncounters() throws {
+        let runtime = runtime()
+        var drains = 0
+        runtime.observePhysical([beacon()], callbackID: "legacy", at: clock(), existingEncounterFieldsProvider: {
+            drains += 1
+            return ["encounters": [], "encounterIds": []]
+        }) { body() }
+        #expect(drains == 0 && !runtime.hasCapability(at: clock()))
+        try negotiate(runtime, at: 1_000)
+        runtime.observePhysical([beacon(1_000)], callbackID: "adaptive", at: clock(1_000), existingEncounterFieldsProvider: {
+            drains += 1
+            return ["encounters": [], "encounterIds": []]
+        }) { body() }
+        #expect(drains == 1)
+        runtime.invalidateCapability(reason: "fixture_fallback")
+        runtime.observePhysical([beacon(2_000)], callbackID: "fallback", at: clock(2_000), existingEncounterFieldsProvider: {
+            drains += 1
+            return ["encounters": [], "encounterIds": []]
+        }) { body() }
+        #expect(drains == 1)
+    }
+
     @Test("Current encounters ride new live frames without extra complementary reads or rewriting original summaries")
     func currentEncountersPreserved() throws {
         let runtime = runtime()

@@ -290,7 +290,7 @@ final class AdaptiveSamplingRuntime {
             nextContextAtMs = now.monotonicTimeMs + (plan.contextIntervalMs ?? 60_000)
         } else { diagnostics.complementaryCacheReads += 1 }
         guard var body = contextPayload else { return }
-        if let encounterFields = try? ObservationJSONValue.snapshot(existingEncounterFieldsProvider()) {
+        if adaptiveNow, let encounterFields = try? ObservationJSONValue.snapshot(existingEncounterFieldsProvider()) {
             for name in ["encounters", "encounterIds"] where encounterFields[name] != nil {
                 if encounterFields[name]?.array?.isEmpty == true { body.removeValue(forKey: name) }
                 else { body[name] = encounterFields[name] }

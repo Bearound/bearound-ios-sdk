@@ -41,15 +41,15 @@ struct DetectionReadinessTests {
         #expect(evaluate(.authorizedAlways, declaresBluetoothCentral: false) == .full)
     }
 
-    @Test("whenInUse is NOT a waker — this is the kCLErrorDomain#4 install")
+    @Test("whenInUse is NOT a waker: this is the kCLErrorDomain#4 install")
     func whenInUseIsNotAWaker() {
-        // The field case: cutpro on iOS 18.7.2. iOS refuses to arm the region, so the
+        // The field case: a customer app on iOS 18.7.2. iOS refuses to arm the region, so the
         // best available regime is whatever Bluetooth can do.
         #expect(evaluate(.authorizedWhenInUse) == .backgroundBle)
         #expect(evaluate(.authorizedWhenInUse, declaresBluetoothCentral: false) == .foregroundOnly)
     }
 
-    @Test("Precise Location off drops Always out of full — every beacon API is disabled")
+    @Test("Precise Location off drops Always out of full: every beacon API is disabled")
     func reducedAccuracyLosesTheWaker() {
         #expect(evaluate(.authorizedAlways, fullAccuracy: false) == .backgroundBle)
         #expect(

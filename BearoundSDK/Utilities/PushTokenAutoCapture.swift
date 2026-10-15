@@ -86,8 +86,15 @@ enum PushTokenAutoCapture {
                     return
                 }
 
-                NSLog("[BeAroundSDK] Bearound silent push received — refreshing scan + sync")
+                NSLog("[BeAroundSDK] Bearound silent push received, refreshing scan + sync")
                 DiagnosticsStore.shared.recordPushReceived()
+
+                // Report receipt for sid-bearing sends. Sync/silent pushes with no sid are
+                // not reported.
+                if let marker = PushMarker.extract(from: (userInfo as? [AnyHashable: Any]) ?? [:]) {
+                    PushEventQueue.shared.enqueue(marker: marker, type: .received)
+                }
+
                 BeAroundSDK.shared.performBackgroundBLERefreshAndSync(bleScanDuration: 10.0, trigger: "silent_push") { ingestStarted in
                     let info = BeAroundSDK.shared.lastBackgroundScanInfo
                     let found = info?.beaconsFound ?? 0

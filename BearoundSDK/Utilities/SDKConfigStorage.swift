@@ -23,12 +23,15 @@ public class SDKConfigStorage {
     private static let keyPeriodicEnabled = "periodic_reconciliation_enabled"
     private static let keyPeriodicInterval = "periodic_reconciliation_interval"
     private static let keyPeriodicScanDuration = "periodic_scan_duration"
-    private static let keyRequestTrackingOnStart = "request_tracking_on_start"
+    /// No longer written: the SDK stopped raising the ATT prompt itself. Only removed, so
+    /// installs upgraded from 3.9.x do not keep a dead value around.
+    private static let legacyKeyRequestTrackingOnStart = "request_tracking_on_start"
     private static let keyCollectAdvertisingId = "collect_advertising_id"
     private static let keyCollectLocation = "collect_location"
     private static let keyCollectWifi = "collect_wifi"
     private static let keyCollectMotionSensors = "collect_motion_sensors"
     private static let keyAdaptiveSamplingEnabled = "adaptive_sampling_enabled"
+    private static let keyAppPresenceConfiguration = "app_presence_configuration"
 
     private static var defaults: UserDefaults? {
         UserDefaults(suiteName: suiteName)
@@ -48,7 +51,7 @@ public class SDKConfigStorage {
         defaults.set(config.periodicReconciliationEnabled, forKey: keyPeriodicEnabled)
         defaults.set(config.periodicReconciliationInterval, forKey: keyPeriodicInterval)
         defaults.set(config.periodicScanDuration, forKey: keyPeriodicScanDuration)
-        defaults.set(config.requestTrackingOnStart, forKey: keyRequestTrackingOnStart)
+        defaults.removeObject(forKey: legacyKeyRequestTrackingOnStart)
         defaults.set(config.collectAdvertisingId, forKey: keyCollectAdvertisingId)
         defaults.set(config.collectLocation, forKey: keyCollectLocation)
         defaults.set(config.collectWifi, forKey: keyCollectWifi)
@@ -99,11 +102,6 @@ public class SDKConfigStorage {
         let periodicScanDuration = defaults.object(forKey: keyPeriodicScanDuration) as? TimeInterval
             ?? PeriodicReconciliationDefaults.scanDuration
 
-        // Backward-compatible: configs persisted before the flag existed restore the
-        // default (ON). An app that opted out keeps its choice across background
-        // relaunches — otherwise the prompt would reappear the next time iOS revives us.
-        let requestTrackingOnStart = defaults.object(forKey: keyRequestTrackingOnStart) as? Bool ?? true
-
         // Same backward-compatible shape: a config persisted before these switches existed
         // restores everything ON, which is what that install was already doing. An app that
         // opted out keeps the opt-out across every background relaunch — the alternative is a
@@ -122,7 +120,6 @@ public class SDKConfigStorage {
             periodicReconciliationEnabled: periodicEnabled,
             periodicReconciliationInterval: periodicInterval,
             periodicScanDuration: periodicScanDuration,
-            requestTrackingOnStart: requestTrackingOnStart,
             collectAdvertisingId: collectAdvertisingId,
             collectLocation: collectLocation,
             collectWifi: collectWifi,
@@ -138,17 +135,51 @@ public class SDKConfigStorage {
         defaults.removeObject(forKey: keyScanPrecision)
         defaults.removeObject(forKey: keyMaxQueuedPayloads)
         defaults.removeObject(forKey: keyTechnology)
-        defaults.removeObject(forKey: keyRequestTrackingOnStart)
+        defaults.removeObject(forKey: legacyKeyRequestTrackingOnStart)
         defaults.removeObject(forKey: keyCollectAdvertisingId)
         defaults.removeObject(forKey: keyCollectLocation)
         defaults.removeObject(forKey: keyCollectWifi)
         defaults.removeObject(forKey: keyAdaptiveSamplingEnabled)
         defaults.removeObject(forKey: keyCollectMotionSensors)
+        defaults.removeObject(forKey: keyAppPresenceConfiguration)
         defaults.removeObject(forKey: keyIsConfigured)
         defaults.removeObject(forKey: keyIsScanning)
         defaults.removeObject(forKey: keyInternalId)
         defaults.synchronize()
         NSLog("[BeAroundSDK] Configuration cleared")
+    }
+
+    // MARK: - App Presence Configuration
+
+    /// Persists the app presence configuration separately from ``save(_:)``, so a later
+    /// `configure(...)` call that does not mention the feature never overwrites it.
+    /// `store` is injectable for tests; production uses the shared config suite.
+    static func saveAppPresenceConfiguration(
+        _ configuration: AppPresenceConfiguration,
+        store: UserDefaults? = nil
+    ) {
+        guard let defaults = store ?? defaults,
+              let data = try? JSONEncoder().encode(configuration) else { return }
+        defaults.set(data, forKey: keyAppPresenceConfiguration)
+        defaults.synchronize()
+    }
+
+    /// Restores the app presence configuration. Installs persisted before the feature existed,
+    /// unreadable data, or a stored configuration that no longer validates all restore the
+    /// opt-in default (`enabled = false`, `targets = []`).
+    static func loadAppPresenceConfiguration(store: UserDefaults? = nil) -> AppPresenceConfiguration {
+        guard let data = (store ?? defaults)?.data(forKey: keyAppPresenceConfiguration),
+              let configuration = try? JSONDecoder().decode(AppPresenceConfiguration.self, from: data),
+              (try? configuration.validate()) != nil else {
+            return AppPresenceConfiguration()
+        }
+        return configuration
+    }
+
+    static func clearAppPresenceConfiguration(store: UserDefaults? = nil) {
+        guard let defaults = store ?? defaults else { return }
+        defaults.removeObject(forKey: keyAppPresenceConfiguration)
+        defaults.synchronize()
     }
 
     // MARK: - Scanning State Persistence

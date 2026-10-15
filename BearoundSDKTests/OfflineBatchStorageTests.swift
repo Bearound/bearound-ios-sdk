@@ -589,3 +589,226 @@ struct OfflineBatchStorageTests {
         return beacons
     }
 }
+
+// MARK: - Captured context and retry drain
+
+@Suite("OfflineBatchStorage captured context")
+struct OfflineBatchCapturedContextTests {
+
+    private let testDirectory = "com.bearound.sdk.test.batches.\(UUID().uuidString)"
+
+    private func makeStorage() -> OfflineBatchStorage {
+        OfflineBatchStorage(directoryName: testDirectory)
+    }
+
+    /// Built by hand: `DeviceInfoCollector` touches `UNUserNotificationCenter`, which aborts
+    /// in this host-less test bundle.
+    private func makeDevice(latitude: Double, fixAt: Date) -> UserDevice {
+        var device = UserDevice(
+            deviceId: "device-1", pushToken: nil, apnsEnvironment: "production", manufacturer: "Apple",
+            model: "iPhone17,1", osVersion: "26.0", timestamp: Int(fixAt.timeIntervalSince1970 * 1000),
+            timezone: "America/Sao_Paulo", batteryLevel: 80, isCharging: false, bluetoothState: "powered_on",
+            locationPermission: "authorized_always", notificationsPermission: "authorized", networkType: "wifi",
+            cellularGeneration: nil, ramTotalMb: 8192, ramAvailableMb: 2048, screenWidth: 1206, screenHeight: 2622,
+            appInForeground: false, appUptimeMs: 1000, coldStart: false, lowPowerMode: false,
+            locationAccuracy: "full", apId: nil, wifiSSID: nil, connectionMetered: false,
+            connectionExpensive: false, os: "iOS", deviceName: "iPhone", carrierName: nil,
+            availableStorageMb: 10_000, systemLanguage: "pt-BR", thermalState: "nominal", systemUptimeMs: 5000
+        )
+        device.location = DeviceLocation(latitude: latitude, longitude: -46.6561, accuracy: 12,
+                                          timestamp: fixAt, source: "gnss")
+        return device
+    }
+
+    private func makeBeacons(major: Int) -> [Beacon] {
+        [Beacon(uuid: UUID(uuidString: "E25B8D3C-947A-452F-A13F-589CB706D2E5")!,
+                major: major, minor: 1, rssi: -60, proximity: .near, accuracy: 1.5,
+                timestamp: Date(), metadata: nil, txPower: -59)]
+    }
+
+    private func visitEvent(at date: Date) -> VisitEvent {
+        VisitEvent(kind: .arrival, syncTrigger: VisitMonitor.syncTrigger, latitude: -23.5611,
+                   longitude: -46.6561, accuracy: 25, timestamp: date, environmentId: nil)
+    }
+
+    private func storageDirectoryURL() -> URL {
+        FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent(testDirectory)
+    }
+
+    @Test("A context-less legacy batch is quarantined without changing a captured main batch")
+    func legacyBatchWithoutContextRemainsFailClosed() throws {
+        let storage = makeStorage()
+        defer { storage.clearAllBatches() }
+        let legacyId = UUID().uuidString
+        let now = ISO8601DateFormatter().string(from: Date())
+        let legacyJSON = """
+        {"id":"\(legacyId)","timestamp":"\(now)","beacons":[{"uuid":"E25B8D3C-947A-452F-A13F-589CB706D2E5",\
+        "major":7,"minor":8,"rssi":-70,"proximity":2,"accuracy":2.5,"timestamp":"\(now)","txPower":-59}]}
+        """
+        let legacyName = "\(Int(Date().timeIntervalSince1970) - 10)_\(legacyId).json"
+        try Data(legacyJSON.utf8).write(to: storageDirectoryURL().appendingPathComponent(legacyName))
+        let captured = makeDevice(latitude: -23.1, fixAt: Date())
+        #expect(storage.saveBatch(makeBeacons(major: 1), userDevice: captured, syncTrigger: "precision_high_timer"))
+
+        let records = storage.loadOldestBatchesWithIds(5)
+        #expect(records.count == 1)
+        let modern = try #require(records.first)
+        let modernContext = BeAroundSDK.retryContext(for: modern) {
+            Issue.record("captured context must not be replaced at retry time")
+            return makeDevice(latitude: -10, fixAt: Date())
+        }
+        #expect(modernContext.userDevice == captured)
+        #expect(modernContext.syncTrigger == "precision_high_timer")
+        #expect(storage.observationRecords(includeQuarantined: true).first?.storageId == "\(legacyName).rejected")
+    }
+
+    @Test("Draining N batches with different captured context yields N requests, each with its own context")
+    func oneRequestPerBatchWithOwnContext() {
+        let storage = makeStorage()
+        let base = Date(timeIntervalSince1970: 1_790_000_000)
+        let triggers = ["precision_high_timer", "display_on", "background_ranging_complete"]
+        for (index, trigger) in triggers.enumerated() {
+            let device = makeDevice(latitude: -23.0 - Double(index), fixAt: base.addingTimeInterval(Double(index) * 60))
+            #expect(storage.saveBatch(makeBeacons(major: 100 + index), userDevice: device, syncTrigger: trigger))
+        }
+
+        var remaining = storage.loadOldestBatchesWithIds(5)
+        var requests: [[OfflineBatchStorage.StoredBatchRecord]] = []
+        while !remaining.isEmpty {
+            let group = BeAroundSDK.retryGroup(from: remaining)
+            requests.append(group)
+            remaining.removeFirst(group.count)
+        }
+
+        #expect(requests.count == 3)
+        #expect(requests.allSatisfy { $0.count == 1 })
+        let sent = requests.map { request in
+            BeAroundSDK.retryContext(for: request[0]) {
+                Issue.record("no fallback expected for a captured batch")
+                return request[0].userDevice!
+            }
+        }
+        #expect(Set(sent.map { $0.syncTrigger }) == Set(triggers))
+        #expect(Set(sent.compactMap { $0.userDevice.location?.latitude }) == [-23.0, -24.0, -25.0])
+        for (request, context) in zip(requests, sent) {
+            #expect(context.syncTrigger == request[0].syncTrigger)
+            #expect(context.userDevice == request[0].userDevice)
+        }
+    }
+
+    @Test("A retried visit keeps syncTrigger visit and the captured fix, not a retry-time location")
+    func retriedVisitKeepsTriggerAndLocation() throws {
+        let storage = makeStorage()
+        let fixAt = Date(timeIntervalSince1970: 1_790_000_000)
+        let collected = makeDevice(latitude: -1.0, fixAt: Date())
+        let visitDevice = BeAroundSDK.visitUserDevice(for: visitEvent(at: fixAt), collected: collected)
+        let id = try #require(storage.saveBatchReturningId([], userDevice: visitDevice, syncTrigger: VisitMonitor.syncTrigger))
+        #expect(id.hasSuffix(OfflineBatchStorage.evictionExemptSuffix))
+
+        let record = try #require(storage.loadOldestBatchesWithIds(5).first)
+        #expect(record.beacons.isEmpty)
+        #expect(BeAroundSDK.retryGroupIsSendable([], head: record))
+        let context = BeAroundSDK.retryContext(for: record) {
+            Issue.record("a captured visit must not collect a retry-time context")
+            return makeDevice(latitude: 50, fixAt: Date())
+        }
+        #expect(context.syncTrigger == "visit")
+        #expect(context.userDevice.location?.latitude == -23.5611)
+        #expect(context.userDevice.location?.timestamp == Int(fixAt.timeIntervalSince1970 * 1000))
+        #expect(context.userDevice.location?.source == VisitMonitor.locationSource)
+    }
+
+    @Test("A visit batch is exempt from the max-count eviction")
+    func visitNotEvicted() throws {
+        let storage = makeStorage()
+        storage.maxBatchCount = 2
+        let visitDevice = BeAroundSDK.visitUserDevice(for: visitEvent(at: Date()),
+                                                      collected: makeDevice(latitude: 0, fixAt: Date()))
+        let visitId = try #require(storage.saveBatchReturningId([], userDevice: visitDevice, syncTrigger: VisitMonitor.syncTrigger))
+        for major in 1...4 {
+            #expect(storage.saveBatch(makeBeacons(major: major), userDevice: makeDevice(latitude: 1, fixAt: Date()),
+                                      syncTrigger: "precision_high_timer"))
+        }
+
+        let records = storage.loadOldestBatchesWithIds(10)
+        #expect(records.contains { $0.id == visitId && $0.syncTrigger == "visit" })
+        #expect(records.filter { $0.id != visitId }.count == 2)
+        #expect(storage.batchCount == 3)
+    }
+    @Test("Captured visits retain priority and context beside adaptive envelopes after relaunch")
+    func capturedVisitAndAdaptiveQueueStaySeparate() async throws {
+        let storage = makeStorage()
+        defer { storage.clearAllBatches() }
+        storage.maxBatchCount = 2
+        let now = Int64(Date().timeIntervalSince1970 * 1_000)
+        let id = UUID().uuidString
+        let clock = SamplingClock(wallTimeMs: now, monotonicTimeMs: 10_000, bootIdentifier: "fixture-boot")
+        let sampling = SamplingEnvelope(version: 1, kind: .summary, batchId: id,
+            captureStreamId: UUID().uuidString, windowId: UUID().uuidString,
+            observedFrom: now, observedTo: now, sentAt: now,
+            motion: MotionEvidence(state: .unknown, source: .none, confidence: .none,
+                reason: "no_evidence", observedAtMs: nil, ageMs: nil, contextStable: false),
+            clock: SamplingEnvelopeClock(bootId: clock.bootIdentifier, wallTimeMs: now, monotonicTimeMs: 10_000))
+        let tenant = String(repeating: "a", count: 64)
+        let envelope = try StoredObservationEnvelope(batchId: id, storedAtMs: now, tenantFingerprint: tenant,
+            originalPayload: ["sdk": ["appId": "fixture-app"], "device": ["deviceId": "fixture-device"],
+                "beacons": [["uuid": UUID().uuidString, "major": 1, "minor": 1, "timestamp": now]]], sampling: sampling)
+        #expect(storage.saveObservation(envelope) != nil)
+        let fix = Date().addingTimeInterval(-90)
+        var visit = BeAroundSDK.visitUserDevice(for: visitEvent(at: fix), collected: makeDevice(latitude: 0, fixAt: Date()))
+        visit.wifis = [WifiObservation(apId: "fixture-ap", ssid: "fixture-wifi", rssi: nil, connected: true,
+            frequencyMhz: nil, timestamp: Int(fix.timeIntervalSince1970 * 1_000))]
+        let visitId = try #require(storage.saveBatchReturningId([], userDevice: visit, syncTrigger: "visit"))
+        let restored = makeStorage()
+        let captured = try #require(restored.loadOldestBatchesWithIds(1).first)
+        #expect(captured.id == visitId && captured.userDevice == visit && captured.syncTrigger == "visit")
+        #expect(restored.observationRecords().map { $0.envelope.batchId } == [id])
+        let replay = try #require(restored.loadReplayGroup(tenantFingerprint: tenant, capabilityAvailable: true).first)
+        #expect(replay.envelope.batchId == id && replay.envelope.originalPayload == envelope.originalPayload)
+        let context = BeAroundSDK.retryContext(for: captured) {
+            Issue.record("a captured visit must never collect a replacement fix")
+            return makeDevice(latitude: 80, fixAt: Date())
+        }
+        let client = APIClient(configuration: SDKConfiguration(businessToken: "fixture-captured-visit"))
+        client.submissionContextProvider = { $0(RequestSubmissionContext(policy: .allEnabled)) }
+        var submissions = 0
+        var reconciliation: ObservationDeliveryReconciliation?
+        client.transport = { _, data, path, descriptor, submit, finish in
+            submissions += 1
+            #expect(path == .immediateFirst)
+            #expect(descriptor.adaptiveBatchId == nil && descriptor.tenantFingerprint == nil)
+            #expect(descriptor.storageIds == [visitId])
+            reconciliation = descriptor
+            do {
+                let payload = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
+                #expect(payload["sampling"] == nil && payload["syncTrigger"] as? String == "visit")
+                #expect((payload["beacons"] as? [Any])?.isEmpty == true)
+                let location = try #require(payload["location"] as? [String: Any])
+                #expect(location["latitude"] as? Double == -23.5611)
+                #expect((location["timestamp"] as? NSNumber)?.intValue == Int(fix.timeIntervalSince1970 * 1_000))
+                let wifi = try #require((payload["wifis"] as? [[String: Any]])?.first)
+                #expect(wifi["apId"] as? String == "fixture-ap")
+                #expect((wifi["timestamp"] as? NSNumber)?.intValue == Int(fix.timeIntervalSince1970 * 1_000))
+            } catch { Issue.record(error) }
+            submit()
+            finish(.success(Data("{}".utf8)))
+        }
+        let delivered: Result<Void, Error> = await withCheckedContinuation { continuation in
+            client.sendBeacons([], sdkInfo: SDKInfo(appId: "fixture-app", build: 1), userDevice: context.userDevice,
+                userProperties: nil, syncTrigger: context.syncTrigger, delivery: .immediateFirst,
+                persistedBatchIds: [visitId]) { continuation.resume(returning: $0) }
+        }
+        _ = try delivered.get()
+        #expect(submissions == 1)
+        let descriptor = try #require(reconciliation)
+        let description = try #require(String(data: JSONEncoder().encode(descriptor), encoding: .utf8))
+        #expect(BackgroundSessionManager.reconcileObservation(description: description, responseBody: Data("{}".utf8),
+            successful: true, storage: restored) == 1)
+        #expect(restored.loadOldestBatchesWithIds(1).isEmpty)
+        #expect(restored.observationRecords().map { $0.envelope.batchId } == [id])
+        #expect(restored.acknowledge(batchIds: [id], tenantFingerprint: tenant) == 1)
+        #expect(restored.batchCount == 0)
+    }
+
+}

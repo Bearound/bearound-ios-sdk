@@ -33,6 +33,7 @@ BearoundSDK provides BLE beacon detection and indoor location technology for iOS
 - **Robust Error Handling**: Circuit breaker pattern with exponential backoff retry logic
 - **Comprehensive Device Info**: Automatic collection of device telemetry
 - **Type-Safe API**: Modern Swift with proper type safety
+- **App Presence (opt-in)**: Local-only check of declared URL schemes, see [App presence](#app-presence-opt-in-local-only)
 
 ### Requirements
 
@@ -123,9 +124,7 @@ If you opt into the **Location eye** (force-quit survival — see [Terminated Ap
 #### Wi-Fi observations (optional)
 
 Alongside each beacon sighting the SDK can report the **access point the device is joined
-to**. The purpose is positioning coverage: an access point seen repeatedly next to a known
-beacon gets a position of its own, and from then on it can place a device even where no
-beacon reaches.
+to**.
 
 ##### Turning it on — two steps
 
@@ -158,8 +157,8 @@ BeAroundSDK.shared.requestLocationAuthorization(.always)
 > `.whenInUse`, iOS stops revealing it once your app is backgrounded — it returns `nil`, not
 > an error, so the SDK simply reports no Wi-Fi and nothing anywhere says why.
 >
-> Since a fleet spends almost all of its time in the background, "foreground only" means
-> "almost never". If you test by hand with the app open, it will look perfect.
+> Devices spend most of their time in the background, so "foreground only" means "rarely".
+> If you test by hand with the app open, it will look perfect.
 >
 > `.always` is what keeps the collection alive in the background — and if you already
 > enabled the [Location eye](#the-two-eyes) for force-quit survival, you are asking for it
@@ -176,21 +175,19 @@ The identity that matters is `apId`: a one-way SHA-256 hash of the access point'
 address, canonicalised so that the same router yields the same identifier on iOS and on
 Android.
 
-> **`ssid` and `network.wifiSSID` carry the network name**, and the backend consumes them:
-> the name says something the hashed `apId` cannot. Because a network name identifies a
-> place — and at home a household — both are personal data and ship only while Wi-Fi
-> collection is on. `configure(collectWifi: false)` drops them with the rest of the Wi-Fi
+> **`ssid` and `network.wifiSSID` carry the network name**, sent alongside the hashed
+> `apId`. Because a network name identifies a place (and at home a household), both are
+> personal data and ship only while Wi-Fi collection is on. `configure(collectWifi: false)` drops them with the rest of the Wi-Fi
 > block; see [Controlling what the SDK collects](#controlling-what-the-sdk-collects).
 
 > **What iOS can and cannot give.** There is no public API for scanning neighbouring
 > networks — iOS reports only the access point you are connected to, and its signal-strength
 > value proved unreliable in practice (it measured `0` on real hardware), so the SDK
 > deliberately sends **no RSSI** rather than a fabricated one. Android fills the same
-> structure with the neighbours and their real dBm. In the map, iOS confirms points that
-> Android draws.
+> structure with the neighbours and their real dBm.
 >
-> `network.apId` joins `network.wifiSSID`: a stable identity for the access point, reported
-> next to the name rather than instead of it.
+> `network.apId` joins `network.wifiSSID`: a stable identifier for the access point,
+> reported next to the name rather than instead of it.
 
 > **When does the Bluetooth prompt appear?** The first time your code touches
 > `BeAroundSDK.shared`, the SDK creates its `CBCentralManager` — and iOS shows the
@@ -199,59 +196,73 @@ Android.
 > that for terminated-app wake-up the singleton must be touched inside
 > `application(_:didFinishLaunchingWithOptions:)` (see Quick Start).
 
+#### Wi-Fi visit matching
+
+From 3.14.0 the SDK can also detect a visit at a place through the Wi-Fi network the device is
+joined to, on places configured for it. Visits are reported as ordinary `visit` events.
+
+It needs what [Wi-Fi observations](#wi-fi-observations-optional) already needs, nothing more:
+
+- the **Access WiFi Information** capability (`com.apple.developer.networking.wifi-info`)
+  on your app target;
+- location authorisation **Always**, which iOS also requires for visit detection.
+
+The SDK requests no new permission. Without the entitlement or the authorisation it stays
+inert and everything else behaves as before; `BeAroundSDK.shared.diagnostics().wifiStatus`
+says why (`missingEntitlement`, `locationNotAuthorized`, `notConnected` or `ready`).
+
+On iOS only the network the device is joined to is visible. `configure(collectWifi: false)`,
+`collectLocation: false` or disabling visit detection switch it off.
+
 #### Advertising identifier (IDFA — optional)
 
-The SDK can report the **IDFA**, the identifier iOS provides for advertising attribution,
-which lets a visit be tied to the same person across apps.
+The SDK can report the **IDFA**, the identifier iOS provides for advertising.
 
-**One step: add the usage description** to your `Info.plist`.
+**The SDK never shows the App Tracking Transparency prompt by itself.** When (and whether)
+to ask is your app's decision. Two steps:
+
+1. Add the usage description to your `Info.plist`:
 
 ```xml
 <key>NSUserTrackingUsageDescription</key>
 <string>We use this identifier to measure visits and show you more relevant offers.</string>
 ```
 
-That key is the whole opt-in. **With it present, the SDK raises the App Tracking
-Transparency prompt itself**, once, as soon as the app is on screen after `configure()` —
-you do not have to call anything. **Without it, nothing happens**: no dialog, no IDFA in
-the payload, every other feature unchanged. The SDK never prompts for an app that has not
-declared a tracking purpose.
-
-The prompt waits for the app to be `active`, because iOS silently discards the request in
-any other state — so configuring inside `didFinishLaunching`, or being relaunched in the
-background, does not burn the one chance to ask.
-
-**To control the moment yourself** — to show your own explainer first, or to ask deeper into
-onboarding — opt out and call it when you are ready:
+2. Ask at the moment your flow chooses, with the app in the foreground (iOS silently ignores
+   the request in any other state):
 
 ```swift
-BeAroundSDK.shared.configure(businessToken: "…", requestTrackingOnStart: false)
-
-// later, with the app in the foreground
 BeAroundSDK.shared.requestTrackingAuthorization { status in
     // "authorized" | "denied" | "restricted" | "notDetermined" | "unavailable" (iOS < 14)
     print("ATT: \(status)")
 }
 ```
 
+If your app already asks through `ATTrackingManager.requestTrackingAuthorization` directly,
+skip step 2: the SDK reads the resulting status either way. Until tracking is authorised,
+payloads carry no IDFA; every other feature is unchanged.
+
 Safe to call on every launch: iOS shows the dialog only once per install, and later calls
 return the stored decision with no UI. To read the state without prompting, use
-`BeAroundSDK.trackingAuthorizationStatus()`. The opt-out is remembered across background
-relaunches.
+`BeAroundSDK.trackingAuthorizationStatus()`.
+
+> **Upgrading from 3.9.x**: earlier versions raised the prompt automatically after
+> `configure()` whenever the key was present. That no longer happens, so an app that relied
+> on it must now call `requestTrackingAuthorization()` itself. `requestTrackingOnStart` is
+> deprecated and ignored.
 
 The payload carries `device.permissions.advertisingId` only while authorised, plus
 `trackingAuthorization` always — so a refusal is distinguishable from a prompt that was never
 shown.
 
-> **App Store**: adding the key means the prompt will appear, and prompting for tracking
-> obliges you to declare it in your **privacy label** (App Privacy → Tracking). Add the key
-> only when you intend to collect the IDFA.
+> **App Store**: prompting for tracking obliges you to declare it in your **privacy label**
+> (App Privacy → Tracking). Add the key and the call only when you intend to collect the IDFA.
 
 If your app collects the IDFA for its own purposes but you do not want it sent to Bearound,
 pass `collectAdvertisingId: false` — see
-[Controlling what the SDK collects](#controlling-what-the-sdk-collects). That is stronger
-than `requestTrackingOnStart: false`: it stops the prompt *and* keeps the identifier out of
-every payload, even if your app authorises tracking on its own.
+[Controlling what the SDK collects](#controlling-what-the-sdk-collects). It keeps the
+identifier out of every payload even if your app authorises tracking on its own, and turns
+`requestTrackingAuthorization()` into a call that only reports the current status.
 
 For background mode support, add:
 
@@ -363,6 +374,183 @@ func application(_ application: UIApplication,
 #### React Native & Flutter
 
 The capture lives in the native `configure()`, so it works **automatically** in the React Native and Flutter wrappers too — the swizzle runs on the app's native `AppDelegate` (RN's / Flutter's) when you call `configure()` from JS/Dart. The **Push Notifications capability** still has to be enabled in the wrapper app's iOS target (the unavoidable manual step above).
+
+### Push Receipt & Open Measurement
+
+For pushes the backend sends with a `bearound: { sid, d, tr }` marker (measurable sends, as
+opposed to the sync scheduler's plain silent pushes), the SDK reports two events back to the
+Bearound tracker, as `GET {tr}/v1/push:received?d=…` and `GET {tr}/v1/push:open?d=…`. `d` is a
+delivery context the backend sealed for this device, so the request carries no credential:
+
+- **`received`**: the notification reached the device. Reuses the same silent-push handling
+  described above; no extra code required.
+- **`opened`**: the user tapped the notification. Detected by swizzling
+  `UNUserNotificationCenter.setDelegate:`, so whatever delegate your app installs (now or
+  later) gets patched automatically. If your app never sets a delegate, the SDK installs a
+  minimal one that preserves the default system presentation behavior for your own
+  notifications.
+
+Both events go through a small persisted queue (separate from the beacon batch queue),
+delivered best-effort with retry, so a tap that cold-launches the app before `configure()`
+runs is not lost.
+
+You do **not** need to write any code for this to work, **unless** you opted out via
+`BearoundAppDelegateProxyEnabled = NO` above. In that case, call these from your own
+`UNUserNotificationCenterDelegate`:
+
+```swift
+func userNotificationCenter(_ center: UNUserNotificationCenter,
+                             didReceive response: UNNotificationResponse,
+                             withCompletionHandler completionHandler: @escaping () -> Void) {
+    BeAroundSDK.shared.handleNotificationResponse(response)
+    // ... your own handling ...
+    completionHandler()
+}
+```
+
+Or, if you only have the raw `userInfo` (e.g. a bridge like the RN Expo plugin's
+`didReceiveRemoteNotification` override):
+
+```swift
+BeAroundSDK.shared.trackNotificationReceived(userInfo: userInfo)
+BeAroundSDK.shared.trackNotificationOpened(userInfo: userInfo)
+```
+
+A `userInfo`/response with no `bearound.sid` (a non-Bearound push, or a sync silent push) is
+a no-op.
+
+### Rich push (images, carousel, video)
+
+From 3.13.0 a push can carry images: one image (`IMAGE`), two side-by-side cards
+(`TWO_IMAGES`), a paged carousel of 2 to 5 cards (`CAROUSEL`) or a real video (`PLAY`, an
+MP4 up to 15 MB). iOS only draws these through **app extensions that your app ships**, so
+the SDK provides two ready-made classes and you add two small targets.
+
+**Without these extensions nothing breaks:** the device still gets the standard notification
+(title and body). The rich formats and the attached image appear once the extensions are in.
+
+#### 1. Add the two extension targets
+
+In Xcode: **File > New > Target**:
+
+- **Notification Service Extension** (e.g. `NotificationService`): downloads the image and
+  attaches it to the notification. For `PLAY` it downloads the MP4 and attaches the video,
+  so expanding the notification plays it in the system player; if the video fails or is
+  over 15 MB, it attaches the poster image instead. It also shows the fallback image of
+  older pushes.
+- **Notification Content Extension** (e.g. `NotificationContent`): draws the image,
+  two-card and carousel layouts when the user expands the notification. It does not handle
+  `PLAY`: the video relies only on the Service Extension attachment.
+
+Set both targets to iOS 13.0 or later.
+
+#### 2. Add the pods per target
+
+The extensions ship as a **separate pod**, `BearoundSDKNotificationExtensions`, with its own
+module. Install that same pod in **both** extension targets:
+
+```ruby
+target 'YourApp' do
+  use_frameworks!                      # keep whatever your app already uses
+  pod 'BearoundSDK', '~> 3.13'
+end
+
+target 'NotificationService' do
+  use_frameworks!                      # dynamic or :linkage => :static, both work
+  pod 'BearoundSDKNotificationExtensions', '~> 3.13'
+end
+
+target 'NotificationContent' do
+  use_frameworks!                      # dynamic or :linkage => :static, both work
+  pod 'BearoundSDKNotificationExtensions', '~> 3.13'
+end
+```
+
+`pod 'BearoundSDK'` still installs exactly the core SDK, unchanged. The extensions pod does
+**not** depend on the core (no Bluetooth, location or background modes inside an extension)
+and only uses extension-safe APIs. Apps without `use_frameworks!` (static libraries, the
+React Native default) need nothing extra.
+
+> **Why one pod, in both targets:** with dynamic frameworks CocoaPods copies every
+> extension's frameworks into the app's `Frameworks/` folder. Each pod has its own module
+> name (`BearoundSDK`, `BearoundSDKNotificationExtensions`), so the two never overwrite each
+> other. Use the same pod line in both extension targets: that way both get the one framework
+> that holds both classes.
+
+#### 3. Subclass the two classes
+
+`NotificationService/NotificationService.swift`, the whole file:
+
+```swift
+import BearoundSDKNotificationExtensions
+
+class NotificationService: BearoundNotificationService {}
+```
+
+`NotificationContent/NotificationViewController.swift`, the whole file:
+
+```swift
+import BearoundSDKNotificationExtensions
+
+class NotificationViewController: BearoundNotificationViewController {}
+```
+
+The class names are `BearoundNotificationService` and `BearoundNotificationViewController`;
+the module to import is `BearoundSDKNotificationExtensions` (not `BearoundSDK`).
+
+Delete the storyboard Xcode generated for the content extension (the view is drawn in
+code), and in its Info.plist replace `NSExtensionMainStoryboard` with
+`NSExtensionPrincipalClass` = `$(PRODUCT_MODULE_NAME).NotificationViewController`.
+
+#### 4. Declare the categories in the content extension's Info.plist
+
+```xml
+<key>NSExtension</key>
+<dict>
+    <key>NSExtensionAttributes</key>
+    <dict>
+        <key>UNNotificationExtensionCategory</key>
+        <array>
+            <string>BEAROUND_IMAGE</string>
+            <string>BEAROUND_TWO_IMAGES</string>
+            <string>BEAROUND_CAROUSEL</string>
+        </array>
+        <key>UNNotificationExtensionInitialContentSizeRatio</key>
+        <real>0.75</real>
+        <key>UNNotificationExtensionUserInteractionEnabled</key>
+        <true/>
+    </dict>
+    <key>NSExtensionPointIdentifier</key>
+    <string>com.apple.usernotifications.content-extension</string>
+    <key>NSExtensionPrincipalClass</key>
+    <string>$(PRODUCT_MODULE_NAME).NotificationViewController</string>
+</dict>
+```
+
+The same ids are available in code as `BearoundPushCategory.contentExtension`.
+`UNNotificationExtensionUserInteractionEnabled` is what makes the cards tappable.
+
+**Do not add `BEAROUND_PLAY` here.** A content extension that claims a category replaces
+the system view of that notification, and for `PLAY` the system view is the video player.
+Left out, the notification shows the attached video with the native player controls.
+
+#### What happens on a tap
+
+- A card with an `http(s)` link opens it through the Bearound tracker, which records the
+  click for that card and redirects.
+- A card with a deep link opens it directly, **only if your app declares that URL scheme**
+  in its `CFBundleURLTypes` (the content extension reads your app's Info.plist). Any other
+  scheme is ignored and the tap opens your app instead.
+- A card without a link opens your app, like tapping a regular notification.
+- A `PLAY` notification opens your app, like tapping a regular notification; your app
+  decides what to do (the video already played in the expanded notification, so no custom
+  player is needed).
+- A card tap that opens a link reports the open only after iOS confirms the link opened.
+
+Images and videos must be served over `https` (App Transport Security blocks plain `http`
+inside the extensions); tap links may be `http` or `https`.
+
+Opens keep being measured as described in [Push Receipt & Open Measurement](#push-receipt--open-measurement).
 
 ### Advanced Background Integration
 
@@ -521,7 +709,7 @@ BeAroundSDK.shared.requestLocationAuthorization(.always)
 The same call unlocks [Wi-Fi observations](#wi-fi-observations-optional) — iOS requires
 location authorisation before it will reveal the connected access point. `.whenInUse` is
 enough while your app is in the foreground; **`.always` is what keeps it coming in the
-background**, which for a real fleet is nearly all of the time.
+background**, where devices spend most of their time.
 
 **Check Permission Status:**
 ```swift
@@ -671,7 +859,7 @@ read from the platform in the first place.
 
 | Switch | What disappears from the payload | Also |
 |--------|----------------------------------|------|
-| `collectAdvertisingId: false` | `device.permissions.advertisingId`, `device.permissions.trackingAuthorization` | The SDK never raises the App Tracking Transparency prompt — not on start, and `requestTrackingAuthorization()` becomes a no-op that just reports the current status |
+| `collectAdvertisingId: false` | `device.permissions.advertisingId`, `device.permissions.trackingAuthorization` | `requestTrackingAuthorization()` does not show the App Tracking Transparency prompt; it only reports the current status |
 | `collectLocation: false` | the top-level `location` block | `device.permissions.location` / `locationAccuracy` **stay** — they report the authorisation the user granted, not where they are |
 | `collectWifi: false` | the top-level `wifis` array, `device.network.apId`, `device.network.wifiSSID` | No Wi-Fi read is issued at all |
 
@@ -686,6 +874,125 @@ by design.
 
 The choice is persisted with the rest of the configuration, so it survives the background
 relaunches iOS performs on the SDK's behalf.
+
+### App presence (opt-in, local only)
+
+App presence checks whether a handler exists on the device for a small list of URL schemes
+that **you** configure and declare in your app's build. It is **off by default**, has no UI,
+asks for no permission, and its results are delivered **only to your app**: the SDK never
+adds them to the beacon payload, the offline queue, the error telemetry or any other upload.
+
+#### Store policy first
+
+The requested purpose of this feature is commercial. Read this before shipping it:
+
+- **Apple App Review Guideline 5.1.2(iv)** forbids using installed-app information for
+  analytics, advertising or marketing. Asking for consent (or ATT authorization) is **not** an
+  exception, and neither is the fact that another product in the market advertises a similar
+  capability. A limited, declared list of schemes does not change the policy.
+- **Google Play** (Android SDK) requires a querying app's package visibility to be tied to
+  user-facing core functionality and forbids selling or sharing that data for analytics or
+  ads monetization. The same reasoning applies to wrappers that ship to both stores.
+- The SDK makes the check technically possible; it **does not** grant or imply any store
+  approval. Publishing an app that uses it for a purpose the stores prohibit is the
+  integrator's responsibility and decision.
+- The absence of UI does not remove the transparency obligations that apply to your app.
+
+#### Declare the schemes in your build
+
+iOS only answers `canOpenURL` for schemes listed in the app's `LSApplicationQueriesSchemes`.
+The SDK queries a target only when its scheme is in that list; an undeclared scheme returns
+`unknown` / `not_declared` without any query.
+
+```xml
+<key>LSApplicationQueriesSchemes</key>
+<array>
+    <string>bearound-presence-fixture</string>
+</array>
+```
+
+The scheme list is a **budget shared with the whole host app**, not only with SDK targets:
+iOS allows 50 entries for apps linked against an SDK older than iOS 27 and 25 from iOS 27 on.
+The SDK cannot reliably read the linked SDK at runtime, so it applies the conservative
+ceiling of **25** to the full list. When the list exceeds the ceiling, **every** iOS target
+returns `unknown` / `scheme_budget_exceeded`.
+
+To use the 50-entry ceiling (linked SDK older than 27 only), run the build verifier on the
+final `.app` and add the evidence it prints to your source `Info.plist`:
+
+```bash
+python3 scripts/verify_app_presence_build.py path/to/YourApp.app --emit-evidence --report app-presence-report.json
+```
+
+The evidence (`BeAroundAppPresenceBuildEvidence`: bundle id, linked SDK major and the SHA-256
+of the normalized scheme list) is accepted at runtime only if it matches the running bundle
+and its current scheme list; anything else falls back to 25. Re-run the verifier in CI on the
+final build: it exits non-zero when the evidence no longer matches or the list exceeds the
+platform or runtime ceiling. The runtime never widens the ceiling based on the OS version.
+
+#### Configure and receive
+
+```swift
+BeAroundSDK.shared.configure(businessToken: "your-business-token-here")
+BeAroundSDK.shared.configureAppPresence(AppPresenceConfiguration(
+    enabled: true,
+    targets: [
+        AppPresenceTarget(id: "fixture", iosScheme: "bearound-presence-fixture",
+                          androidPackageName: "io.bearound.fixture.presence"),
+    ]
+))
+BeAroundSDK.shared.startScanning() // queries start here, never in configure
+
+extension MyDelegate: BeAroundSDKDelegate {
+    func didUpdateAppPresence(_ snapshot: AppPresenceSnapshot) {
+        // Main thread. One complete snapshot per round, targets in the configured order.
+        for result in snapshot.results {
+            print(result.targetId, result.state, result.present as Any, result.reason as Any)
+        }
+    }
+}
+
+// Last snapshot for the current configuration and token (cached == true), never queries:
+let last = BeAroundSDK.shared.getLastAppPresenceSnapshot()
+```
+
+- **Targets**: up to 50, unique `id` (ASCII `[A-Za-z0-9._-]`, 1 to 64 characters), `iosScheme`
+  as a scheme name only (no `://`, `http`/`https` rejected). An invalid configuration disables
+  **only** this feature, deletes its cached snapshot and calls `didFailWithError` with
+  `BearoundErrorCode.appPresenceInvalidConfiguration` (`userInfo["code"] ==
+  "app_presence_invalid_configuration"`); the rest of the SDK keeps running.
+- **Signal semantics**: `present` (`present == true`) means *some* installed app handles the
+  scheme; it does **not** verify which app. `absent` means no observable handler for a
+  declared scheme. `unknown` (`present == nil`) comes with a `reason`: `not_declared`,
+  `scheme_budget_exceeded`, `unsupported_platform` (target without `iosScheme`) or
+  `query_failed`. The SDK never turns `unknown` into `false`.
+- **Snapshot**: every round delivers the full list, even when nothing changed, with a new
+  `snapshotId`, the `configurationFingerprint` and `checkedAt` (UTC, milliseconds); each result
+  carries its own `checkedAt`. Assigning a delegate replays the last compatible snapshot with
+  `cached == true` and the original `snapshotId` / `checkedAt`; a `snapshotId` reaches a given
+  delegate assignment at most once.
+
+#### When it runs
+
+- The first eligible round runs on `startScanning()`, **before** the Bluetooth and Location
+  checks: it needs neither permission, nor a beacon, nor network. `configure` alone never
+  queries.
+- After that, rounds are **at least 3600 s apart** per host app and business token, triggered
+  opportunistically when the app becomes active or by the SDK's active-scanning timer. There is
+  no background task, silent push or extra wake-up for this feature: a suspended or terminated
+  app is **not** guaranteed an hourly round.
+- The reservation is written to disk (atomic write, `fsync`) **before** the first query; if
+  it cannot be written the round is cancelled and `didFailWithError` receives
+  `appPresenceStorageUnavailable` (`app_presence_storage_unavailable`). A crash after the
+  reservation consumes the window. Relaunching in the same boot keeps counting the interval
+  with monotonic time; a reboot or wall-clock change detected at launch applies a 3600 s
+  quarantine from that launch. The boot estimate is a heuristic and is not designed to resist
+  deliberate tampering.
+- `stopScanning()` pauses the feature and drops pending deliveries; a new `startScanning()`
+  respects the running window. `enabled = false`, an empty list or new targets delete the
+  cached snapshot but **keep** the cooldown, and switching business tokens (A, B, back to A)
+  never resets A's window. The business token is only stored as a hash.
+- App extensions never run the feature.
 
 ### Device Telemetry (Collected Automatically)
 
@@ -847,6 +1154,26 @@ Uses iBeacon region monitoring. **Requires "Always" Location permission.**
 - When a beacon region is entered, iOS wakes the app and provides `launchOptions[.location]`
 - The SDK has ~30 seconds to scan, sync, and then may be suspended again
 
+#### Monitored regions and the 20-region limit
+
+iOS allows at most 20 monitored regions per app, shared by the host app and the SDK. The SDK
+only ever touches regions it owns, identified as follows:
+
+| Identifier | What it is |
+|------------|------------|
+| `BeAroundRegion` | The beacon region (always reserved, even before it is armed) |
+| `bearound.visit.refresh` | Visit detection: the fence that triggers a refresh of the nearby places |
+| `bearound.visit.env.<environmentId>` | Visit detection: one circular region per nearby environment |
+
+Every identifier starting with `bearound.visit.` belongs to the SDK: do not reuse that prefix
+for your own regions, because the SDK stops them when it re-plans or when visit detection is
+turned off (`stopScanning()`, `collectLocation: false`, "Always" or Precise Location revoked).
+Your own regions are never stopped or replaced.
+
+Budget: visit detection uses at most 10 environment regions plus the refresh fence, and it
+always leaves 5 slots free for your app. With `H` host regions it registers
+`min(10, 20 - H - 1 - 1 - 5)` environments (never fewer than 0), nearest first.
+
 #### Host app integration checklist
 
 For wake-up to work reliably, your AppDelegate must look like this:
@@ -992,7 +1319,7 @@ The SDK logs important events with tag `[BeAroundSDK]`:
 
 #### Diagnostics snapshot
 
-`BeAroundSDK.shared.diagnostics()` returns a `BeAroundDiagnostics` (device id, masked push token + last-sent, `apnsEnvironment`, scanning state, pending batches, last scan/sync/push, recent errors). Use `.summary()` for a log-friendly string. Reads in-memory state only — no network.
+`BeAroundSDK.shared.diagnostics()` returns a `BeAroundDiagnostics` (device id, masked push token + last-sent, `apnsEnvironment`, scanning state, pending batches, last scan/sync/push, recent errors, `wifiStatus`). Use `.summary()` for a log-friendly string. Reads in-memory state only, no network.
 
 ### Security & Privacy
 

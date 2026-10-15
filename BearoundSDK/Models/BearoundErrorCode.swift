@@ -68,11 +68,22 @@ public enum BearoundErrorCode: Int {
 
     /// iOS refused to arm the beacon region: `kCLErrorDomain` code 4
     /// (`CLError.regionMonitoringDenied`). Region monitoring requires `Always`
-    /// authorization, and the app holds at most `When In Use` — or lost `Always`
+    /// authorization, and the app holds at most `When In Use`, or lost `Always`
     /// when the user answered the background-usage prompt with "Keep Only While
     /// Using". Not a crash and not transient: the Location eye is down for this
     /// install until the authorization changes, so there is no wake-up for a
     /// backgrounded or terminated app. The originating CoreLocation error is kept
     /// in `NSUnderlyingErrorKey`.
     case regionMonitoringDenied = 11
+
+    /// `configureAppPresence(_:)` received an invalid configuration (duplicate or malformed
+    /// ids, malformed identifiers, more than 50 targets). Only the app presence feature is
+    /// disabled and its cached snapshot dropped; the rest of the SDK keeps running.
+    /// `userInfo["code"]` is `"app_presence_invalid_configuration"`. Never sent to telemetry.
+    case appPresenceInvalidConfiguration = 12
+
+    /// The app presence store could not durably write its cooldown reservation (or its
+    /// snapshot), so the round was cancelled before any query. `userInfo["code"]` is
+    /// `"app_presence_storage_unavailable"`. Never sent to telemetry.
+    case appPresenceStorageUnavailable = 13
 }

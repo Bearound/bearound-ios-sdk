@@ -39,7 +39,7 @@ public enum PresenceHeartbeatDefaults {
     /// Interval floor. Below a minute the same coordinate is repeated for no added meaning,
     /// and every report wakes the radio.
     public static let minimumAcceptedInterval: TimeInterval = 60
-    /// Interval ceiling. Past an hour the trail is too sparse to say anything about presence.
+    /// Interval ceiling (1 hour).
     public static let maximumAcceptedInterval: TimeInterval = 60 * 60
 
     /// Sanitizes a host-provided interval. Non-positive means "off" and is returned as-is
@@ -146,6 +146,7 @@ public struct SDKConfiguration {
     /// (`react-native` / `flutter`) so the backend can attribute traffic per integration.
     public let technology: String
 
+    /// The single SDK host: `/ingest`, `/sdk-errors` and `/sdk/places/*`.
     let apiBaseURL: String
 
     /// Enables the periodic background reconciliation (`BGAppRefreshTask` layer).
@@ -189,24 +190,10 @@ public struct SDKConfiguration {
     /// Default: ``PeriodicReconciliationDefaults/scanDuration`` (12 seconds).
     public let periodicScanDuration: TimeInterval
 
-    /// Lets the SDK raise the App Tracking Transparency prompt by itself, shortly after
-    /// `configure()`, so the IDFA is collected without the host wiring up a call.
-    ///
-    /// Nothing is shown unless the host app declares `NSUserTrackingUsageDescription` —
-    /// that key is the real opt-in, and without it this flag has no effect.
-    ///
-    /// Set to `false` to own the moment (to show your own explainer first, or to prompt
-    /// deeper into onboarding) and call
-    /// ``BeAroundSDK/requestTrackingAuthorization(completion:)`` when you are ready.
-    ///
-    /// Default: `true`.
-    public let requestTrackingOnStart: Bool
-
     /// How often a scan that found **nothing** still reports in.
     ///
-    /// A scan that finds no beacon and no peer is data too: the device was *here* and saw
-    /// nothing. Those payloads carry the device's own location and the Wi-Fi it can see, and
-    /// they are what make coverage — and the absence of it — visible.
+    /// When enabled, a scan that finds no beacon and no peer still reports the device's own
+    /// location and visible Wi-Fi.
     ///
     /// Only the *upload* is throttled, never the scan: a beacon or an encounter still syncs at
     /// the normal cadence. This interval is the floor between two consecutive "saw nothing"
@@ -224,8 +211,8 @@ public struct SDKConfiguration {
     ///
     /// `false` means the advertising identifier is never read and never leaves the device:
     /// `permissions.advertisingId` and `permissions.trackingAuthorization` are absent from
-    /// every payload, and the SDK never raises the App Tracking Transparency prompt —
-    /// neither on start nor through ``BeAroundSDK/requestTrackingAuthorization(completion:)``.
+    /// every payload, and ``BeAroundSDK/requestTrackingAuthorization(completion:)`` does not
+    /// show the App Tracking Transparency prompt (it only reports the current status).
     ///
     /// For an app that collects the IDFA for its own purposes but does not want to share it
     /// with Bearound. Default: `true`.
@@ -274,7 +261,6 @@ public struct SDKConfiguration {
         periodicReconciliationEnabled: Bool = true,
         periodicReconciliationInterval: TimeInterval = PeriodicReconciliationDefaults.interval,
         periodicScanDuration: TimeInterval = PeriodicReconciliationDefaults.scanDuration,
-        requestTrackingOnStart: Bool = true,
         presenceHeartbeatInterval: TimeInterval = PresenceHeartbeatDefaults.interval,
         collectAdvertisingId: Bool = true,
         collectLocation: Bool = true,
@@ -297,7 +283,6 @@ public struct SDKConfiguration {
             PeriodicReconciliationDefaults.sanitizedInterval(periodicReconciliationInterval)
         self.periodicScanDuration =
             PeriodicReconciliationDefaults.sanitizedScanDuration(periodicScanDuration)
-        self.requestTrackingOnStart = requestTrackingOnStart
         self.presenceHeartbeatInterval =
             PresenceHeartbeatDefaults.sanitizedInterval(presenceHeartbeatInterval)
         self.collectAdvertisingId = collectAdvertisingId

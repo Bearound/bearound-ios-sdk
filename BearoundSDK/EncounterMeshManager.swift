@@ -154,6 +154,17 @@ final class EncounterMeshManager: NSObject {
         var rssiAvg: Int {
             sampleCount == 0 ? 0 : Int((Double(rssiSum) / Double(sampleCount)).rounded())
         }
+
+        /// Clears the accumulated window, keeping the peer's identity and `lastSeen`
+        /// (the age the stale eviction reads). `firstSeen` is re-stamped by the next
+        /// ``addSample(rssi:now:)``.
+        mutating func resetWindow() {
+            sampleCount = 0
+            rssiSum = 0
+            rssiMin = 0
+            rssiMax = Int.min
+            lastRssi = 0
+        }
     }
 
     // MARK: - State (all mutated on `queue`)
@@ -235,38 +246,66 @@ final class EncounterMeshManager: NSObject {
         }
     }
 
-    /// Whether any identified peer has been seen after `since` — the cheap check the
-    /// sync path uses to decide if an encounters-only upload is worth making when no
-    /// physical beacon is pending.
+    /// Whether any identified peer has an **undrained** window newer than `since` — the
+    /// cheap check the sync path uses to decide if an encounters-only upload is worth
+    /// making when no physical beacon is pending. `sampleCount > 0` is required: a
+    /// drained peer keeps its old `lastSeen` and would open uploads with empty
+    /// `encounters[]`.
     ///
     /// - Important: Never call from `queue` (the shared bleQueue) — deadlock.
     func hasFreshEncounters(since: Date) -> Bool {
         queue.sync {
-            peers.values.contains { $0.rpi != nil && $0.lastSeen > since }
+            peers.values.contains { $0.rpi != nil && $0.sampleCount > 0 && $0.lastSeen > since }
         }
     }
 
-    /// Non-destructive snapshot of every identified peer, for the sync payload.
-    /// Peers whose identifier has not been read yet are withheld — they join a later
-    /// sync once the GATT read lands.
+    /// Every identified peer's window accumulated since the last call, **and resets it**:
+    /// each payload carries exactly one window. Peers whose identifier has not been read
+    /// yet are withheld — they join a later sync once the GATT read lands.
+    ///
+    /// Age eviction runs here unconditionally, outside the capacity guard.
     ///
     /// - Important: Never call from `queue` (the shared bleQueue) — deadlock.
-    func snapshotEncounters() -> [EncounterObservation] {
+    func drainEncounters() -> [EncounterObservation] {
         queue.sync {
-            peers.values.compactMap { peer in
-                guard let rpi = peer.rpi, peer.sampleCount > 0 else { return nil }
-                return EncounterObservation(
-                    rpi: rpi,
-                    rssi: peer.lastRssi,
-                    sampleCount: peer.sampleCount,
-                    rssiMin: peer.rssiMin,
-                    rssiMax: peer.rssiMax,
-                    rssiAvg: peer.rssiAvg,
-                    firstSeen: Int(peer.firstSeen.timeIntervalSince1970 * 1000),
-                    lastSeen: Int(peer.lastSeen.timeIntervalSince1970 * 1000)
-                )
-            }
+            Self.drainWindows(from: &peers, now: Date(), staleAfter: Self.peerStaleEviction)
         }
+    }
+
+    /// Pure core of ``drainEncounters()``: emit one window per identified peer, reset the
+    /// accumulators, then drop whoever has been unseen for `staleAfter`. Static so it can
+    /// be tested without a CoreBluetooth radio.
+    static func drainWindows(
+        from peers: inout [UUID: PeerAggregate],
+        now: Date,
+        staleAfter: TimeInterval
+    ) -> [EncounterObservation] {
+        var out: [EncounterObservation] = []
+        for (key, peer) in peers {
+            guard let rpi = peer.rpi, peer.sampleCount > 0 else { continue }
+            out.append(EncounterObservation(
+                rpi: rpi,
+                rssi: peer.lastRssi,
+                sampleCount: peer.sampleCount,
+                rssiMin: peer.rssiMin,
+                rssiMax: peer.rssiMax,
+                rssiAvg: peer.rssiAvg,
+                firstSeen: Int(peer.firstSeen.timeIntervalSince1970 * 1000),
+                lastSeen: Int(peer.lastSeen.timeIntervalSince1970 * 1000)
+            ))
+            peers[key]?.resetWindow()
+        }
+        // Emit first, evict after: a delayed sync still reports the window it was holding.
+        evictStale(&peers, now: now, staleAfter: staleAfter)
+        return out
+    }
+
+    static func evictStale(
+        _ peers: inout [UUID: PeerAggregate],
+        now: Date,
+        staleAfter: TimeInterval
+    ) {
+        peers = peers.filter { now.timeIntervalSince($0.value.lastSeen) < staleAfter }
     }
 
     // MARK: - RX (fed by BluetoothManager's existing scan)
@@ -292,13 +331,10 @@ final class EncounterMeshManager: NSObject {
 
         let now = Date()
         var peer = peers[peripheral.identifier] ?? PeerAggregate()
-        if peers[peripheral.identifier] == nil {
-            guard peers.count < Self.maxTrackedPeers else {
-                evictStalePeers(now: now)
-                guard peers.count < Self.maxTrackedPeers else { return }
-                peers[peripheral.identifier] = peer
-                return
-            }
+        if peers[peripheral.identifier] == nil, peers.count >= Self.maxTrackedPeers {
+            evictStalePeers(now: now)
+            guard peers.count < Self.maxTrackedPeers else { return }
+            // Room was freed: fall through and record this advertisement.
         }
         peer.addSample(rssi: rssi, now: now)
 
@@ -373,8 +409,11 @@ final class EncounterMeshManager: NSObject {
         gattTimeoutWork = nil
     }
 
+    /// Capacity-guard eviction: makes room when ``maxTrackedPeers`` is reached. This is
+    /// **not** the expiry the reporting path relies on — that runs unconditionally in
+    /// ``drainWindows(from:now:staleAfter:)``.
     private func evictStalePeers(now: Date) {
-        peers = peers.filter { now.timeIntervalSince($0.value.lastSeen) < Self.peerStaleEviction }
+        Self.evictStale(&peers, now: now, staleAfter: Self.peerStaleEviction)
     }
 }
 
