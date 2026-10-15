@@ -10,6 +10,9 @@ class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCenterDele
 
         #if DEBUG && BEAROUND_ADAPTIVE_BENCH
         guard AdaptiveBenchHostConfiguration.load() != nil else { return true }
+        #if !BEAROUND_ADAPTIVE_BASELINE
+        if AdaptiveBenchHostPauseState.isPaused { return true }
+        #endif
         BeAroundSDK.shared.setErrorReportingEnabled(false)
         BeAroundSDK.shared.registerBackgroundTasks()
         UNUserNotificationCenter.current().delegate = self
@@ -135,6 +138,9 @@ class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCenterDele
         completionHandler: @escaping () -> Void
     ) {
         NSLog("[BeAroundScan] handleEventsForBackgroundURLSession: %@", identifier)
+        #if DEBUG && BEAROUND_ADAPTIVE_BENCH && !BEAROUND_ADAPTIVE_BASELINE
+        if AdaptiveBenchHostPauseState.isPaused { BeAroundSDK.shared.setErrorReportingEnabled(false) }
+        #endif
         BeAroundSDK.shared.handleBackgroundURLSessionEvents(
             identifier: identifier,
             completionHandler: completionHandler

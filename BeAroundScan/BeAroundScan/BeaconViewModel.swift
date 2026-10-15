@@ -53,6 +53,24 @@ struct AdaptiveBenchHostConfiguration {
 #endif
 
 #if DEBUG && BEAROUND_ADAPTIVE_BENCH && !BEAROUND_ADAPTIVE_BASELINE
+enum AdaptiveBenchHostPauseState {
+    private static let key = "adaptiveBench.collectionPaused"
+
+    static var isPaused: Bool {
+        guard AdaptiveBenchHostConfiguration.load() != nil else { return false }
+        return apply(arguments: ProcessInfo.processInfo.arguments, defaults: .standard)
+    }
+
+    static func apply(arguments: [String], defaults: UserDefaults) -> Bool {
+        if arguments.contains("--adaptive-bench-probe-default-tls") {
+            defaults.set(true, forKey: key)
+        } else if arguments.contains("--adaptive-bench-resume-collection") {
+            defaults.removeObject(forKey: key)
+        }
+        return defaults.bool(forKey: key)
+    }
+}
+
 enum AdaptiveBenchHostDiagnostics {
     nonisolated private static func sanitized(_ text: String, limit: Int) -> String {
         var description = String(text.prefix(1024))
@@ -177,6 +195,10 @@ final class AdaptiveBenchDefaultTLSProbe: NSObject, URLSessionDelegate, URLSessi
         guard !started else { lock.unlock(); return }
         started = true
         lock.unlock()
+        write(["schemaVersion": 1, "pid": ProcessInfo.processInfo.processIdentifier,
+            "deviceTimestampMs": Int64(Date().timeIntervalSince1970 * 1000), "phase": "started",
+            "probeScope": "auxiliary_health_get", "observationBodyCountersIncluded": false,
+            "endpoint": Self.endpoint.absoluteString, "defaultHandling": true])
         let configuration = URLSessionConfiguration.ephemeral
         configuration.timeoutIntervalForRequest = 10
         configuration.timeoutIntervalForResource = 15
@@ -226,7 +248,7 @@ final class AdaptiveBenchDefaultTLSProbe: NSObject, URLSessionDelegate, URLSessi
         session = nil
         retainedTrust = nil
         lock.unlock()
-        var value: [String: Any] = ["schemaVersion": 1, "pid": ProcessInfo.processInfo.processIdentifier,
+        var value: [String: Any] = ["schemaVersion": 1, "pid": ProcessInfo.processInfo.processIdentifier, "phase": "completed",
             "deviceTimestampMs": Int64(Date().timeIntervalSince1970 * 1000), "probeScope": "auxiliary_health_get",
             "observationBodyCountersIncluded": false, "endpoint": Self.endpoint.absoluteString,
             "defaultHandling": true, "unexpectedChallenge": unusual,
@@ -234,13 +256,17 @@ final class AdaptiveBenchDefaultTLSProbe: NSObject, URLSessionDelegate, URLSessi
             "transportError": error.map { AdaptiveBenchHostDiagnostics.syncError($0 as NSError) } ?? NSNull()]
         value["challengeTrust"] = trust.map { AdaptiveBenchHostDiagnostics.capturedTrust($0) }
             ?? ["peerTrustPresent": false, "reason": "no_allowed_server_trust_challenge"]
+        write(value)
+        activeSession?.finishTasksAndInvalidate()
+    }
+
+    nonisolated private func write(_ value: [String: Any]) {
         if let data = try? JSONSerialization.data(withJSONObject: value, options: [.sortedKeys]), data.count <= 4096 {
             do {
                 try data.write(to: outputFile, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
                 try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: outputFile.path)
             } catch {}
         }
-        activeSession?.finishTasksAndInvalidate()
     }
 }
 #endif
@@ -506,6 +532,21 @@ class BeaconViewModel: NSObject, ObservableObject, BeAroundSDKDelegate {
             statusMessage = "Configuração de bancada inválida"
             return
         }
+        #if !BEAROUND_ADAPTIVE_BASELINE
+        if AdaptiveBenchHostPauseState.isPaused {
+            statusMessage = "QA collection paused for TLS diagnosis"
+            for region in locationManager.monitoredRegions {
+                locationManager.stopMonitoring(for: region)
+            }
+            if ProcessInfo.processInfo.arguments.contains("--adaptive-bench-probe-default-tls") {
+                let sdk = BeAroundSDK.shared
+                sdk.setErrorReportingEnabled(false)
+                sdk.stopScanning()
+                startAdaptiveBenchTLSProbeIfRequested()
+            }
+            return
+        }
+        #endif
         #endif
         locationManager.delegate = self
 
@@ -665,6 +706,9 @@ class BeaconViewModel: NSObject, ObservableObject, BeAroundSDKDelegate {
     #if DEBUG && BEAROUND_ADAPTIVE_BENCH
     @MainActor
     private func configureAdaptiveBench() -> Bool {
+        #if !BEAROUND_ADAPTIVE_BASELINE
+        guard !AdaptiveBenchHostPauseState.isPaused else { return false }
+        #endif
         guard let bench = AdaptiveBenchHostConfiguration.load() else {
             statusMessage = "Configuração de bancada inválida"
             return false
@@ -694,11 +738,29 @@ class BeaconViewModel: NSObject, ObservableObject, BeAroundSDKDelegate {
         #endif
         return true
     }
+
+    #if !BEAROUND_ADAPTIVE_BASELINE
+    private func startAdaptiveBenchTLSProbeIfRequested() {
+        guard adaptiveBenchDefaultTLSProbe == nil,
+              ProcessInfo.processInfo.arguments.contains("--adaptive-bench-probe-default-tls"),
+              let directory = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first else { return }
+        do {
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            let file = directory.appendingPathComponent("adaptive-bench-default-tls.json")
+            let probe = AdaptiveBenchDefaultTLSProbe(outputFile: file)
+            adaptiveBenchDefaultTLSProbe = probe
+            probe.start()
+        } catch { statusMessage = "Could not prepare QA TLS diagnostics" }
+    }
+    #endif
     #endif
 
     @MainActor
     private func initializeSDK() {
         #if DEBUG && BEAROUND_ADAPTIVE_BENCH
+        #if !BEAROUND_ADAPTIVE_BASELINE
+        guard !AdaptiveBenchHostPauseState.isPaused else { return }
+        #endif
         guard configureAdaptiveBench() else { return }
         BeAroundSDK.shared.delegate = self
         statusMessage = "Bancada local configurada"
@@ -707,13 +769,6 @@ class BeaconViewModel: NSObject, ObservableObject, BeAroundSDKDelegate {
            ProcessInfo.processInfo.arguments.contains("--adaptive-bench-request-existing-permissions") {
             adaptiveBenchPermissionRequestInvoked = true
             BeAroundSDK.shared.requestLocationAuthorization(.whenInUse)
-        }
-        if adaptiveBenchDefaultTLSProbe == nil,
-           ProcessInfo.processInfo.arguments.contains("--adaptive-bench-probe-default-tls"),
-           let file = adaptiveBenchDiagnosticsURL?.deletingLastPathComponent().appendingPathComponent("adaptive-bench-default-tls.json") {
-            let probe = AdaptiveBenchDefaultTLSProbe(outputFile: file)
-            adaptiveBenchDefaultTLSProbe = probe
-            probe.start()
         }
         #endif
         startScanning()
@@ -749,6 +804,9 @@ class BeaconViewModel: NSObject, ObservableObject, BeAroundSDKDelegate {
     @MainActor
     func applySettings() {
         #if DEBUG && BEAROUND_ADAPTIVE_BENCH
+        #if !BEAROUND_ADAPTIVE_BASELINE
+        guard !AdaptiveBenchHostPauseState.isPaused else { return }
+        #endif
         let wasScanning = isScanning
         if wasScanning { stopScanning() }
         guard configureAdaptiveBench() else { return }
@@ -791,6 +849,9 @@ class BeaconViewModel: NSObject, ObservableObject, BeAroundSDKDelegate {
 
     @MainActor
     func startScanning() {
+        #if DEBUG && BEAROUND_ADAPTIVE_BENCH && !BEAROUND_ADAPTIVE_BASELINE
+        guard !AdaptiveBenchHostPauseState.isPaused else { return }
+        #endif
         BeAroundSDK.shared.startScanning()
         isScanning = true
         statusMessage = "Scaneando..."
@@ -823,6 +884,9 @@ class BeaconViewModel: NSObject, ObservableObject, BeAroundSDKDelegate {
     }
 
     var scanPrecisionLabel: String {
+        #if DEBUG && BEAROUND_ADAPTIVE_BENCH && !BEAROUND_ADAPTIVE_BASELINE
+        if AdaptiveBenchHostPauseState.isPaused { return "QA paused" }
+        #endif
         switch BeAroundSDK.shared.currentScanPrecision ?? scanPrecision {
         case .high: return "Alta (Ininterrupto)"
         case .medium: return "Média (3x10s/min)"
@@ -839,6 +903,9 @@ class BeaconViewModel: NSObject, ObservableObject, BeAroundSDKDelegate {
     }
 
     private func startDiagnosticTimer() {
+        #if DEBUG && BEAROUND_ADAPTIVE_BENCH && !BEAROUND_ADAPTIVE_BASELINE
+        guard !AdaptiveBenchHostPauseState.isPaused else { return }
+        #endif
         diagnosticTimer = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) { [weak self] _ in
             self?.bleDiagnostic = BeAroundSDK.shared.bleDiagnosticInfo
             #if DEBUG && BEAROUND_ADAPTIVE_BENCH && !BEAROUND_ADAPTIVE_BASELINE
