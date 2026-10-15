@@ -549,11 +549,20 @@ struct AdaptiveSamplingDiagnosticsTests {
     @Test("Debug fixture endpoints fail closed for missing public and malformed origins")
     func fixtureEndpointGuard() {
         #expect(AdaptiveSamplingBench.validatedEndpoint(nil) == nil)
-        for value in ["https://ingest.bearound.io", "http://127.0.0.1", "https://fixture.example", "https://127.0.0.1/path", "https://user@127.0.0.1", "https://10.0.0.1.example.com", "https://192.168.1.2.ingest.bearound.io"] {
-            #expect(AdaptiveSamplingBench.validatedEndpoint(value) == nil)
+        let invalid = ["https://ingest.bearound.io", "http://127.0.0.1", "https://fixture.example",
+            "https://127.0.0.1/path", "https://user@127.0.0.1", "https://localhost?query=1", "https://localhost#fragment",
+            "https://10.0.0.1.example.com", "https://192.168.1.2.ingest.bearound.io", "https://+10.0.0.1",
+            "https://-10.0.0.1", "https://10..0.1", "https://10.0.1", "https://10.0.0.256", "https://010.0.0.1",
+            "https://localhost:0", "https://localhost:65536", "https://.local", "https://test..local",
+            "https://-test.local", "https://test-.local", "https://8.8.8.8", "https://172.15.0.1",
+            "https://172.32.0.1", "https://[2001:4860:4860::8888]"]
+        for value in invalid { #expect(AdaptiveSamplingBench.validatedEndpoint(value) == nil, "Invalid endpoint: \(value)") }
+        for value in ["https://127.0.0.1:18081", "https://localhost:18081", "https://test-host.local:18081",
+            "https://10.0.0.1", "https://172.16.0.1", "https://172.31.0.1", "https://192.168.1.2",
+            "https://[::1]:18081", "https://[fd00::1]:18081", "https://[fe80::1]:18081"] {
+            #expect(AdaptiveSamplingBench.validatedEndpoint(value) != nil, "Valid endpoint: \(value)")
         }
         #expect(AdaptiveSamplingBench.validatedEndpoint("https://192.168.1.2:18081/") == "https://192.168.1.2:18081")
-        #expect(AdaptiveSamplingBench.validatedEndpoint("https://localhost:18081") != nil)
     }
 
     #endif

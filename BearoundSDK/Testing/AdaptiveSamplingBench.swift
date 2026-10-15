@@ -1,5 +1,6 @@
 #if DEBUG
 import Foundation
+import Network
 
 /// Fixture injection is available only in a Debug SDK and an explicitly opted-in host.
 /// HTTPS requests still use the production URLSession trust and authorization paths.
@@ -18,15 +19,28 @@ public enum AdaptiveSamplingBench {
     static func validatedEndpoint(_ value: String?) -> String? {
         guard let value, let url = URL(string: value), url.scheme == "https", let host = url.host?.lowercased(),
               url.user == nil, url.password == nil, url.query == nil, url.fragment == nil,
-              url.path.isEmpty || url.path == "/", url.port != 0 else { return nil }
+              url.path.isEmpty || url.path == "/", url.port.map({ (1...65_535).contains($0) }) ?? true else { return nil }
         let labels = host.split(separator: ".", omittingEmptySubsequences: false)
-        let parts = labels.compactMap { Int($0) }
-        let privateV4 = labels.count == 4 && parts.count == 4 && parts.allSatisfy { (0...255).contains($0) }
-            && (parts[0] == 10 || parts[0] == 127 || parts[0] == 192 && parts[1] == 168
-                || parts[0] == 172 && (16...31).contains(parts[1]))
-        guard host == "localhost" || host.hasSuffix(".local") || privateV4 || host == "::1"
-            || host.hasPrefix("fc") && host.contains(":") || host.hasPrefix("fd") && host.contains(":")
-            || host.hasPrefix("fe80:") else { return nil }
+        let privateV4: Bool = {
+            guard labels.count == 4 else { return false }
+            var octets: [UInt8] = []
+            for label in labels {
+                guard !label.isEmpty, label.utf8.allSatisfy({ (48...57).contains($0) }),
+                      label.count == 1 || label.first != "0", let octet = UInt8(label) else { return false }
+                octets.append(octet)
+            }
+            return octets[0] == 10 || octets[0] == 127 || octets[0] == 192 && octets[1] == 168
+                || octets[0] == 172 && (16...31).contains(octets[1])
+        }()
+        let localDNS = (host == "localhost" || host.hasSuffix(".local")) && host.utf8.count <= 253
+            && labels.allSatisfy { label in
+                !label.isEmpty && label.utf8.count <= 63 && label.first != "-" && label.last != "-"
+                    && label.utf8.allSatisfy { (48...57).contains($0) || (97...122).contains($0) || $0 == 45 }
+            }
+        let literal = host.hasPrefix("[") && host.hasSuffix("]") ? String(host.dropFirst().dropLast()) : host
+        let address = IPv6Address(literal)
+        let privateV6 = address.map { $0.isLoopback || $0.isLinkLocal || $0.rawValue.first.map { $0 & 0xfe == 0xfc } == true } ?? false
+        guard localDNS || privateV4 || privateV6 else { return nil }
         return value.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
     }
 
