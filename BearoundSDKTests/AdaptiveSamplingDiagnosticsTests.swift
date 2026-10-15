@@ -549,7 +549,7 @@ struct AdaptiveSamplingDiagnosticsTests {
     @Test("Debug fixture endpoints fail closed for missing public and malformed origins")
     func fixtureEndpointGuard() {
         #expect(AdaptiveSamplingBench.validatedEndpoint(nil) == nil)
-        for value in ["https://ingest.bearound.io", "http://127.0.0.1", "https://fixture.example", "https://127.0.0.1/path", "https://user@127.0.0.1"] {
+        for value in ["https://ingest.bearound.io", "http://127.0.0.1", "https://fixture.example", "https://127.0.0.1/path", "https://user@127.0.0.1", "https://10.0.0.1.example.com", "https://192.168.1.2.ingest.bearound.io"] {
             #expect(AdaptiveSamplingBench.validatedEndpoint(value) == nil)
         }
         #expect(AdaptiveSamplingBench.validatedEndpoint("https://192.168.1.2:18081/") == "https://192.168.1.2:18081")

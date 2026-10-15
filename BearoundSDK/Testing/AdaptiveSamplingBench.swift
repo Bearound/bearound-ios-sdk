@@ -19,8 +19,9 @@ public enum AdaptiveSamplingBench {
         guard let value, let url = URL(string: value), url.scheme == "https", let host = url.host?.lowercased(),
               url.user == nil, url.password == nil, url.query == nil, url.fragment == nil,
               url.path.isEmpty || url.path == "/", url.port != 0 else { return nil }
-        let parts = host.split(separator: ".").compactMap { Int($0) }
-        let privateV4 = parts.count == 4 && parts.allSatisfy { (0...255).contains($0) }
+        let labels = host.split(separator: ".", omittingEmptySubsequences: false)
+        let parts = labels.compactMap { Int($0) }
+        let privateV4 = labels.count == 4 && parts.count == 4 && parts.allSatisfy { (0...255).contains($0) }
             && (parts[0] == 10 || parts[0] == 127 || parts[0] == 192 && parts[1] == 168
                 || parts[0] == 172 && (16...31).contains(parts[1]))
         guard host == "localhost" || host.hasSuffix(".local") || privateV4 || host == "::1"
