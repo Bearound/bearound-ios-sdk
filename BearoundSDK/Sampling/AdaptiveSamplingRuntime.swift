@@ -302,12 +302,6 @@ final class AdaptiveSamplingRuntime {
             nextContextAtMs = now.monotonicTimeMs + (plan.contextIntervalMs ?? 60_000)
         } else { diagnostics.complementaryCacheReads += 1 }
         guard var body = contextPayload else { return }
-        if adaptiveNow, let encounterFields = try? ObservationJSONValue.snapshot(existingEncounterFieldsProvider()) {
-            for name in ["encounters", "encounterIds"] where encounterFields[name] != nil {
-                if encounterFields[name]?.array?.isEmpty == true { body.removeValue(forKey: name) }
-                else { body[name] = encounterFields[name] }
-            }
-        }
         if var device = body["device"]?.object {
             device["timestamp"] = .number(Double(now.wallTimeMs))
             body["device"] = .object(device)
@@ -375,7 +369,8 @@ final class AdaptiveSamplingRuntime {
             let eligible = summary.liveBeacons(at: now, maxAgeMs: capability?.liveEvidenceMaxAgeMs ?? 30_000, consume: true)
             if !eligible.isEmpty, let window = summary.activeWindowId {
                 enqueue(body: body, beacons: eligible, windowId: window, from: eligible.compactMap { $0["timestamp"]?.foundationValue as? Double }.min().map(Int64.init) ?? now.wallTimeMs,
-                    to: now.wallTimeMs, motion: context.motion, at: now, kind: .live)
+                    to: now.wallTimeMs, motion: context.motion, at: now, kind: .live,
+                    encounterFieldsProvider: existingEncounterFieldsProvider)
                 lastLiveAtMs = now.monotonicTimeMs
             }
         }
@@ -508,7 +503,8 @@ final class AdaptiveSamplingRuntime {
 
     private func enqueue(
         body: [String: ObservationJSONValue], beacons: [[String: ObservationJSONValue]], windowId: String,
-        from: Int64, to: Int64, motion: MotionEvidence, at now: SamplingClock, kind: SamplingEnvelope.Kind, originalContextID: String? = nil
+        from: Int64, to: Int64, motion: MotionEvidence, at now: SamplingClock, kind: SamplingEnvelope.Kind, originalContextID: String? = nil,
+        encounterFieldsProvider: () -> [String: Any] = { [:] }
     ) {
         guard configuration.adaptiveSamplingEnabled, !beacons.isEmpty else { return }
         var payload = body.mapValues { $0.foundationValue }
@@ -519,9 +515,20 @@ final class AdaptiveSamplingRuntime {
             clock: SamplingEnvelopeClock(bootId: now.bootIdentifier, wallTimeMs: now.wallTimeMs, monotonicTimeMs: now.monotonicTimeMs,
                 serverOffsetMs: serverOffsetMs, offsetUncertaintyMs: offsetUncertaintyMs,
                 synchronizedAtMonotonicMs: leaseClock?.monotonicTimeMs), transitionReason: kind == .transition ? .contextChanged : nil)
-        if let envelope = try? StoredObservationEnvelope(batchId: batchId, storedAtMs: now.wallTimeMs,
+        if var envelope = try? StoredObservationEnvelope(batchId: batchId, storedAtMs: now.wallTimeMs,
             tenantFingerprint: tenantFingerprint, originalPayload: payload, sampling: sampling,
             policy: configuration.dataCollectionPolicy, contextID: originalContextID ?? contextID, deliveryProtocol: .adaptive) {
+            // Drain only after a live envelope exists to own the encounter windows.
+            if kind == .live, let encounterFields = try? ObservationJSONValue.snapshot(encounterFieldsProvider()) {
+                for name in ["encounters", "encounterIds"] where encounterFields[name] != nil {
+                    if encounterFields[name]?.array?.isEmpty == true { envelope.originalPayload.removeValue(forKey: name) }
+                    else {
+                        envelope.originalPayload[name] = encounterFields[name]
+                        envelope.absentFields.removeAll { $0 == name }
+                    }
+                }
+                envelope = envelope.filtered(policy: configuration.dataCollectionPolicy)
+            }
             pending.append(envelope)
         }
     }

@@ -281,7 +281,7 @@ struct AdaptiveSamplingDiagnosticsTests {
         #expect(drains == 1)
     }
 
-    @Test("Current encounters ride new live frames without extra complementary reads or rewriting original summaries")
+    @Test("Current encounters belong to live frames while summaries preserve their original complementary context")
     func currentEncountersPreserved() throws {
         let runtime = runtime()
         try negotiate(runtime)
@@ -295,7 +295,7 @@ struct AdaptiveSamplingDiagnosticsTests {
         runtime.observePhysical([beacon()], callbackID: "first", at: clock(), existingEncounterFieldsProvider: { fields(0) }) {
             reads += 1; return body()
         }
-        _ = runtime.takePending(at: clock())
+        let first = runtime.takePending(at: clock())
         runtime.observePhysical([beacon(15_000)], callbackID: "next", at: clock(15_000), existingEncounterFieldsProvider: { fields(15_000) }) {
             reads += 1; return body()
         }
@@ -303,8 +303,136 @@ struct AdaptiveSamplingDiagnosticsTests {
         let current = try #require(prepared.first { $0.sampling?.kind == .live })
         #expect(current.originalPayload["encounters"]?.array?.first?.object?["lastSeen"] == .number(Double(base + 15_000)))
         let original = try #require(prepared.first { $0.sampling?.kind == .summary })
-        #expect(original.originalPayload["encounters"]?.array?.first?.object?["lastSeen"] == .number(Double(base)))
+        #expect(original.originalPayload["encounters"] == nil)
+        #expect(original.originalPayload["userProperties"] == first.first?.originalPayload["userProperties"])
+        #expect(original.originalPayload["device"]?.object?["timestamp"] == .number(Double(base)))
+        #expect((first + prepared).flatMap { $0.originalPayload["encounters"]?.array ?? [] }.count == 2)
         #expect(reads == 1 && runtime.diagnostics.uniqueSamples == 2)
+    }
+
+    @Test("Intermediate encounter windows remain in the mesh until the next eligible live envelope owns them")
+    func intermediateEncounterOwnership() throws {
+        let runtime = runtime()
+        let advertised = try JSONSerialization.jsonObject(with: response()) as! [String: Any]
+        var capabilities = advertised["capabilities"] as! [String: Any]
+        var capability = capabilities["adaptiveSampling"] as! [String: Any]
+        capability["servicesCadenceMs"] = 5_000
+        capabilities["adaptiveSampling"] = capability
+        runtime.acceptResponse(try JSONSerialization.data(withJSONObject: ["capabilities": capabilities]),
+            requestedAt: clock(), receivedAt: clock(), generation: 1)
+        let encounter = EncounterObservation(rpi: String(repeating: "a", count: 32), rssi: -65,
+            sampleCount: 2, rssiMin: -70, rssiMax: -65, rssiAvg: -68,
+            firstSeen: Int(base + 900), lastSeen: Int(base + 1_000))
+        let captured = try ObservationJSONValue.snapshot(encounter.toDictionary())
+        var meshPending: [[String: Any]] = []
+        var drains = 0
+        var reads = 0
+        var envelopes: [StoredObservationEnvelope] = []
+        let storage = OfflineBatchStorage(directoryName: "test.encounter-ownership.\(UUID().uuidString)")
+        defer { storage.clearAllBatches() }
+        for offset: Int64 in [0, 1_000, 5_000] {
+            if offset == 1_000 { meshPending = [encounter.toDictionary()] }
+            runtime.observePhysical([beacon(offset)], callbackID: String(offset), at: clock(offset),
+                existingEncounterFieldsProvider: {
+                    drains += 1
+                    let fields: [String: Any] = ["encounters": meshPending, "encounterIds": [String(repeating: "b", count: 32)]]
+                    meshPending.removeAll()
+                    return fields
+                }) { reads += 1; return body() }
+            let pending = runtime.takePending(at: clock(offset))
+            if offset == 1_000 {
+                #expect(pending.isEmpty)
+                #expect(meshPending.count == 1 && drains == 1)
+            }
+            envelopes += pending
+        }
+        runtime.close(at: clock(6_000))
+        envelopes += runtime.takePending(at: clock(6_000))
+        #expect(drains == 2 && reads == 1 && meshPending.isEmpty)
+        #expect(envelopes.filter { $0.sampling?.kind == .live }.count == 2)
+        #expect(envelopes.filter { $0.sampling?.kind == .summary }.count == 1)
+        for envelope in envelopes { #expect(storage.saveObservation(envelope) != nil) }
+        let stored = storage.observationRecords().map(\.envelope)
+        let encounters = stored.flatMap { $0.originalPayload["encounters"]?.array ?? [] }
+        #expect(encounters == [.object(captured)])
+        let owner = try #require(stored.first { $0.originalPayload["encounters"]?.array?.isEmpty == false })
+        #expect(owner.sampling?.kind == .live && owner.sampling?.observedTo == base + 5_000)
+        #expect(owner.originalPayload["encounterIds"] == .array([.string(String(repeating: "b", count: 32))]))
+        #expect(owner.tenantFingerprint == runtime.tenantFingerprint)
+        #expect(!owner.absentFields.contains("encounters") && !owner.absentFields.contains("encounterIds"))
+    }
+
+    @Test("Ineligible live callbacks and capability rollback leave deferred encounters available to their existing owner")
+    func deferredEncountersAcrossCapabilityBoundary() throws {
+        let runtime = runtime()
+        try negotiate(runtime)
+        observe(runtime)
+        _ = runtime.takePending(at: clock())
+        let encounter = EncounterObservation(rpi: String(repeating: "a", count: 32), rssi: -65,
+            sampleCount: 1, rssiMin: -65, rssiMax: -65, rssiAvg: -65,
+            firstSeen: Int(base + 1_000), lastSeen: Int(base + 1_000)).toDictionary()
+        var meshPending = [encounter]
+        var drains = 0
+        let drain = { () -> [String: Any] in
+            drains += 1
+            let fields: [String: Any] = ["encounters": meshPending]
+            meshPending.removeAll()
+            return fields
+        }
+        runtime.observePhysical([beacon(1_000, rssi: 1)], callbackID: "invalid-live", at: clock(1_000),
+            existingEncounterFieldsProvider: drain) { body() }
+        runtime.invalidateContextMetadata(at: clock(2_000))
+        runtime.invalidateCapability(reason: "fixture_rollback")
+        runtime.observePhysical([beacon(3_000)], callbackID: "legacy", at: clock(3_000),
+            existingEncounterFieldsProvider: drain) { body() }
+        #expect(drains == 0 && meshPending.count == 1)
+        #expect(runtime.takePending(at: clock(3_000)).allSatisfy { $0.originalPayload["encounters"] == nil })
+        try negotiate(runtime, at: 15_000)
+        runtime.observePhysical([beacon(15_000)], callbackID: "renewed-live", at: clock(15_000),
+            existingEncounterFieldsProvider: drain) { body() }
+        let pending = runtime.takePending(at: clock(15_000))
+        #expect(drains == 1 && meshPending.isEmpty)
+        #expect(pending.flatMap { $0.originalPayload["encounters"]?.array ?? [] }
+            == [.object(try ObservationJSONValue.snapshot(encounter))])
+    }
+
+    @Test("A replacement runtime with collection opt-outs preserves mesh ownership and filters the live context")
+    func deferredEncountersAcrossRuntimeReplacement() throws {
+        let previous = runtime()
+        try negotiate(previous)
+        observe(previous)
+        _ = previous.takePending(at: clock())
+        let encounter = EncounterObservation(rpi: String(repeating: "a", count: 32), rssi: -65,
+            sampleCount: 1, rssiMin: -65, rssiMax: -65, rssiAvg: -65,
+            firstSeen: Int(base + 1_000), lastSeen: Int(base + 1_000)).toDictionary()
+        var meshPending = [encounter]
+        var drains = 0
+        let drain = { () -> [String: Any] in
+            drains += 1
+            let fields: [String: Any] = ["encounters": meshPending]
+            meshPending.removeAll()
+            return fields
+        }
+        previous.observePhysical([beacon(1_000)], callbackID: "deferred", at: clock(1_000),
+            existingEncounterFieldsProvider: drain) { body() }
+        previous.close(at: clock(2_000))
+        #expect(drains == 0 && meshPending.count == 1)
+        #expect(previous.takePending(at: clock(2_000)).allSatisfy { $0.originalPayload["encounters"] == nil })
+        let replacement = AdaptiveSamplingRuntime(configuration: SDKConfiguration(businessToken: "test-token",
+            collectAdvertisingId: false, collectLocation: false, collectWifi: false, collectMotionSensors: false),
+            deviceID: "device", generation: 2)
+        replacement.observePhysical([beacon(3_000)], callbackID: "no-capability", at: clock(3_000),
+            existingEncounterFieldsProvider: drain) { body() }
+        #expect(drains == 0)
+        try negotiate(replacement, at: 4_000)
+        replacement.observePhysical([beacon(4_000)], callbackID: "replacement", at: clock(4_000),
+            existingEncounterFieldsProvider: drain) { body() }
+        let pending = replacement.takePending(at: clock(4_000))
+        let live = try #require(pending.first { $0.sampling?.kind == .live })
+        #expect(drains == 1 && meshPending.isEmpty)
+        #expect(live.originalPayload["encounters"] == .array([.object(try ObservationJSONValue.snapshot(encounter))]))
+        #expect(live.originalPayload["device"]?.object?["network"]?.object?["apId"] == nil)
+        #expect(live.sampling?.motion.source == MotionSource.none && live.tenantFingerprint == previous.tenantFingerprint)
     }
 
     @Test("Fresh motion shortens a stable complementary deadline without an extra periodic wakeup")
