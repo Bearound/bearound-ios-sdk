@@ -728,6 +728,42 @@ struct APIClientTests {
         }
     }
 
+    @Test("Gzip 415 identity retry strips revoked sensor evidence with the original IDs clock and exact ACK")
+    func motionPolicyIdentityRetry() async throws {
+        let (client, original, _, lease) = try encodingFixture()
+        for source in [MotionSource.nativeActivity, .contextFusion] {
+            var envelope = original
+            let observedAt = envelope.sampling?.observedTo
+            envelope.sampling?.motion = MotionEvidence(state: source == .nativeActivity ? .movingConfirmed : .movingInferred,
+                source: source, confidence: source == .nativeActivity ? .high : .low,
+                reason: source == .nativeActivity ? "native_moving" : "context_changed",
+                observedAtMs: observedAt, ageMs: 0, contextStable: false)
+            var bodies: [Data] = []
+            var preparations = 0
+            client.submissionContextProvider = { prepare in
+                preparations += 1
+                prepare(RequestSubmissionContext(policy: DataCollectionPolicy(motionSensors: preparations == 1), gzipLease: lease))
+            }
+            client.transport = { request, bytes, _, _, submit, finish in
+                #expect(request.httpMethod == "POST")
+                #expect(submit())
+                bodies.append(bytes)
+                finish(bodies.count == 1 ? .failure(APIError.httpError(statusCode: 415)) : .success(durableAck(envelope)))
+            }
+            let ack = try await deliver(client, envelope).get()
+            #expect(AdaptiveSamplingResponse.decode(ack)?.samplingAck?.confirms(envelope.batchId) == true)
+            let first = try JSONSerialization.jsonObject(with: RequestBodyEncodingTests.gunzip(bodies[0])) as! [String: Any]
+            let second = try JSONSerialization.jsonObject(with: bodies[1]) as! [String: Any]
+            let a = first["sampling"] as! [String: Any]; let b = second["sampling"] as! [String: Any]
+            #expect((a["motion"] as! [String: Any])["source"] as? String == source.rawValue)
+            #expect((b["motion"] as! [String: Any])["reason"] as? String == "source_disabled")
+            #expect(a["batchId"] as? String == b["batchId"] as? String)
+            #expect((a["clock"] as! NSDictionary) == (b["clock"] as! NSDictionary))
+            #expect(a["observedTo"] as? Double == b["observedTo"] as? Double)
+            #expect(envelope.sampling?.motion.source == source && bodies.count == 2)
+        }
+    }
+
 }
 
 private final class CompletedUploadFixtureProtocol: URLProtocol {
@@ -761,4 +797,5 @@ private final class CompletedUploadFixtureProtocol: URLProtocol {
     }
 
     override func stopLoading() {}
+
 }

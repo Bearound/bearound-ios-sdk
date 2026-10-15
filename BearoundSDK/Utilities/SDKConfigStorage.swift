@@ -27,6 +27,7 @@ public class SDKConfigStorage {
     private static let keyCollectAdvertisingId = "collect_advertising_id"
     private static let keyCollectLocation = "collect_location"
     private static let keyCollectWifi = "collect_wifi"
+    private static let keyCollectMotionSensors = "collect_motion_sensors"
     private static let keyAdaptiveSamplingEnabled = "adaptive_sampling_enabled"
 
     private static var defaults: UserDefaults? {
@@ -52,6 +53,11 @@ public class SDKConfigStorage {
         defaults.set(config.collectLocation, forKey: keyCollectLocation)
         defaults.set(config.collectWifi, forKey: keyCollectWifi)
         defaults.set(config.adaptiveSamplingEnabled, forKey: keyAdaptiveSamplingEnabled)
+        if let motionSensors = config.collectMotionSensors {
+            defaults.set(motionSensors, forKey: keyCollectMotionSensors)
+        } else {
+            defaults.removeObject(forKey: keyCollectMotionSensors)
+        }
         defaults.set(true, forKey: keyIsConfigured)
 
         defaults.synchronize()
@@ -120,7 +126,8 @@ public class SDKConfigStorage {
             collectAdvertisingId: collectAdvertisingId,
             collectLocation: collectLocation,
             collectWifi: collectWifi,
-            adaptiveSamplingEnabled: defaults.object(forKey: keyAdaptiveSamplingEnabled) as? Bool ?? true
+            adaptiveSamplingEnabled: defaults.object(forKey: keyAdaptiveSamplingEnabled) as? Bool ?? true,
+            collectMotionSensors: defaults.object(forKey: keyCollectMotionSensors) as? Bool
         )
     }
 
@@ -136,6 +143,7 @@ public class SDKConfigStorage {
         defaults.removeObject(forKey: keyCollectLocation)
         defaults.removeObject(forKey: keyCollectWifi)
         defaults.removeObject(forKey: keyAdaptiveSamplingEnabled)
+        defaults.removeObject(forKey: keyCollectMotionSensors)
         defaults.removeObject(forKey: keyIsConfigured)
         defaults.removeObject(forKey: keyIsScanning)
         defaults.removeObject(forKey: keyInternalId)

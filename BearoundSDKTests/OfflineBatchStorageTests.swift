@@ -489,6 +489,52 @@ struct OfflineBatchStorageTests {
         #expect(storage.observationRecords().map { $0.envelope.batchId } == [legacy.batchId])
     }
 
+
+    @Test("Missing legacy motion switch decodes without changing original context fingerprints or queue bytes")
+    func legacyMotionSwitchCompatibility() throws {
+        let storage = makeStorage()
+        let original = try makeEnvelope()
+        let id = try #require(storage.saveObservation(original))
+        let url = try #require(storage.observationRecords().first).storageId
+        #expect(url == id)
+        let before = try JSONEncoder().encode(original)
+        let decoded = try JSONDecoder().decode(StoredObservationEnvelope.self, from: before)
+        #expect(decoded.capturedPolicy.motionSensors == nil && decoded.capturedPolicy.effectiveMotionSensors)
+        #expect(decoded.filtered(policy: .allEnabled) == original)
+        storage.applyCollectionPolicy(.allEnabled)
+        #expect(storage.observationRecords().first?.envelope == original)
+        var allOff = original
+        allOff.capturedPolicy.location = false; allOff.capturedPolicy.wifi = false
+        let restored = try JSONDecoder().decode(StoredObservationEnvelope.self, from: JSONEncoder().encode(allOff))
+        #expect(!restored.capturedPolicy.effectiveMotionSensors)
+        #expect(restored.contextFingerprint == original.contextFingerprint)
+    }
+
+    @Test("Reserved inertial evidence survives explicit motion opt in without location or wifi and opt out filters replay")
+    func motionQueuePolicy() throws {
+        let storage = makeStorage()
+        var envelope = try makeEnvelope()
+        envelope.sampling?.motion = MotionEvidence(state: .movingInferred, source: .contextFusion, confidence: .low,
+            reason: "context_changed", observedAtMs: captureTimeMs, ageMs: 0, contextStable: true)
+        let onlyMotion = DataCollectionPolicy(location: false, wifi: false, motionSensors: true)
+        let stored = envelope.filtered(policy: onlyMotion)
+        #expect(stored.sampling?.motion.isInertialInference == true)
+        #expect(stored.capturedPolicy.motionSensors == true)
+        let id = try #require(storage.saveObservation(stored, policy: onlyMotion))
+        let pending = try #require(storage.loadReplayGroup(tenantFingerprint: tenantA, policy: onlyMotion,
+            capabilityAvailable: true).first)
+        #expect(pending.envelope.sampling?.motion.isInertialInference == true)
+        let denied = DataCollectionPolicy(location: false, wifi: false, motionSensors: false)
+        let retry = try #require(storage.loadReplayGroup(tenantFingerprint: tenantA, policy: denied,
+            capabilityAvailable: true).first)
+        #expect(retry.envelope.sampling?.motion.state == .unknown)
+        #expect(retry.envelope.batchId == envelope.batchId && retry.envelope.sampling?.clock == envelope.sampling?.clock)
+        #expect(retry.envelope.contextFingerprint == stored.contextFingerprint)
+        #expect(retry.envelope.sampling?.observedFrom == envelope.sampling?.observedFrom)
+        #expect(storage.acknowledge(batchIds: [envelope.batchId], tenantFingerprint: tenantA) == 1)
+        #expect(!storage.observationRecords().contains { $0.storageId == id })
+    }
+
     private func makeEnvelope(
         tenant: String? = nil, stream: String = UUID().uuidString,
         kind: SamplingEnvelope.Kind = .summary, contextLabel: String = "original",

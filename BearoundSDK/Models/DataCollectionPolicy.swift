@@ -42,10 +42,14 @@ public struct DataCollectionPolicy: Equatable {
     /// Wi-Fi read is never issued.
     public let wifi: Bool
 
-    public init(advertisingId: Bool = true, location: Bool = true, wifi: Bool = true) {
+    /// Allows native activity and ephemeral raw motion sampling.
+    public let motionSensors: Bool
+
+    public init(advertisingId: Bool = true, location: Bool = true, wifi: Bool = true, motionSensors: Bool? = nil) {
         self.advertisingId = advertisingId
         self.location = location
         self.wifi = wifi
+        self.motionSensors = motionSensors ?? (location || wifi)
     }
 
     /// Everything on — the behaviour of every SDK version before this switch existed.

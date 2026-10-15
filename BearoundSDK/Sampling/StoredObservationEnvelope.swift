@@ -164,6 +164,9 @@ struct StoredObservationEnvelope: Codable, Equatable {
         var advertisingId: Bool
         var location: Bool
         var wifi: Bool
+        var motionSensors: Bool? = nil
+
+        var effectiveMotionSensors: Bool { motionSensors ?? (location || wifi) }
     }
     let version: Int
     let batchId: String
@@ -253,16 +256,15 @@ struct StoredObservationEnvelope: Codable, Equatable {
             }
         }
         if let device { payload["device"] = .object(device) }
-        if let motion = result.sampling?.motion,
-           (!policy.location && [.freshLocation, .contextFusion].contains(motion.source))
-            || (!policy.wifi && motion.source == .contextFusion) {
-            result.sampling?.motion = MotionEvidence(state: .unknown, source: .none, confidence: .none,
-                reason: "source_disabled", observedAtMs: nil, ageMs: nil, contextStable: false)
-        }
-        result.originalPayload = payload
+        if let motion = result.sampling?.motion { result.sampling?.motion = motion.filtered(policy: policy) }
+        let sensors = result.capturedPolicy.effectiveMotionSensors && policy.motionSensors
         result.capturedPolicy.advertisingId = result.capturedPolicy.advertisingId && policy.advertisingId
         result.capturedPolicy.location = result.capturedPolicy.location && policy.location
         result.capturedPolicy.wifi = result.capturedPolicy.wifi && policy.wifi
+        if result.capturedPolicy.motionSensors != nil || sensors != (result.capturedPolicy.location || result.capturedPolicy.wifi) {
+            result.capturedPolicy.motionSensors = sensors
+        }
+        result.originalPayload = payload
         let encoder = JSONEncoder()
         encoder.outputFormatting = .sortedKeys
         func canonicalOrder(_ values: [ObservationJSONValue]) -> [ObservationJSONValue] {

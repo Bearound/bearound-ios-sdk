@@ -244,4 +244,28 @@ struct SDKConfigStorageTests {
         #expect(restored?.collectLocation == true)
         #expect(restored?.collectWifi == true)
     }
+    @Test("Motion policy persists explicit values and missing legacy fields resolve from the original host switches")
+    func motionPolicyPersistence() {
+        defer { SDKConfigStorage.clear() }
+        for explicit in [false, true] {
+            SDKConfigStorage.save(SDKConfiguration(businessToken: "test", collectLocation: false,
+                collectWifi: false, collectMotionSensors: explicit))
+            #expect(SDKConfigStorage.load()?.collectMotionSensors == explicit)
+        }
+        UserDefaults(suiteName: "com.bearound.sdk.config")?.removeObject(forKey: "collect_motion_sensors")
+        #expect(SDKConfigStorage.load()?.collectMotionSensors == nil)
+        #expect(SDKConfigStorage.load()?.dataCollectionPolicy.motionSensors == false)
+        SDKConfigStorage.save(SDKConfiguration(businessToken: "test", collectMotionSensors: false))
+        UserDefaults(suiteName: "com.bearound.sdk.config")?.removeObject(forKey: "collect_motion_sensors")
+        #expect(SDKConfigStorage.load()?.collectMotionSensors == nil)
+        #expect(SDKConfigStorage.load()?.dataCollectionPolicy.motionSensors == true)
+        SDKConfigStorage.save(SDKConfiguration(businessToken: "test"))
+        let restored = SDKConfigStorage.load()
+        #expect(restored?.collectMotionSensors == nil)
+        #expect(UserDefaults(suiteName: "com.bearound.sdk.config")?.object(forKey: "collect_motion_sensors") == nil)
+        let allOff = SDKConfiguration(businessToken: "test", collectLocation: false, collectWifi: false,
+            collectMotionSensors: restored?.collectMotionSensors)
+        #expect(!allOff.dataCollectionPolicy.motionSensors)
+    }
+
 }

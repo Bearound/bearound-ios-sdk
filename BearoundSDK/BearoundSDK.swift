@@ -212,6 +212,9 @@ public class BeAroundSDK {
     private let samplingLifecycleLock = NSLock()
     private var publishedSamplingGeneration: UInt64 = 0
     private let motionMonitor = MotionMonitor()
+    private let inertialMotionMonitor = InertialMotionMonitor()
+    private var motionCollectionRunning = false
+    private var inertialForegroundActive = false
     private var unpersistedObservations: [StoredObservationEnvelope] = []
 
 
@@ -282,6 +285,7 @@ public class BeAroundSDK {
         // check classified it as background, auto-configured from storage, opened
         // a relaunch assertion and started scanning before the host asked.
         wasLaunchedInBackground = appState == .background
+        inertialForegroundActive = appState == .active
 
         if wasLaunchedInBackground {
             isInBackground = true
@@ -823,9 +827,33 @@ public class BeAroundSDK {
             name: UIApplication.willEnterForegroundNotification,
             object: nil
         )
+        NotificationCenter.default.addObserver(self,
+            selector: #selector(appDidBecomeActiveForInertialSampling),
+            name: UIApplication.didBecomeActiveNotification, object: nil)
+        NotificationCenter.default.addObserver(self,
+            selector: #selector(appWillResignActiveForInertialSampling),
+            name: UIApplication.willResignActiveNotification, object: nil)
+    }
+
+    @objc private func appDidBecomeActiveForInertialSampling() {
+        samplingLifecycleLock.lock()
+        inertialForegroundActive = true
+        samplingLifecycleLock.unlock()
+        beaconQueue.async { [weak self] in self?.requestInertialBurst() }
+    }
+
+    @objc private func appWillResignActiveForInertialSampling() {
+        samplingLifecycleLock.lock()
+        inertialForegroundActive = false
+        samplingLifecycleLock.unlock()
+        inertialMotionMonitor.stop()
+        beaconQueue.async { [weak self] in
+            self?.samplingRuntime?.invalidateInertial(at: SamplingClock.now())
+        }
     }
 
     @objc private func appDidEnterBackground() {
+        appWillResignActiveForInertialSampling()
         isInBackground = true
 
         // Restart duty cycle — precision-based, no FG/BG recalculation needed
@@ -883,7 +911,8 @@ public class BeAroundSDK {
         collectAdvertisingId: Bool = true,
         collectLocation: Bool = true,
         collectWifi: Bool = true,
-        adaptiveSamplingEnabled: Bool = true
+        adaptiveSamplingEnabled: Bool = true,
+        collectMotionSensors: Bool? = nil
     ) {
         let config = SDKConfiguration(
             businessToken: businessToken,
@@ -898,7 +927,8 @@ public class BeAroundSDK {
             collectAdvertisingId: collectAdvertisingId,
             collectLocation: collectLocation,
             collectWifi: collectWifi,
-            adaptiveSamplingEnabled: adaptiveSamplingEnabled
+            adaptiveSamplingEnabled: adaptiveSamplingEnabled,
+            collectMotionSensors: collectMotionSensors
         )
 
         configuration = config
@@ -1011,7 +1041,6 @@ public class BeAroundSDK {
     }
 
     public func startScanning() {
-        renewSamplingLifecycle(startMotion: true)
         guard configuration != nil else {
             let error = NSError(
                 domain: "BeAroundSDK",
@@ -1103,6 +1132,7 @@ public class BeAroundSDK {
         startSyncTimer()
         DispatchQueue.main.async { self.delegate?.didChangeScanning(isScanning: true) }
         SDKConfigStorage.saveIsScanning(true)
+        renewSamplingLifecycle(startMotion: true)
 
         if #available(iOS 13.0, *) {
             BackgroundTaskManager.shared.scheduleSync()
@@ -1583,6 +1613,7 @@ public class BeAroundSDK {
     func requestSync(reason: String) {
         beaconQueue.async { [weak self] in
             guard let self else { return }
+            self.requestInertialBurst()
             self.pendingSyncReasons.insert(reason)
 
             if self.isSyncing {
@@ -2165,12 +2196,18 @@ public class BeAroundSDK {
     }
 
     private func configureSampling(_ config: SDKConfiguration, startMotion: Bool = false) {
+        samplingLifecycleLock.lock()
+        motionCollectionRunning = false
+        samplingLifecycleLock.unlock()
+        inertialMotionMonitor.stop()
+        motionMonitor.stop()
         beaconQueue.async { [weak self] in
             guard let self else { return }
             let now = SamplingClock.now()
             self.samplingRuntime?.close(at: now)
             self.persistSamplingPending(at: now)
             self.motionMonitor.stop()
+            self.inertialMotionMonitor.stop()
             self.syncGeneration += 1
             if self.isSyncing {
                 self.isSyncing = false
@@ -2181,6 +2218,7 @@ public class BeAroundSDK {
             self.samplingGeneration &+= 1
             self.samplingLifecycleLock.lock()
             self.publishedSamplingGeneration = self.samplingGeneration
+            self.motionCollectionRunning = startMotion && config.adaptiveSamplingEnabled && config.dataCollectionPolicy.motionSensors
             self.samplingLifecycleLock.unlock()
             let runtime = AdaptiveSamplingRuntime(configuration: config, deviceID: DeviceIdentifier.getDeviceId(),
                 generation: self.samplingGeneration)
@@ -2241,8 +2279,10 @@ public class BeAroundSDK {
                     DiagnosticsStore.shared.recordSampling(runtime.diagnostics)
                 }
             }
-            if startMotion && config.adaptiveSamplingEnabled {
-                _ = self.motionMonitor.start(generation: runtime.generation) { [weak self, weak runtime] activity, clock, generation in
+            if startMotion && config.adaptiveSamplingEnabled && config.dataCollectionPolicy.motionSensors {
+                _ = self.motionMonitor.start(generation: runtime.generation, collectionAllowed: { [weak self] in
+                    self?.isMotionCollectionEligible(generation: runtime.generation, foregroundOnly: false) == true
+                }) { [weak self, weak runtime] activity, clock, generation in
                     self?.beaconQueue.async { [weak self, weak runtime] in
                         guard let self, let runtime, self.samplingGeneration == generation else { return }
                         runtime.observeNative(activity, at: clock, generation: generation)
@@ -2250,7 +2290,32 @@ public class BeAroundSDK {
                     }
                 }
             }
+            self.requestInertialBurst()
             DiagnosticsStore.shared.recordSampling(runtime.diagnostics)
+        }
+    }
+
+    private func isMotionCollectionEligible(generation: UInt64, foregroundOnly: Bool) -> Bool {
+        samplingLifecycleLock.lock()
+        let allowed = publishedSamplingGeneration == generation && motionCollectionRunning
+            && (!foregroundOnly || inertialForegroundActive)
+        samplingLifecycleLock.unlock()
+        return allowed && SDKConfigStorage.loadIsScanning() && DataCollectionPolicyStore.current.motionSensors
+    }
+
+    private func requestInertialBurst() {
+        guard let runtime = samplingRuntime else { return }
+        let generation = runtime.generation
+        inertialMotionMonitor.requestBurst(generation: generation, eligible: { [weak self] in
+            self?.isMotionCollectionEligible(generation: generation, foregroundOnly: true) == true
+        }) { [weak self, weak runtime] window, clock in
+            self?.beaconQueue.async { [weak self, weak runtime] in
+                guard let self, let runtime, self.samplingRuntime === runtime,
+                      self.isMotionCollectionEligible(generation: generation, foregroundOnly: true) else { return }
+                runtime.observeInertial(window, at: clock)
+                self.persistSamplingPending(at: clock)
+                DiagnosticsStore.shared.recordSampling(runtime.diagnostics)
+            }
         }
     }
 
@@ -2287,6 +2352,7 @@ public class BeAroundSDK {
             guard let self, let runtime = self.samplingRuntime, let sdkInfo = self.sdkInfo,
                   runtime.generation == callbackGeneration, SDKConfigStorage.loadIsScanning(),
                   self.unpersistedObservations.count < 32 else { return }
+            self.requestInertialBurst()
             runtime.observePhysical(beacons, callbackID: callbackID, at: clock, existingEncounterFieldsProvider: {
                 guard let mesh = self.bluetoothManager.encounterMesh else { return ["encounters": [], "encounterIds": []] }
                 return ["encounters": mesh.snapshotEncounters().map { $0.toDictionary() },

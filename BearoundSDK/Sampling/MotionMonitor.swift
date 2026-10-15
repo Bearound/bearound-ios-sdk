@@ -45,6 +45,7 @@ final class MotionMonitor {
     private var token: UInt64 = 0
     private var active = false
     private var startedAt: SamplingClock?
+    private var collectionAllowed: () -> Bool = { true }
 
     init(
         provider: MotionActivityProviding = CoreMotionActivityProvider(),
@@ -63,11 +64,12 @@ final class MotionMonitor {
     deinit { stop() }
 
     @discardableResult
-    func start(generation: UInt64, handler: @escaping Handler) -> Bool {
+    func start(generation: UInt64, collectionAllowed: @escaping () -> Bool = { true }, handler: @escaping Handler) -> Bool {
         lock.lock()
         defer { lock.unlock() }
         stopLocked()
-        guard provider.isActivityAvailable,
+        self.collectionAllowed = collectionAllowed
+        guard collectionAllowed(), provider.isActivityAvailable,
               let description = usageDescription(), !description.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
               provider.authorizationStatus == .authorized else {
             handler(nil, clock(), generation)
@@ -105,7 +107,7 @@ final class MotionMonitor {
         defer { lock.unlock() }
         guard active, callbackToken == token else { return }
         let now = clock()
-        guard provider.isActivityAvailable, provider.authorizationStatus == .authorized,
+        guard collectionAllowed(), provider.isActivityAvailable, provider.authorizationStatus == .authorized,
               let description = usageDescription(), !description.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
               let startedAt, now.isReliable, now.bootIdentifier == startedAt.bootIdentifier,
               now.monotonicTimeMs >= startedAt.monotonicTimeMs,

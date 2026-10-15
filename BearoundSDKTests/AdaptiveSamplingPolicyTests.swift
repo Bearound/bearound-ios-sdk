@@ -323,4 +323,142 @@ struct AdaptiveSamplingPolicyTests {
         #expect(novelty.contextIntervalMs == 30_000 && novelty.summaryIntervalMs == 15_000)
         #expect(fresh.plan(at: clock(90), configuration: configuration).mode == .conservative)
     }
+    private func inertial(_ end: Int64, generation: UInt64 = 0,
+                          classification: InertialWindow.Classification = .active) -> InertialWindow {
+        InertialWindow(generation: generation, startedAtMonotonicMs: end * 1_000 - 3_000,
+            endedAtMonotonicMs: end * 1_000, sampleCount: 60,
+            dynamicRmsG: classification == .active ? 0.1 : 0,
+            excursionRatio: classification == .active ? 0.5 : 0, classification: classification)
+    }
+
+    @Test("Two independent active windows infer motion with original age despite a co moving beacon and imprecise GPS")
+    func inertialFusionAndTTL() {
+        let policy = stablePolicy()
+        policy.observeLocation(fix(120, longitude: 0.01, accuracy: 100), at: clock(120), generation: 0)
+        policy.observeInertial(inertial(123), at: clock(123))
+        #expect(policy.evidence(at: clock(123)).state == .unknown)
+        policy.observeInertial(inertial(153), at: clock(154))
+        let evidence = policy.evidence(at: clock(154))
+        #expect(evidence.isInertialInference && evidence.observedAtMs == clock(153).wallTimeMs && evidence.ageMs == 1_000)
+        policy.observeInertial(inertial(153), at: clock(158))
+        #expect(policy.evidence(at: clock(213)).isInertialInference)
+        #expect(policy.evidence(at: clock(214)).state == .unknown)
+        policy.observeInertial(inertial(153), at: clock(214))
+        #expect(policy.evidence(at: clock(214)).state == .unknown)
+    }
+
+    @Test("Sustained inertial motion precedes stable spacing without rejuvenating novelty or changing live cadence")
+    func inertialSchedulingPriority() {
+        let policy = stablePolicy()
+        for seconds: Int64 in [123, 153, 183, 213, 243, 273] {
+            policy.observeContext(context(seconds), at: clock(seconds), generation: 0)
+            policy.observeInertial(inertial(seconds), at: clock(seconds))
+            let plan = policy.plan(at: clock(seconds), configuration: configuration)
+            #expect(plan.liveIntervalMs == 15_000)
+            if seconds >= 243 {
+                #expect(policy.evidence(at: clock(seconds)).contextStable)
+                #expect(plan.mode == .moving && plan.contextIntervalMs == 60_000 && plan.summaryIntervalMs == 60_000)
+            }
+        }
+        policy.observeNativeActivity(NativeActivityObservation(observedAtMs: clock(274).wallTimeMs,
+            walking: true, confidence: .high), at: clock(274), generation: 0)
+        #expect(policy.evidence(at: clock(274)).state == .movingConfirmed)
+        #expect(policy.plan(at: clock(274), configuration: configuration).mode == .moving)
+    }
+
+    @Test("Quiet ambiguous absent isolated and replayed windows never confirm stationary or manufacture movement")
+    func quietAndInvalidInertial() {
+        for kind in [InertialWindow.Classification.quiet, .ambiguous] {
+            let policy = stablePolicy()
+            policy.observeInertial(inertial(123, classification: kind), at: clock(123))
+            policy.observeInertial(inertial(153, classification: kind), at: clock(153))
+            #expect(policy.evidence(at: clock(153)).state == .unknown)
+        }
+        let policy = AdaptiveSamplingPolicy()
+        policy.observeInertial(inertial(3), at: clock(3))
+        policy.observeInertial(inertial(3), at: clock(3))
+        policy.observeInertial(inertial(10), at: clock(10))
+        #expect(policy.evidence(at: clock(10)).state == .unknown)
+        policy.observeInertial(inertial(40, generation: 99), at: clock(40))
+        #expect(policy.evidence(at: clock(40)).state == .unknown)
+        policy.reset(generation: 1)
+        policy.observeInertial(inertial(70), at: clock(70))
+        #expect(policy.evidence(at: clock(70)).state == .unknown)
+    }
+
+    @Test("One active window contradicts stale native STILL and two cannot override native movement")
+    func nativeInertialConflict() {
+        let policy = AdaptiveSamplingPolicy()
+        policy.observeNativeActivity(NativeActivityObservation(observedAtMs: clock(0).wallTimeMs,
+            stationary: true, confidence: .high), at: clock(0), generation: 0)
+        policy.observeContext(context(61), at: clock(61), generation: 0)
+        policy.observeInertial(inertial(63), at: clock(63))
+        #expect(policy.evidence(at: clock(63)).state == .stationaryCandidate)
+        policy.observeInertial(inertial(93), at: clock(93))
+        #expect(policy.evidence(at: clock(93)).isInertialInference)
+        policy.observeNativeActivity(NativeActivityObservation(observedAtMs: clock(94).wallTimeMs,
+            walking: true, confidence: .high), at: clock(94), generation: 0)
+        #expect(policy.evidence(at: clock(94)).state == .movingConfirmed)
+    }
+
+    @Test("Motion opt out removes only sensor contributions and needs new sensor evidence when reenabled")
+    func motionPolicyIsolation() {
+        let policy = AdaptiveSamplingPolicy()
+        policy.observeInertial(inertial(3), at: clock(3))
+        policy.observeInertial(inertial(33), at: clock(33))
+        #expect(policy.evidence(at: clock(33)).isInertialInference)
+        let onlyMotion = DataCollectionPolicy(location: false, wifi: false, motionSensors: true)
+        #expect(policy.evidence(at: clock(33), policy: onlyMotion).isInertialInference)
+        let disabled = DataCollectionPolicy(motionSensors: false)
+        #expect(policy.evidence(at: clock(34), policy: disabled).state == .unknown)
+        policy.observeNativeActivity(NativeActivityObservation(observedAtMs: clock(35).wallTimeMs, walking: true),
+            at: clock(35), generation: 0, policy: disabled)
+        policy.observeLocation(fix(35), at: clock(35), generation: 0, policy: disabled)
+        policy.observeLocation(fix(55, longitude: 0.001), at: clock(55), generation: 0, policy: disabled)
+        #expect(policy.evidence(at: clock(55), policy: disabled).source == .freshLocation)
+        let context = stablePolicy(withLocations: true)
+        #expect(context.evidence(at: clock(120), policy: disabled).state == .stationaryInferred)
+    }
+
+    @Test("Original inertial epoch is anchored at burst start and never retimestamped by completion wall jitter")
+    func inertialSourceClock() {
+        let policy = AdaptiveSamplingPolicy()
+        policy.observeInertial(inertial(3), at: clock(3))
+        var next = inertial(33)
+        next.sourceClock = clock(30)
+        let received = SamplingClock(wallTimeMs: clock(33).wallTimeMs + 2_000,
+            monotonicTimeMs: clock(33).monotonicTimeMs, bootIdentifier: "boot")
+        policy.observeInertial(next, at: received)
+        #expect(policy.evidence(at: received).observedAtMs == clock(33).wallTimeMs)
+        #expect(policy.evidence(at: received).ageMs == 0)
+    }
+
+    @Test("Canceling sensor attention preserves independent BLE and GPS novelty")
+    func inertialNoveltyRevocation() {
+        let policy = AdaptiveSamplingPolicy()
+        policy.observeInertial(inertial(3), at: clock(3))
+        policy.observeInertial(inertial(33), at: clock(33))
+        #expect(policy.plan(at: clock(33), configuration: configuration).mode == .novelty)
+        let denied = DataCollectionPolicy(motionSensors: false)
+        #expect(policy.plan(at: clock(34), configuration: configuration, policy: denied).mode == .conservative)
+        policy.observeContext(context(35), at: clock(35), generation: 0, policy: denied)
+        policy.invalidateInertial()
+        #expect(policy.plan(at: clock(35), configuration: configuration, policy: denied).mode == .novelty)
+        let gps = AdaptiveSamplingPolicy()
+        gps.observeLocation(fix(0), at: clock(0), generation: 0)
+        gps.observeLocation(fix(20, longitude: 0.001), at: clock(20), generation: 0)
+        gps.invalidateInertial()
+        #expect(gps.plan(at: clock(21), configuration: configuration, policy: denied).mode == .novelty)
+    }
+
+    @Test("Inertial corroboration end spacing accepts ten through sixty seconds and rejects the adjacent bounds")
+    func corroborationSpacingBoundaries() {
+        for span: Int64 in [9, 10, 60, 61] {
+            let policy = AdaptiveSamplingPolicy()
+            policy.observeInertial(inertial(3), at: clock(3))
+            policy.observeInertial(inertial(3 + span), at: clock(3 + span))
+            #expect(policy.evidence(at: clock(3 + span)).isInertialInference == (10 ... 60).contains(span))
+        }
+    }
+
 }

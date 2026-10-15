@@ -13,6 +13,8 @@ final class AdaptiveSamplingPolicy {
     }
 
     private(set) var generation: UInt64
+    private var activeInertialWindows: [InertialWindow] = []
+    private var latestInertialEndMs: Int64?
     private var anchor: SamplingClock?
     private var native: Timed<NativeActivityObservation>?
     private var locations: [Timed<SamplingLocationObservation>] = []
@@ -23,6 +25,7 @@ final class AdaptiveSamplingPolicy {
     private var candidateStarted: SamplingClock?
     private var noveltyUntilMs: Int64?
     private var noveltySource: MotionSource = .none
+    private var inertialNovelty = false
     private var pendingTransition = false
     private var fallbackReason = "startup"
     private var collectionPolicy = DataCollectionPolicy.allEnabled
@@ -45,9 +48,10 @@ final class AdaptiveSamplingPolicy {
     }
 
     func observeNativeActivity(
-        _ activity: NativeActivityObservation?, at now: SamplingClock, generation: UInt64
+        _ activity: NativeActivityObservation?, at now: SamplingClock, generation: UInt64,
+        policy: DataCollectionPolicy = .allEnabled
     ) {
-        guard generation == self.generation, prepare(at: now, policy: collectionPolicy) else { return }
+        guard generation == self.generation, prepare(at: now, policy: policy), policy.motionSensors else { return }
         guard let activity else {
             invalidateNativeActivity()
             return
@@ -58,10 +62,10 @@ final class AdaptiveSamplingPolicy {
             return
         }
         if let previous = native, timestamp <= previous.observedAtMs { return }
-        let wasMoving = native?.value.moving == true
+        let wasMoving = isMoving(evidence(at: now, policy: policy).state)
         let wasStationary = native?.value.stationary == true
         native = observation
-        if activity.moving, !wasMoving {
+        if activity.moving, !wasMoving, !(activity.automotive && activity.stationary && wasStationary) {
             markNovelty(at: now, source: .nativeActivity, ageMs: observation.initialAgeMs)
             locations.removeAll()
         }
@@ -86,13 +90,64 @@ final class AdaptiveSamplingPolicy {
             $0.value.observedAtMs == fix.observedAtMs && $0.value.provider == fix.provider
         }), locations.last.map({ fix.observedAtMs > $0.observedAtMs }) ?? true else { return }
         if let previous = locations.last, resolvesMovement(previous.value, fix) {
-            markNovelty(at: now, source: .freshLocation, ageMs: observation.initialAgeMs)
+            if !isMoving(evidence(at: now, policy: policy).state) {
+                markNovelty(at: now, source: .freshLocation, ageMs: observation.initialAgeMs)
+            }
             candidateStarted = nil
             locations.removeAll()
             locations.append(previous)
         }
         locations.append(observation)
         locations = Array(locations.suffix(8))
+    }
+
+    func observeInertial(_ window: InertialWindow, at now: SamplingClock,
+                         policy: DataCollectionPolicy = .allEnabled) {
+        guard window.generation == generation, prepare(at: now, policy: policy), policy.motionSensors,
+              window.sourceClock.map({ $0.isReliable && $0.bootIdentifier == now.bootIdentifier
+                  && $0.monotonicTimeMs <= window.startedAtMonotonicMs
+                  && $0.wallTimeMs > 0
+                  && $0.wallTimeMs + (window.endedAtMonotonicMs - $0.monotonicTimeMs) <= now.wallTimeMs
+                  && abs((now.wallTimeMs - $0.wallTimeMs) - (now.monotonicTimeMs - $0.monotonicTimeMs)) <= 5_000 }) ?? true,
+              window.startedAtMonotonicMs >= 0,
+              window.endedAtMonotonicMs >= window.startedAtMonotonicMs,
+              (2_000 ... 3_000).contains(window.endedAtMonotonicMs - window.startedAtMonotonicMs),
+              window.endedAtMonotonicMs <= now.monotonicTimeMs,
+              now.monotonicTimeMs - window.endedAtMonotonicMs <= 5_000,
+              latestInertialEndMs.map({ window.startedAtMonotonicMs > $0 }) ?? true,
+              (30 ... 128).contains(window.sampleCount), window.dynamicRmsG.isFinite,
+              window.dynamicRmsG >= 0, window.excursionRatio.isFinite,
+              (0 ... 1).contains(window.excursionRatio) else { return }
+        let wasMoving = isMoving(evidence(at: now, policy: policy).state)
+        latestInertialEndMs = window.endedAtMonotonicMs
+        guard window.classification == .active,
+              InertialMotionClassifier.atLeast(window.dynamicRmsG, threshold: 0.06),
+              window.excursionRatio >= 0.2 else { return }
+        activeInertialWindows.append(window)
+        activeInertialWindows = Array(activeInertialWindows.suffix(2))
+        if native?.value.stationary == true { candidateStarted = now }
+        if !wasMoving, inertialShowsMovement(at: now) {
+            markNovelty(at: now, source: .contextFusion, ageMs: now.monotonicTimeMs - window.endedAtMonotonicMs, inertial: true)
+        }
+    }
+
+    func invalidateInertial() {
+        activeInertialWindows.removeAll()
+        if inertialNovelty {
+            noveltyUntilMs = nil
+            noveltySource = .none
+            inertialNovelty = false
+            pendingTransition = false
+        }
+    }
+
+    private func isMoving(_ state: MotionState) -> Bool { state == .movingConfirmed || state == .movingInferred }
+
+    private func inertialShowsMovement(at now: SamplingClock) -> Bool {
+        guard activeInertialWindows.count == 2 else { return false }
+        let span = activeInertialWindows[1].endedAtMonotonicMs - activeInertialWindows[0].endedAtMonotonicMs
+        return (10_000 ... 60_000).contains(span)
+            && now.monotonicTimeMs - activeInertialWindows[1].endedAtMonotonicMs <= 60_000
     }
 
     func observeContext(
@@ -133,33 +188,34 @@ final class AdaptiveSamplingPolicy {
     ) -> MotionEvidence {
         guard prepare(at: now, policy: policy) else { return unknown("clock_uncertain") }
         let stable = contextIsStable(at: now)
-        if let native, native.age(at: now) <= 120_000 {
-            let activity = native.value
-            if activity.automotive, activity.stationary {
-                return evidence(.stationaryCandidate, .nativeActivity, activity.confidence,
-                                "native_stationary_candidate", native, stable: stable, at: now)
-            }
-            if activity.moving {
-                return evidence(.movingConfirmed, .nativeActivity, activity.confidence,
-                                "native_moving", native, stable: stable, at: now)
-            }
-            if activity.stationary {
-                if !locationShowsMovement(at: now), let started = candidateStarted,
-                   now.monotonicTimeMs - started.monotonicTimeMs >= 60_000,
-                   let context = contexts.last, context.age(at: now) <= 30_000,
-                   context.clock.monotonicTimeMs > started.monotonicTimeMs {
-                    return evidence(.stationaryConfirmed, .nativeActivity, activity.confidence,
-                                    "native_stationary_confirmed", native, stable: stable, at: now)
-                }
-                return evidence(.stationaryCandidate, .nativeActivity, activity.confidence,
-                                "native_stationary_candidate", native, stable: stable, at: now)
-            }
+        if let native, native.age(at: now) <= 120_000,
+           native.value.moving, !(native.value.automotive && native.value.stationary) {
+            return evidence(.movingConfirmed, .nativeActivity, native.value.confidence,
+                            "native_moving", native, stable: stable, at: now)
         }
         if locationShowsMovement(at: now), let last = locations.last {
             return evidence(.movingInferred, .freshLocation, .low, "location_displacement",
                             last, stable: stable, at: now)
         }
-        if stable, locationSupportsStationary(at: now), let last = locations.last {
+        if inertialShowsMovement(at: now), let last = activeInertialWindows.last {
+            let age = now.monotonicTimeMs - last.endedAtMonotonicMs
+            let original = last.sourceClock.map { $0.wallTimeMs + (last.endedAtMonotonicMs - $0.monotonicTimeMs) }
+                ?? (now.wallTimeMs - age)
+            return MotionEvidence(state: .movingInferred, source: .contextFusion, confidence: .low,
+                reason: "context_changed", observedAtMs: original, ageMs: age, contextStable: stable)
+        }
+        if let native, native.age(at: now) <= 120_000, native.value.stationary {
+            if !native.value.automotive, activeInertialWindows.isEmpty,
+               let started = candidateStarted, now.monotonicTimeMs - started.monotonicTimeMs >= 60_000,
+               let context = contexts.last, context.age(at: now) <= 30_000,
+               context.clock.monotonicTimeMs > started.monotonicTimeMs {
+                return evidence(.stationaryConfirmed, .nativeActivity, native.value.confidence,
+                    "native_stationary_confirmed", native, stable: stable, at: now)
+            }
+            return evidence(.stationaryCandidate, .nativeActivity, native.value.confidence,
+                "native_stationary_candidate", native, stable: stable, at: now)
+        }
+        if activeInertialWindows.isEmpty, stable, locationSupportsStationary(at: now), let last = locations.last {
             return evidence(.stationaryInferred, .contextFusion, .low, "stationary_inferred",
                             last, stable: true, at: now)
         }
@@ -187,14 +243,14 @@ final class AdaptiveSamplingPolicy {
             mode = .novelty
             context = 30_000
             summary = min(baseline, 15_000)
-        } else if motion.contextStable {
-            mode = .stable
-            context = 300_000
-            summary = max(baseline, min(300_000, ceiling))
         } else if motion.state == .movingConfirmed || motion.state == .movingInferred {
             mode = .moving
             context = 60_000
             summary = min(60_000, ceiling)
+        } else if motion.contextStable {
+            mode = .stable
+            context = 300_000
+            summary = max(baseline, min(300_000, ceiling))
         } else {
             mode = .conservative
             context = 60_000
@@ -207,6 +263,10 @@ final class AdaptiveSamplingPolicy {
     }
 
     private func prepare(at now: SamplingClock, policy: DataCollectionPolicy) -> Bool {
+        if !policy.motionSensors {
+            if native != nil { invalidateNativeActivity(reason: "source_disabled") }
+            invalidateInertial()
+        }
         if !policy.location, !locations.isEmpty {
             locations.removeAll()
             fallbackReason = "source_disabled"
@@ -231,6 +291,9 @@ final class AdaptiveSamplingPolicy {
             return false
         }
         anchor = now
+        if let last = activeInertialWindows.last, now.monotonicTimeMs - last.endedAtMonotonicMs > 60_000 {
+            activeInertialWindows.removeAll()
+        }
         if let native, native.age(at: now) > 120_000 { invalidateNativeActivity(reason: "evidence_expired") }
         if let last = contexts.last, last.age(at: now) > 120_000 { contexts.removeAll() }
         if let last = locations.last, last.age(at: now) > 60_000 {
@@ -241,6 +304,8 @@ final class AdaptiveSamplingPolicy {
     }
 
     private func clearEvidence() {
+        activeInertialWindows.removeAll()
+        latestInertialEndMs = nil
         invalidateNativeActivity(reason: "startup")
         locations.removeAll()
         contexts.removeAll()
@@ -248,6 +313,7 @@ final class AdaptiveSamplingPolicy {
         latestContextObservedAtMs = nil
         noveltyUntilMs = nil
         noveltySource = .none
+        inertialNovelty = false
         pendingTransition = false
     }
 
@@ -257,17 +323,19 @@ final class AdaptiveSamplingPolicy {
         return Timed(value: value, clock: now, observedAtMs: timestamp, initialAgeMs: age)
     }
 
-    private func markNovelty(at now: SamplingClock, source: MotionSource, ageMs: Int64 = 0) {
+    private func markNovelty(at now: SamplingClock, source: MotionSource, ageMs: Int64 = 0, inertial: Bool = false) {
         let remaining = max(0, 90_000 - ageMs)
         noveltyUntilMs = now.monotonicTimeMs + remaining
         noveltySource = source
+        inertialNovelty = inertial
         pendingTransition = remaining > 0
     }
 
     private func removeNovelty(from source: MotionSource) {
-        guard noveltySource == source else { return }
+        guard noveltySource == source, !inertialNovelty else { return }
         noveltyUntilMs = nil
         noveltySource = .none
+        inertialNovelty = false
         pendingTransition = false
     }
 

@@ -95,6 +95,21 @@ struct SDKConfigurationTests {
         // In tests, this might be "unknown" or the test bundle ID
         #expect(config.appId.isEmpty == false)
     }
+    @Test("Motion sensors default from host location or wifi flags and explicit opt in stays independent")
+    func motionSensorDefaults() {
+        for location in [false, true] {
+            for wifi in [false, true] {
+                let config = SDKConfiguration(businessToken: "test", collectLocation: location, collectWifi: wifi)
+                #expect(config.collectMotionSensors == nil)
+                #expect(config.dataCollectionPolicy.motionSensors == (location || wifi))
+                #expect(DataCollectionPolicy(location: location, wifi: wifi).motionSensors == (location || wifi))
+            }
+        }
+        let explicit = SDKConfiguration(businessToken: "test", collectLocation: false, collectWifi: false, collectMotionSensors: true)
+        #expect(explicit.collectMotionSensors == true && explicit.dataCollectionPolicy.motionSensors)
+        #expect(SDKConfiguration(businessToken: "test", collectMotionSensors: false).collectMotionSensors == false)
+    }
+
 }
 
 @Suite("Periodic Reconciliation Configuration")
@@ -188,4 +203,5 @@ struct PeriodicReconciliationConfigurationTests {
                 .requestTrackingOnStart == false
         )
     }
+
 }

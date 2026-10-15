@@ -212,11 +212,29 @@ final class AdaptiveSamplingRuntime {
     func observeNative(_ observation: NativeActivityObservation?, at now: SamplingClock, generation: UInt64) {
         guard generation == self.generation else { return }
         let previous = policy.evidence(at: now).state
-        policy.observeNativeActivity(observation, at: now, generation: generation)
+        policy.observeNativeActivity(observation, at: now, generation: generation, policy: configuration.dataCollectionPolicy)
         if previous != policy.evidence(at: now).state {
             close(at: now, kind: .transition)
             contextID = UUID().uuidString
             previousState = policy.evidence(at: now).state
+        }
+        nextContextAtMs = min(nextContextAtMs, now.monotonicTimeMs + (samplingPlan(at: now).contextIntervalMs ?? 60_000))
+    }
+
+    func invalidateInertial(at now: SamplingClock) {
+        policy.invalidateInertial()
+        _ = samplingPlan(at: now)
+    }
+
+    func observeInertial(_ window: InertialWindow, at now: SamplingClock) {
+        guard window.generation == generation else { return }
+        let previous = policy.evidence(at: now, policy: configuration.dataCollectionPolicy).state
+        policy.observeInertial(window, at: now, policy: configuration.dataCollectionPolicy)
+        let current = policy.evidence(at: now, policy: configuration.dataCollectionPolicy).state
+        if current != previous {
+            close(at: now, kind: .transition)
+            contextID = UUID().uuidString
+            previousState = current
         }
         nextContextAtMs = min(nextContextAtMs, now.monotonicTimeMs + (samplingPlan(at: now).contextIntervalMs ?? 60_000))
     }

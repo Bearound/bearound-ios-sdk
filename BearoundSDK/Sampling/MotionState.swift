@@ -28,6 +28,18 @@ struct MotionEvidence: Codable, Equatable {
     let observedAtMs: Int64?
     let ageMs: Int64?
     let contextStable: Bool
+
+    var isInertialInference: Bool {
+        state == .movingInferred && source == .contextFusion && confidence == .low && reason == "context_changed"
+    }
+
+    func filtered(policy: DataCollectionPolicy) -> MotionEvidence {
+        let denied = (!policy.motionSensors && (source == .nativeActivity || isInertialInference))
+            || (!isInertialInference && ((!policy.location && [.freshLocation, .contextFusion].contains(source))
+                || (!policy.wifi && source == .contextFusion)))
+        return denied ? MotionEvidence(state: .unknown, source: .none, confidence: .none,
+            reason: "source_disabled", observedAtMs: nil, ageMs: nil, contextStable: false) : self
+    }
 }
 
 struct SamplingClock: Equatable {

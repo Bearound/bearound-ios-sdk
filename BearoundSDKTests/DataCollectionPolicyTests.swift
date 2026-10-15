@@ -98,4 +98,25 @@ struct DataCollectionPolicyTests {
         #expect(DataCollectionPolicyStore.current.advertisingId)
         #expect(DataCollectionPolicyStore.current.wifi)
     }
+    @Test("Motion opt out preserves independent GPS and legacy context while reserved inertial provenance has separate gates")
+    func motionEvidenceFiltering() {
+        let native = MotionEvidence(state: .movingConfirmed, source: .nativeActivity, confidence: .high,
+            reason: "native_moving", observedAtMs: 1, ageMs: 0, contextStable: true)
+        let inertial = MotionEvidence(state: .movingInferred, source: .contextFusion, confidence: .low,
+            reason: "context_changed", observedAtMs: 1, ageMs: 0, contextStable: true)
+        let gps = MotionEvidence(state: .movingInferred, source: .freshLocation, confidence: .low,
+            reason: "location_displacement", observedAtMs: 1, ageMs: 0, contextStable: false)
+        let legacy = MotionEvidence(state: .stationaryInferred, source: .contextFusion, confidence: .low,
+            reason: "stationary_inferred", observedAtMs: 1, ageMs: 0, contextStable: true)
+        let denied = DataCollectionPolicy(motionSensors: false)
+        #expect(native.filtered(policy: denied).state == .unknown && inertial.filtered(policy: denied).state == .unknown)
+        #expect(gps.filtered(policy: denied) == gps && legacy.filtered(policy: denied) == legacy)
+        let onlyMotion = DataCollectionPolicy(location: false, wifi: false, motionSensors: true)
+        #expect(inertial.filtered(policy: onlyMotion) == inertial)
+        #expect(gps.filtered(policy: onlyMotion).state == .unknown && legacy.filtered(policy: onlyMotion).state == .unknown)
+        let high = MotionEvidence(state: .movingInferred, source: .contextFusion, confidence: .high,
+            reason: "context_changed", observedAtMs: 1, ageMs: 0, contextStable: true)
+        #expect(high.filtered(policy: onlyMotion).state == .unknown)
+    }
+
 }

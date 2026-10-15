@@ -159,4 +159,19 @@ struct MotionMonitorTests {
             #expect(fallbacks == 1 && provider.stops == 1)
         }
     }
+    @Test("Motion collection policy blocks authorized native activity before source access and stops revoked callbacks")
+    func collectionPolicyGate() {
+        let provider = Provider()
+        var allowed = false
+        let clock = Clock()
+        let monitor = MotionMonitor(provider: provider, usageDescription: { "Activity" }, clock: { clock.value })
+        #expect(!monitor.start(generation: 1, collectionAllowed: { allowed }) { _, _, _ in })
+        #expect(provider.starts == 0)
+        allowed = true
+        #expect(monitor.start(generation: 2, collectionAllowed: { allowed }) { _, _, _ in })
+        allowed = false
+        provider.callbacks[0](NativeActivityObservation(observedAtMs: clock.value.wallTimeMs, walking: true))
+        #expect(provider.starts == 1 && provider.stops == 1)
+    }
+
 }

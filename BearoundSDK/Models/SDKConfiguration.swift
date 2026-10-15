@@ -252,13 +252,17 @@ public struct SDKConfiguration {
     /// Default: `true`.
     public let collectWifi: Bool
     public let adaptiveSamplingEnabled: Bool
+    /// Nil derives the effective setting from collectLocation or collectWifi.
+    /// Explicit values survive restore without requiring additional permissions.
+    public let collectMotionSensors: Bool?
 
     /// The three switches above as one value, for the collectors.
     var dataCollectionPolicy: DataCollectionPolicy {
         DataCollectionPolicy(
             advertisingId: collectAdvertisingId,
             location: collectLocation,
-            wifi: collectWifi
+            wifi: collectWifi,
+            motionSensors: collectMotionSensors
         )
     }
 
@@ -275,7 +279,8 @@ public struct SDKConfiguration {
         collectAdvertisingId: Bool = true,
         collectLocation: Bool = true,
         collectWifi: Bool = true,
-        adaptiveSamplingEnabled: Bool = true
+        adaptiveSamplingEnabled: Bool = true,
+        collectMotionSensors: Bool? = nil
     ) {
         self.businessToken = businessToken
         self.scanPrecision = scanPrecision
@@ -299,6 +304,7 @@ public struct SDKConfiguration {
         self.collectLocation = collectLocation
         self.collectWifi = collectWifi
         self.adaptiveSamplingEnabled = adaptiveSamplingEnabled
+        self.collectMotionSensors = collectMotionSensors
     }
 
     // MARK: - Per-precision duty-cycle values
