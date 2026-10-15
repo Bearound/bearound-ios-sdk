@@ -2753,8 +2753,7 @@ public class BeAroundSDK {
                 if let runtime, self.samplingRuntime === runtime { DiagnosticsStore.shared.recordSampling(runtime.diagnostics) }
                 guard self.syncGeneration == watchdogGeneration else { return }
                 if successful {
-                    if let token = envelope.originalPayload["device"]?.object?["pushToken"]?.foundationValue as? String {
-                        PushTokenStore.markSent(token)
+                    if PushTokenStore.markSent(envelope) {
                         self.invalidateSamplingMetadata()
                     }
                     if let sampling = envelope.sampling, sampling.kind == .live {

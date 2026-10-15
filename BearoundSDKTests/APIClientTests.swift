@@ -386,13 +386,227 @@ struct APIClientTests {
     }
 
     private func deliver(_ client: APIClient, _ envelope: StoredObservationEnvelope,
-                         path: DeliveryPath = .immediateFirst, logical: (() -> Void)? = nil) async -> Result<Data, Error> {
+                         manifest: SamplingReplayManifest? = nil, path: DeliveryPath = .immediateFirst,
+                         logical: (() -> Void)? = nil) async -> Result<Data, Error> {
         await withCheckedContinuation { continuation in
-            client.sendObservation(envelope, storageId: nil, delivery: path, attemptObserver: logical) {
+            client.sendObservation(envelope, storageId: nil, manifest: manifest, delivery: path, attemptObserver: logical) {
                 continuation.resume(returning: $0)
             }
         }
     }
+
+    private func withPushTokenState(_ operation: () async throws -> Void) async rethrows {
+        let defaults = UserDefaults.standard
+        let keys = ["io.bearound.sdk.pushToken", "io.bearound.sdk.pushTokenLastSent",
+            "io.bearound.sdk.pushTokenLastSentAt", "io.bearound.sdk.pushTokenLastSentSdkVersion"]
+        let previous = keys.map { defaults.object(forKey: $0) }
+        defer {
+            for (key, value) in zip(keys, previous) {
+                if let value { defaults.set(value, forKey: key) }
+                else { defaults.removeObject(forKey: key) }
+            }
+        }
+        for key in keys { defaults.removeObject(forKey: key) }
+        try await operation()
+    }
+
+    private func pushEnvelope(protocol delivery: StoredObservationEnvelope.DeliveryProtocol,
+        version: String?, kind: SamplingEnvelope.Kind = .live) throws -> (APIClient, StoredObservationEnvelope) {
+        let (client, original, _, _) = try encodingFixture()
+        var payload = original.originalPayload.mapValues { $0.foundationValue }
+        var device = try #require(payload["device"] as? [String: Any])
+        device["pushToken"] = "fixture-token-a"
+        device["sdkVersion"] = version
+        payload["device"] = device
+        let source = try #require(original.sampling)
+        let sampling = SamplingEnvelope(version: source.version, kind: kind, batchId: source.batchId,
+            captureStreamId: source.captureStreamId, windowId: source.windowId, observedFrom: source.observedFrom,
+            observedTo: source.observedTo, sentAt: source.sentAt, motion: source.motion, clock: source.clock)
+        let envelope = try StoredObservationEnvelope(batchId: original.batchId, storedAtMs: original.storedAtMs,
+            tenantFingerprint: original.tenantFingerprint, originalPayload: payload, sampling: sampling,
+            contextID: original.contextID, deliveryProtocol: delivery)
+        client.submissionContextProvider = {
+            $0(RequestSubmissionContext(policy: DataCollectionPolicy(advertisingId: false, location: false,
+                wifi: false, motionSensors: false)))
+        }
+        return (client, envelope)
+    }
+
+    private func pushDevice(token: String?) -> UserDevice {
+        UserDevice(deviceId: "fixture-device", pushToken: token, apnsEnvironment: "sandbox",
+            manufacturer: "Apple", model: "fixture", osVersion: "26.5", timestamp: 1_791_907_200_000,
+            timezone: "UTC", batteryLevel: -1, isCharging: false, bluetoothState: "powered_on",
+            locationPermission: "not_determined", notificationsPermission: "not_determined", networkType: "wifi",
+            cellularGeneration: nil, ramTotalMb: 1, ramAvailableMb: 1, screenWidth: 1, screenHeight: 1,
+            appInForeground: true, appUptimeMs: 0, coldStart: true, lowPowerMode: nil, locationAccuracy: nil,
+            apId: nil, wifiSSID: nil, connectionMetered: nil, connectionExpensive: nil, os: "ios",
+            deviceName: "fixture", carrierName: nil, availableStorageMb: nil, systemLanguage: "en",
+            thermalState: "nominal", systemUptimeMs: 0)
+    }
+
+    private func register(_ client: APIClient, token: String?) async -> Result<Void, Error> {
+        await withCheckedContinuation { continuation in
+            client.sendBeacons([], sdkInfo: SDKInfo(appId: "fixture-app", build: 1), userDevice: pushDevice(token: token),
+                userProperties: nil, syncTrigger: "register", delivery: .immediateFirst) {
+                if case .success = $0 { PushTokenStore.markSent(token) }
+                continuation.resume(returning: $0)
+            }
+        }
+    }
+
+    @Test("Sampling ACKs preserve an upgraded token registration after register failure, including applied live ACKs")
+    func samplingAcknowledgmentPreservesPushResend() async throws {
+        try await withPushTokenState {
+            PushTokenStore.setToken("fixture-token-a")
+            PushTokenStore.markSent("fixture-token-a", sdkVersion: "previous-sdk")
+            let sentAt = PushTokenStore.lastSentAt
+            let (registration, _, _, _) = try encodingFixture()
+            registration.transport = { _, _, _, _, submit, finish in
+                #expect(submit()); finish(.failure(APIError.httpError(statusCode: 503)))
+            }
+            if case .success = await register(registration, token: PushTokenStore.tokenForPayload) {
+                Issue.record("Failed register must not report success")
+            }
+            for (kind, projection, replay) in [(SamplingEnvelope.Kind.summary, "archive_only", true),
+                (.transition, "pending_history", true), (.live, "applied", true), (.live, "applied", false)] {
+                let (client, envelope) = try pushEnvelope(protocol: .adaptive, version: "previous-sdk", kind: kind)
+                let manifest = replay ? SamplingReplayManifest(drainId: UUID().uuidString,
+                    batchIds: [envelope.batchId], index: 0, count: 1) : nil
+                var requests = 0
+                client.transport = { _, data, _, _, submit, finish in
+                    #expect(submit()); requests += 1
+                    let payload = try! JSONSerialization.jsonObject(with: data) as! [String: Any]
+                    #expect((payload["device"] as? [String: Any])?["pushToken"] as? String == "fixture-token-a")
+                    #expect(payload["location"] == nil && payload["wifis"] == nil)
+                    let ack: [String: Any] = ["samplingAck": ["batchId": envelope.batchId, "archive": "durable",
+                        "projection": projection, "fallback": "keep", "invalidateCapability": false]]
+                    finish(.success(try! JSONSerialization.data(withJSONObject: ack)))
+                }
+                _ = try await deliver(client, envelope, manifest: manifest).get()
+                #expect(!PushTokenStore.markSent(envelope))
+                #expect(requests == 1 && PushTokenStore.tokenForPayload == "fixture-token-a")
+                #expect(PushTokenStore.lastSentAt == sentAt)
+            }
+        }
+    }
+
+    @Test("Captured legacy success records the sent SDK version and preserves upgrade resend when it is old or absent")
+    func capturedLegacyPreservesPushUpgrade() async throws {
+        try await withPushTokenState {
+            PushTokenStore.setToken("fixture-token-a")
+            for version: String? in ["previous-sdk", nil] {
+                let (client, envelope) = try pushEnvelope(protocol: .legacy, version: version)
+                client.transport = { _, data, _, _, submit, finish in
+                    #expect(submit())
+                    let payload = try! JSONSerialization.jsonObject(with: data) as! [String: Any]
+                    let device = payload["device"] as! [String: Any]
+                    #expect(payload["sampling"] == nil && device["sdkVersion"] as? String == version)
+                    finish(.success(Data("{}".utf8)))
+                }
+                _ = try await deliver(client, envelope).get()
+                #expect(PushTokenStore.markSent(envelope))
+                #expect(PushTokenStore.lastSentAt != nil && PushTokenStore.tokenForPayload == "fixture-token-a")
+                #expect(UserDefaults.standard.string(forKey: "io.bearound.sdk.pushTokenLastSentSdkVersion") == version)
+            }
+        }
+    }
+
+    @Test("A token rotated during a captured legacy request remains due after its original token succeeds")
+    func capturedSuccessPreservesRotatedPushToken() async throws {
+        try await withPushTokenState {
+            PushTokenStore.setToken("fixture-token-a")
+            let (client, envelope) = try pushEnvelope(protocol: .legacy, version: SDKVersion.resolved)
+            client.transport = { _, data, _, _, submit, finish in
+                #expect(submit())
+                let payload = try! JSONSerialization.jsonObject(with: data) as! [String: Any]
+                #expect((payload["device"] as? [String: Any])?["pushToken"] as? String == "fixture-token-a")
+                PushTokenStore.setToken("fixture-token-b")
+                finish(.success(Data("{}".utf8)))
+            }
+            _ = try await deliver(client, envelope).get()
+            #expect(PushTokenStore.markSent(envelope))
+            #expect(PushTokenStore.tokenForPayload == "fixture-token-b")
+            #expect(UserDefaults.standard.string(forKey: "io.bearound.sdk.pushTokenLastSent") == "fixture-token-a")
+        }
+    }
+
+    @Test("Current register success confirms its submitted token once and tokenless success preserves its heartbeat")
+    func currentRegisterPreservesPushHeartbeat() async throws {
+        try await withPushTokenState {
+            PushTokenStore.setToken("fixture-token-a")
+            let (client, _, _, _) = try encodingFixture()
+            var submittedTokens: [String?] = []
+            client.transport = { _, data, _, _, submit, finish in
+                #expect(submit())
+                let payload = try! JSONSerialization.jsonObject(with: data) as! [String: Any]
+                let device = payload["device"] as! [String: Any]
+                submittedTokens.append(device["pushToken"] as? String)
+                #expect(device["sdkVersion"] as? String == SDKVersion.resolved)
+                finish(.success(Data("{}".utf8)))
+            }
+            try await register(client, token: PushTokenStore.tokenForPayload).get()
+            let sentAt = try #require(PushTokenStore.lastSentAt)
+            #expect(PushTokenStore.tokenForPayload == nil)
+            try await register(client, token: PushTokenStore.tokenForPayload).get()
+            #expect(submittedTokens == ["fixture-token-a", nil] && PushTokenStore.lastSentAt == sentAt)
+            #expect(!PushTokenStore.shouldSend(token: "fixture-token-a", lastSent: "fixture-token-a", lastSentAt: sentAt,
+                lastSentVersion: SDKVersion.resolved, currentVersion: SDKVersion.resolved, now: sentAt + 60))
+            #expect(PushTokenStore.shouldSend(token: "fixture-token-a", lastSent: "fixture-token-a", lastSentAt: sentAt,
+                lastSentVersion: SDKVersion.resolved, currentVersion: SDKVersion.resolved, now: sentAt + 7 * 24 * 60 * 60 + 1))
+        }
+    }
+
+    #if DEBUG
+    private final class PushSyncDelegate: BeAroundSDKDelegate {
+        var completion: ((Bool, Error?) -> Void)?
+        func didUpdateBeacons(_ beacons: [Beacon]) {}
+        func didCompleteSync(beaconCount: Int, success: Bool, error: Error?) { completion?(success, error) }
+    }
+
+    @Test("The SDK completion preserves push resend for historical and captured legacy payloads", arguments: [false, true])
+    func sdkCompletionPreservesPushResend(adaptive: Bool) async throws {
+        try await withPushTokenState {
+            PushTokenStore.setToken("fixture-token-a")
+            PushTokenStore.markSent("fixture-token-a", sdkVersion: "previous-sdk")
+            let (client, envelope) = try pushEnvelope(protocol: adaptive ? .adaptive : .legacy,
+                version: "previous-sdk", kind: .summary)
+            let storage = OfflineBatchStorage(directoryName: "test.push-registration.\(UUID().uuidString)")
+            defer { storage.clearAllBatches() }
+            let configuration = SDKConfiguration(businessToken: "fixture-token-gzip")
+            let sdk = BeAroundSDK.samplingTransportFixture(configuration: configuration, client: client,
+                storage: storage, withRuntime: adaptive)
+            if adaptive {
+                await withCheckedContinuation { continuation in
+                    sdk.inspectSamplingFixture { runtime, _ in
+                        let now = SamplingClock.now()
+                        let capability: [String: Any] = ["capabilities": ["adaptiveSampling": ["version": 1,
+                            "modes": ["live", "summary", "transition"], "leaseMs": 300_000, "serverTimeMs": now.wallTimeMs,
+                            "servicesCadenceMs": 5_000, "mapTtlMs": 300_000, "sessionTimeoutMs": 1_800_000,
+                            "liveEvidenceMaxAgeMs": 30_000, "clockSkewToleranceMs": 120_000, "maxPayloadBytes": 524_288]]]
+                        runtime?.acceptResponse(try! JSONSerialization.data(withJSONObject: capability),
+                            requestedAt: now, receivedAt: now, generation: runtime!.generation)
+                        #expect(runtime?.hasCapability(at: now) == true)
+                        continuation.resume()
+                    }
+                }
+            }
+            client.transport = { _, _, _, _, submit, finish in
+                #expect(submit())
+                sdk.endSamplingFixture()
+                finish(.success(adaptive ? durableAck(envelope) : Data("{}".utf8)))
+            }
+            let delegate = PushSyncDelegate(); sdk.delegate = delegate
+            let success: Bool = await withCheckedContinuation { continuation in
+                delegate.completion = { success, error in
+                    #expect(error == nil); continuation.resume(returning: success)
+                }
+                sdk.submitSamplingFixture(envelope, storageID: envelope.batchId)
+            }
+            #expect(success && PushTokenStore.tokenForPayload == "fixture-token-a")
+            #expect(UserDefaults.standard.string(forKey: "io.bearound.sdk.pushTokenLastSentSdkVersion") == "previous-sdk")
+        }
+    }
+    #endif
 
     @Test("Negotiated request headers and submitted gzip preserve complete immutable original JSON")
     func gzipObservationRepresentation() async throws {
