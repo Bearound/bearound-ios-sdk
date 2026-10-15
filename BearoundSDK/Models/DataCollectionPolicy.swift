@@ -45,6 +45,10 @@ public struct DataCollectionPolicy: Equatable {
     /// Allows native activity and ephemeral raw motion sampling.
     public let motionSensors: Bool
 
+    public init(advertisingId: Bool, location: Bool, wifi: Bool) {
+        self.init(advertisingId: advertisingId, location: location, wifi: wifi, motionSensors: nil)
+    }
+
     public init(advertisingId: Bool = true, location: Bool = true, wifi: Bool = true, motionSensors: Bool? = nil) {
         self.advertisingId = advertisingId
         self.location = location

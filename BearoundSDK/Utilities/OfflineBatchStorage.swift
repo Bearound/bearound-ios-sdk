@@ -276,19 +276,7 @@ class OfflineBatchStorage {
     /// batch at the head of the FIFO blocked every batch behind it until expiry.
     @discardableResult
     func quarantineBatch(id: String) -> Bool {
-        storageQueue.sync {
-            guard let directory = storageDirectory, _validFilename(id) else { return false }
-            let source = directory.appendingPathComponent(id)
-            guard fileManager.fileExists(atPath: source.path) else { return false }
-            do {
-                try fileManager.moveItem(at: source, to: directory.appendingPathComponent("\(id).rejected"))
-                NSLog("[BeAroundSDK] Quarantined rejected batch %@", id)
-                return true
-            } catch {
-                NSLog("[BeAroundSDK] Failed to quarantine batch %@: %@", id, error.localizedDescription)
-                return false
-            }
-        }
+        storageQueue.sync { _quarantineBatch(id: id, reason: "backend_rejected") }
     }
 
     /// Loads the oldest batch from storage (FIFO)
@@ -305,13 +293,6 @@ class OfflineBatchStorage {
     /// of `loadOldestBatches`/`removeOldestBatches` for exact removal.
     func loadOldestBatchesWithIds(_ count: Int) -> [StoredBatchRecord] {
         storageQueue.sync {
-            // This legacy drain rebuilds context and combines batches. Keep its API but
-            // prevent either incomplete legacy records or v2 envelopes entering that path.
-            for record in _observationRecords(includeQuarantined: false) {
-                if record.envelope.migratedFromVersion == 1 {
-                    _ = _quarantineBatch(id: record.storageId, reason: "legacy_context_unavailable")
-                }
-            }
             return _loadOldestRecords(count, capturedOnly: true)
         }
     }
@@ -337,7 +318,7 @@ class OfflineBatchStorage {
 
     func loadReplayGroup(
         tenantFingerprint: String, policy: DataCollectionPolicy = .allEnabled,
-        capabilityAvailable: Bool, limit: Int = 128, excludingBatchIds: Set<String> = []
+        capabilityAvailable: Bool, limit: Int = 128, excludingBatchIds: Set<String> = [], maximumJSONBytes: Int = 524_288
     ) -> [ReplayRecord] {
         storageQueue.sync {
             guard SamplingTenantFingerprint.isValid(tenantFingerprint) else { return [] }
@@ -359,6 +340,20 @@ class OfflineBatchStorage {
                 if capabilityAvailable || filtered.deliveryProtocol == .legacy {
                     eligible.append(ObservationRecord(storageId: record.storageId, envelope: filtered))
                 }
+            }
+            func fits(_ record: ObservationRecord, ids: [String], drainID: String) -> Bool {
+                if record.envelope.deliveryProtocol == .legacy { return true }
+                guard let index = ids.firstIndex(of: record.envelope.batchId) else { return false }
+                let manifest = SamplingReplayManifest(drainId: drainID, batchIds: ids, index: index, count: ids.count)
+                guard let payload = try? record.envelope.replayPayload(manifest: manifest),
+                      let bytes = try? JSONSerialization.data(withJSONObject: payload) else { return false }
+                return bytes.count <= min(524_288, maximumJSONBytes)
+            }
+            eligible.removeAll { record in
+                if let manifest = record.envelope.replayManifest {
+                    return !fits(record, ids: manifest.batchIds, drainID: manifest.drainId)
+                }
+                return !fits(record, ids: [record.envelope.batchId], drainID: record.envelope.batchId)
             }
             guard limit > 0, !eligible.isEmpty else { return [] }
             var firstIndex = 0
@@ -390,6 +385,9 @@ class OfflineBatchStorage {
                       record.envelope.replayManifest == nil,
                       record.envelope.sampling?.captureStreamId == first.sampling?.captureStreamId,
                       record.envelope.contextFingerprint == first.contextFingerprint else { break }
+                let proposed = group + [record]
+                let ids = proposed.map { $0.envelope.batchId }
+                guard proposed.allSatisfy({ fits($0, ids: ids, drainID: first.batchId) }) else { break }
                 group.append(record)
                 if group.count == min(128, limit) { break }
             }
@@ -507,9 +505,17 @@ class OfflineBatchStorage {
                 let data = try Data(contentsOf: fileURL)
                 let decoder = JSONDecoder()
                 decoder.dateDecodingStrategy = .iso8601
-                if (try? decoder.decode(StoredObservationEnvelope.self, from: data)) != nil { continue }
+                if let envelope = try? decoder.decode(StoredObservationEnvelope.self, from: data) {
+                    if capturedOnly && (envelope.tenantFingerprint == nil || !envelope.canReplay) {
+                        _ = _quarantineBatch(id: filename, reason: "original_context_unavailable")
+                    }
+                    continue
+                }
                 let batch = try decoder.decode(StoredBatch.self, from: data)
-                if capturedOnly && batch.userDevice == nil { continue }
+                if capturedOnly && batch.userDevice == nil {
+                    _ = _quarantineBatch(id: filename, reason: "legacy_context_unavailable")
+                    continue
+                }
 
                 // Quarantine corruption instead of masking it (see StoredBeacon.toBeacon):
                 // drop unparseable beacons; a batch left with none is deleted outright.
@@ -640,8 +646,11 @@ class OfflineBatchStorage {
             return
         }
 
-        var evictable = _sortedFilenames(files.filter { ($0.hasSuffix(".json") || $0.hasSuffix(".rejected"))
-            && !$0.hasSuffix(Self.evictionExemptSuffix) && !$0.hasSuffix(Self.evictionExemptSuffix + ".rejected") })
+        var evictable = _sortedFilenames(files.filter { $0.hasSuffix(".json") && !$0.hasSuffix(Self.evictionExemptSuffix) })
+        let rejected = _sortedFilenames(files.filter { $0.hasSuffix(".rejected") })
+        for filename in rejected.prefix(max(0, rejected.count - 128)) {
+            try? fileManager.removeItem(at: directory.appendingPathComponent(filename))
+        }
 
         while evictable.count > _maxBatchCount {
             // Remove oldest file (first in sorted list)
@@ -695,6 +704,7 @@ class OfflineBatchStorage {
             try fileManager.moveItem(at: directory.appendingPathComponent(id),
                                      to: directory.appendingPathComponent("\(id).rejected"))
             DiagnosticsStore.shared.recordError("Offline observation quarantined: \(reason)")
+            _enforceMaxBatchCount()
             return true
         } catch { return false }
     }
@@ -703,7 +713,10 @@ class OfflineBatchStorage {
         guard let directory = storageDirectory, _validFilename(filename) else { return false }
         do {
             let data = try JSONEncoder().encode(envelope)
-            guard data.count <= 524_288 else { return false }
+            if envelope.deliveryProtocol == .legacy {
+                let wire = try JSONSerialization.data(withJSONObject: envelope.originalPayload.mapValues { $0.foundationValue })
+                guard wire.count <= 1_048_576, data.count <= 2_097_152 else { return false }
+            } else { guard data.count <= 524_288 else { return false } }
             try data.write(to: directory.appendingPathComponent(filename), options: .atomic)
             return true
         } catch {
@@ -761,11 +774,18 @@ class OfflineBatchStorage {
         decoder.dateDecodingStrategy = .iso8601
         var records: [ObservationRecord] = []
         for filename in _sortedFilenames(files) where filename.hasSuffix(".json") || (includeQuarantined && filename.hasSuffix(".rejected")) {
-            guard let data = try? Data(contentsOf: directory.appendingPathComponent(filename)), data.count <= 524_288 else {
+            guard let data = try? Data(contentsOf: directory.appendingPathComponent(filename)), data.count <= 2_097_152 else {
                 _ = _quarantineBatch(id: filename, reason: "invalid_storage_size")
                 continue
             }
             if let envelope = try? decoder.decode(StoredObservationEnvelope.self, from: data), envelope.version == 2 {
+                let maximum = envelope.deliveryProtocol == .legacy ? 1_048_576 : 524_288
+                let boundedBytes = envelope.deliveryProtocol == .legacy
+                    ? (try? JSONSerialization.data(withJSONObject: envelope.originalPayload.mapValues { $0.foundationValue }).count) : data.count
+                guard let boundedBytes, boundedBytes <= maximum else {
+                    _ = _quarantineBatch(id: filename, reason: "invalid_storage_size")
+                    continue
+                }
                 records.append(ObservationRecord(storageId: filename, envelope: envelope))
                 continue
             }

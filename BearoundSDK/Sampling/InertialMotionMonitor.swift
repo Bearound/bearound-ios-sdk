@@ -11,13 +11,18 @@ final class CoreMotionInertialProvider: InertialMotionProviding {
     private let manager = CMMotionManager()
     var isAvailable: Bool { manager.isAccelerometerAvailable }
     func start(interval: TimeInterval, queue: OperationQueue, handler: @escaping (InertialSample?) -> Void) {
+        let sourceUptimeMs = ProcessInfo.processInfo.systemUptime * 1_000
+        let continuousMs = AppPresenceClock.continuousSeconds() * 1_000
         manager.accelerometerUpdateInterval = interval
         manager.startAccelerometerUpdates(to: queue) { data, error in
             guard error == nil, let data, data.timestamp.isFinite,
                   data.timestamp >= 0, data.timestamp * 1_000 < Double(Int64.max) else { handler(nil); return }
-            handler(InertialSample(monotonicAtMs: Int64(data.timestamp * 1_000),
+            handler(InertialSample(monotonicAtMs: Self.continuousTimestamp(sourceSeconds: data.timestamp, sourceUptimeMs: sourceUptimeMs, continuousMs: continuousMs),
                 xG: data.acceleration.x, yG: data.acceleration.y, zG: data.acceleration.z))
         }
+    }
+    static func continuousTimestamp(sourceSeconds: TimeInterval, sourceUptimeMs: Double, continuousMs: Double) -> Int64 {
+        Int64(continuousMs + (sourceSeconds * 1_000 - sourceUptimeMs))
     }
     func stop() { manager.stopAccelerometerUpdates() }
 }

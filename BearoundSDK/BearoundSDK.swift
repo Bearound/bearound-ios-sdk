@@ -210,7 +210,7 @@ public class BeAroundSDK {
     private var sdkInfo: SDKInfo?
     private var userProperties: UserProperties?
 
-    private let deviceInfoCollector = DeviceInfoCollector(isColdStart: true)
+    private lazy var deviceInfoCollector = DeviceInfoCollector(isColdStart: true)
     private let beaconManager = BeaconManager()
     /// GPS visit detection (CLVisit + environment geofences). Created on main next to the
     /// beacon eye; it gates itself on the kill switch, Always authorization and the policy.
@@ -266,7 +266,11 @@ public class BeAroundSDK {
     private let beaconQueue = DispatchQueue(label: "com.bearound.sdk.beaconQueue")
     private var isSyncing = false
 
-    private let offlineBatchStorage = OfflineBatchStorage.shared
+    private let offlineBatchStorage: OfflineBatchStorage
+    #if DEBUG
+    private var samplingFixture = false
+    private var samplingFixtureDevice: UserDevice?
+    #endif
 
     private var consecutiveFailures = 0
     private var lastFailureTime: Date?
@@ -288,7 +292,10 @@ public class BeAroundSDK {
 
     // MARK: - Initialization
 
-    private init() {
+    private init(preparePlatform: Bool = true, storage: OfflineBatchStorage = .shared) {
+        offlineBatchStorage = storage
+        guard preparePlatform else { return }
+        _ = deviceInfoCollector
         let appState = UIApplication.shared.applicationState
         // Only a REAL background launch counts. A normal foreground launch passes
         // through `.inactive` during didFinishLaunching — the old `!= .active`
@@ -299,7 +306,6 @@ public class BeAroundSDK {
 
         if wasLaunchedInBackground {
             isInBackground = true
-        renewSamplingLifecycle(startMotion: false)
             NSLog("[BeAroundSDK] APP LAUNCHED IN BACKGROUND (appState=%ld)", appState.rawValue)
         }
 
@@ -916,7 +922,10 @@ public class BeAroundSDK {
 
     @objc private func appWillEnterForeground() {
         isInBackground = false
-        renewSamplingLifecycle(startMotion: isScanning)
+        beaconQueue.async { [weak self] in
+            guard let self, self.isScanning, let runtime = self.samplingRuntime else { return }
+            self.startSamplingMotion(runtime)
+        }
 
         if isScanning {
             startSyncTimer()
@@ -950,6 +959,26 @@ public class BeAroundSDK {
     ///     Accepted range **3 … 15 s** — the ~30s BGTask budget must also fit the sync
     ///     (an oversized window makes every run expire and iOS stops granting executions).
     ///     Default: 12 seconds.
+    public func configure(
+        businessToken: String,
+        scanPrecision: ScanPrecision,
+        maxQueuedPayloads: MaxQueuedPayloads,
+        technology: String,
+        periodicReconciliationEnabled: Bool,
+        periodicReconciliationInterval: TimeInterval,
+        periodicScanDuration: TimeInterval,
+        presenceHeartbeatInterval: TimeInterval,
+        collectAdvertisingId: Bool,
+        collectLocation: Bool,
+        collectWifi: Bool
+    ) {
+        configure(businessToken: businessToken, scanPrecision: scanPrecision, maxQueuedPayloads: maxQueuedPayloads,
+            technology: technology, periodicReconciliationEnabled: periodicReconciliationEnabled,
+            periodicReconciliationInterval: periodicReconciliationInterval, periodicScanDuration: periodicScanDuration,
+            presenceHeartbeatInterval: presenceHeartbeatInterval, collectAdvertisingId: collectAdvertisingId,
+            collectLocation: collectLocation, collectWifi: collectWifi, adaptiveSamplingEnabled: true, collectMotionSensors: nil)
+    }
+
     public func configure(
         businessToken: String,
         scanPrecision: ScanPrecision = .high,
@@ -1426,6 +1455,61 @@ public class BeAroundSDK {
     public static func trackingAuthorizationStatus() -> String {
         AdvertisingIdCollector.authorizationStatus()
     }
+
+    #if DEBUG
+    internal static func samplingTransportFixture(configuration: SDKConfiguration, client: APIClient,
+        storage: OfflineBatchStorage, withRuntime: Bool = true) -> BeAroundSDK {
+        let sdk = BeAroundSDK(preparePlatform: false, storage: storage)
+        sdk.samplingFixture = true
+        sdk.configuration = configuration
+        sdk.apiClient = client
+        sdk.sdkInfo = SDKInfo(appId: configuration.appId, build: 1)
+        if withRuntime { sdk.configureSampling(configuration, deviceID: "device-1") }
+        return sdk
+    }
+
+    internal func inspectSamplingFixture(_ completion: @escaping (AdaptiveSamplingRuntime?, Bool) -> Void) {
+        beaconQueue.async { completion(self.samplingRuntime, self.isSyncing) }
+    }
+
+    internal func submitSamplingFixture(_ envelope: StoredObservationEnvelope, storageID: String) {
+        beaconQueue.async { self.deliverObservation(envelope, storageId: storageID, manifest: nil) }
+    }
+
+    internal func syncSamplingFixture(beacons: [Beacon], device: UserDevice) {
+        beaconQueue.async {
+            self.samplingFixtureDevice = device
+            self.samplingRuntime?.recordLegacyPhysical(beacons, at: SamplingClock.now())
+            self.collectedBeacons = Dictionary(uniqueKeysWithValues: beacons.map { ("\($0.major).\($0.minor)", $0) })
+            self.syncBeacons()
+        }
+    }
+
+    internal func captureAtCapacitySamplingFixture(_ beacons: [Beacon], pending: StoredObservationEnvelope,
+        completion: @escaping (AdaptiveSamplingRuntime?) -> Void) {
+        beaconQueue.async {
+            self.unpersistedObservations = Array(repeating: pending, count: 32)
+            self.capturePhysical(beacons)
+            self.beaconQueue.async {
+                completion(self.samplingRuntime)
+                self.unpersistedObservations.removeAll()
+            }
+        }
+    }
+
+    internal func foregroundSamplingFixture() { appWillEnterForeground() }
+
+    internal func replaySamplingFixture() { drainRetryQueue() }
+
+    internal func endSamplingFixture() {
+        beaconQueue.async {
+            self.apiClient = nil
+            self.bgBatchWorkItem?.cancel()
+            self.syncPendingAfterCurrent = false
+            self.pendingSyncReasons.removeAll()
+        }
+    }
+    #endif
 
     // MARK: - Device Register
 
@@ -2082,7 +2166,7 @@ public class BeAroundSDK {
                 // Only send beacons that haven't been synced yet, and filter invalid RSSI
                 beaconsToSend = Array(collectedBeacons.values).filter {
                     !$0.alreadySynced && ($0.rssi != 0 || $0.discoverySources.contains(.coreLocation))
-                        && self.samplingRuntime?.physicalEvidenceIsFresh($0, at: samplingNow) == true
+                        && (self.samplingRuntime?.legacyEvidenceIsSendable($0, at: samplingNow) ?? true)
                 }
                 beaconsToSend = Array(beaconsToSend.sorted { $0.timestamp < $1.timestamp }.prefix(100))
                 NSLog("[BeAroundSDK] Syncing %d of %d beacons (pending only)", beaconsToSend.count, collectedBeacons.count)
@@ -2152,11 +2236,23 @@ public class BeAroundSDK {
             let bluetoothState = bluetoothManager.isPoweredOn ? "powered_on" : "powered_off"
             let appInForeground = !isInBackground
 
-            var userDevice = deviceInfoCollector.collectDeviceInfo(
+            var userDevice: UserDevice
+            #if DEBUG
+            if let supplied = self.samplingFixtureDevice { userDevice = supplied }
+            else {
+                userDevice = deviceInfoCollector.collectDeviceInfo(
                 locationPermission: locationPermission,
                 bluetoothState: bluetoothState,
                 appInForeground: appInForeground
             )
+            }
+            #else
+                userDevice = deviceInfoCollector.collectDeviceInfo(
+                locationPermission: locationPermission,
+                bluetoothState: bluetoothState,
+                appInForeground: appInForeground
+            )
+            #endif
             attachEncounterData(to: &userDevice)
 
             let trigger = self.syncTrigger
@@ -2164,12 +2260,23 @@ public class BeAroundSDK {
 
             let payload = APIClient.makeObservationPayload(beaconsToSend, sdkInfo: sdkInfo,
                 userDevice: userDevice, userProperties: userProperties, syncTrigger: trigger)
-            guard let envelope = try? self.samplingRuntime?.legacyEnvelope(beacons: beaconsToSend,
-                    payload: payload, at: SamplingClock.now()) else {
+            let envelope: StoredObservationEnvelope
+            do {
+                if let runtime = self.samplingRuntime {
+                    envelope = try runtime.legacyEnvelope(beacons: beaconsToSend, payload: payload, at: SamplingClock.now())
+                } else if let config = self.configuration {
+                    envelope = try StoredObservationEnvelope(batchId: UUID().uuidString,
+                        storedAtMs: SamplingClock.now().wallTimeMs,
+                        tenantFingerprint: SamplingTenantFingerprint.make(endpoint: config.apiBaseURL,
+                            appID: config.appId, deviceID: userDevice.deviceId, businessToken: config.businessToken),
+                        originalPayload: payload, sampling: nil, policy: config.dataCollectionPolicy, deliveryProtocol: .legacy)
+                } else { throw APIError.invalidResponse }
+            } catch {
                 self.isSyncing = false
                 self.endBackgroundTask()
                 self.notifySyncSettled(success: false)
                 self.syncDidFinishCoordination()
+                DispatchQueue.main.async { self.delegate?.didCompleteSync(beaconCount: beaconCount, success: false, error: error) }
                 return
             }
             let persistedBatchId = self.offlineBatchStorage.saveObservation(envelope, policy: DataCollectionPolicyStore.current)
@@ -2574,14 +2681,9 @@ public class BeAroundSDK {
                 return
             }
             let now = SamplingClock.now()
-            let excluded = Set(self.offlineBatchStorage.observationRecords().filter {
-                $0.envelope.tenantFingerprint == runtime.tenantFingerprint && $0.envelope.deliveryProtocol == .legacy
-                    && !AdaptiveSamplingRuntime.canDeliver($0.envelope, at: now, capabilityAvailable: false)
-            }.map { $0.envelope.batchId })
-            if !excluded.isEmpty { DiagnosticsStore.shared.recordError("historical legacy observation retained: freshness unavailable") }
             let records = self.offlineBatchStorage.loadReplayGroup(tenantFingerprint: runtime.tenantFingerprint,
                 policy: DataCollectionPolicyStore.current, capabilityAvailable: runtime.hasCapability(at: now),
-                excludingBatchIds: excluded)
+                maximumJSONBytes: runtime.maximumJSONBytes)
             guard let record = records.first else { self.notifySyncSettled(success: true); return }
             guard AdaptiveSamplingRuntime.canDeliver(record.envelope, at: now,
                     capabilityAvailable: runtime.hasCapability(at: now)) else {
@@ -2628,6 +2730,7 @@ public class BeAroundSDK {
             }) { [weak self] result in
             guard let self else { return }
             let successful: Bool
+            var deliveryError: Error?
             switch result {
             case .success:
                 successful = true
@@ -2636,6 +2739,7 @@ public class BeAroundSDK {
                 } else if let storageId { self.offlineBatchStorage.removeBatch(id: storageId) }
             case .failure(let error):
                 successful = false
+                deliveryError = error
                 if case APIError.httpError(let status, _) = error, [400, 401, 413, 422].contains(status), let storageId {
                     _ = self.offlineBatchStorage.quarantineBatch(id: storageId)
                 }
@@ -2643,7 +2747,7 @@ public class BeAroundSDK {
             self.beaconQueue.async {
                 if case .failure(let error) = result {
                     runtime?.recordDeliveryFailure()
-                    runtime?.deliveryFailed(error)
+                    runtime?.deliveryFailed(error, at: SamplingClock.now())
                     DiagnosticsStore.shared.recordError(error.localizedDescription)
                 }
                 if let runtime, self.samplingRuntime === runtime { DiagnosticsStore.shared.recordSampling(runtime.diagnostics) }
@@ -2676,14 +2780,14 @@ public class BeAroundSDK {
                 self.syncDidFinishCoordination()
                 DispatchQueue.main.async {
                     self.delegate?.didCompleteSync(beaconCount: beaconCount, success: successful,
-                        error: successful ? nil : APIError.invalidResponse)
+                        error: deliveryError)
                 }
                 if successful, self.shouldRetryFailedBatches() { self.drainRetryQueue() }
             }
         }
     }
 
-    private func configureSampling(_ config: SDKConfiguration, startMotion: Bool = false) {
+    private func configureSampling(_ config: SDKConfiguration, startMotion: Bool = false, deviceID: String? = nil) {
         samplingLifecycleLock.lock()
         motionCollectionRunning = false
         samplingLifecycleLock.unlock()
@@ -2708,8 +2812,9 @@ public class BeAroundSDK {
             self.publishedSamplingGeneration = self.samplingGeneration
             self.motionCollectionRunning = startMotion && config.adaptiveSamplingEnabled && config.dataCollectionPolicy.motionSensors
             self.samplingLifecycleLock.unlock()
-            let runtime = AdaptiveSamplingRuntime(configuration: config, deviceID: DeviceIdentifier.getDeviceId(),
+            let runtime = AdaptiveSamplingRuntime(configuration: config, deviceID: deviceID ?? DeviceIdentifier.getDeviceId(),
                 generation: self.samplingGeneration)
+            if let previous = self.samplingRuntime { runtime.inheritLegacyPhysical(from: previous) }
             self.samplingRuntime = runtime
             let client = self.apiClient
             client?.submissionContextProvider = { [weak self, weak runtime, weak client] prepare in
@@ -2767,8 +2872,16 @@ public class BeAroundSDK {
                     DiagnosticsStore.shared.recordSampling(runtime.diagnostics)
                 }
             }
-            if startMotion && config.adaptiveSamplingEnabled && config.dataCollectionPolicy.motionSensors {
-                _ = self.motionMonitor.start(generation: runtime.generation, collectionAllowed: { [weak self] in
+            if startMotion { self.startSamplingMotion(runtime) }
+            self.requestInertialBurst()
+            DiagnosticsStore.shared.recordSampling(runtime.diagnostics)
+        }
+    }
+
+    private func startSamplingMotion(_ runtime: AdaptiveSamplingRuntime) {
+        guard let config = configuration, samplingRuntime === runtime else { return }
+            if isMotionCollectionEligible(generation: runtime.generation, foregroundOnly: false) && config.adaptiveSamplingEnabled && config.dataCollectionPolicy.motionSensors {
+                _ = motionMonitor.start(generation: runtime.generation, collectionAllowed: { [weak self] in
                     self?.isMotionCollectionEligible(generation: runtime.generation, foregroundOnly: false) == true
                 }) { [weak self, weak runtime] activity, clock, generation in
                     self?.beaconQueue.async { [weak self, weak runtime] in
@@ -2778,9 +2891,6 @@ public class BeAroundSDK {
                     }
                 }
             }
-            self.requestInertialBurst()
-            DiagnosticsStore.shared.recordSampling(runtime.diagnostics)
-        }
     }
 
     private func isMotionCollectionEligible(generation: UInt64, foregroundOnly: Bool) -> Bool {
@@ -2838,8 +2948,14 @@ public class BeAroundSDK {
         samplingLifecycleLock.unlock()
         beaconQueue.async { [weak self] in
             guard let self, let runtime = self.samplingRuntime, let sdkInfo = self.sdkInfo,
-                  runtime.generation == callbackGeneration, SDKConfigStorage.loadIsScanning(),
-                  self.unpersistedObservations.count < 32 else { return }
+                  runtime.generation == callbackGeneration else { return }
+            #if DEBUG
+            guard self.samplingFixture || SDKConfigStorage.loadIsScanning() else { return }
+            #else
+            guard SDKConfigStorage.loadIsScanning() else { return }
+            #endif
+            runtime.recordLegacyPhysical(beacons, at: clock)
+            guard self.unpersistedObservations.count < 32 else { return }
             self.requestInertialBurst()
             runtime.observePhysical(beacons, callbackID: callbackID, at: clock, existingEncounterFieldsProvider: {
                 guard let mesh = self.bluetoothManager.encounterMesh else { return ["encounters": [], "encounterIds": []] }
@@ -3235,6 +3351,9 @@ public class BeAroundSDK {
     }
 
     private func beginBackgroundTask() {
+        #if DEBUG
+        if samplingFixture { return }
+        #endif
         // Acquire the UIBackgroundTask assertion SYNCHRONOUSLY before returning, so the
         // caller (syncBeacons / drainRetryQueue, both on beaconQueue) does not reach
         // task.resume() before the assertion is held. The previous version hopped to

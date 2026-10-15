@@ -263,4 +263,17 @@ struct SDKConfigurationSingleHostTests {
         #expect(request.url?.path == "/sdk/places/nearby")
     }
 
+
+    @Test("Original public initializer and configure signatures retain forwarding entrypoints")
+    func originalPublicSignatures() {
+        let policy: (Bool, Bool, Bool) -> DataCollectionPolicy = DataCollectionPolicy.init(advertisingId:location:wifi:)
+        #expect(!policy(false, false, false).motionSensors)
+        let configuration: (String, ScanPrecision, MaxQueuedPayloads, String, Bool, TimeInterval, TimeInterval,
+            TimeInterval, Bool, Bool, Bool) -> SDKConfiguration = SDKConfiguration.init(businessToken:scanPrecision:maxQueuedPayloads:technology:periodicReconciliationEnabled:periodicReconciliationInterval:periodicScanDuration:presenceHeartbeatInterval:collectAdvertisingId:collectLocation:collectWifi:)
+        #expect(configuration("fixture-token", .medium, .medium, "fixture", false, 1200, 12, 300, false, false, false).adaptiveSamplingEnabled)
+        let configure: (BeAroundSDK) -> (String, ScanPrecision, MaxQueuedPayloads, String, Bool, TimeInterval,
+            TimeInterval, TimeInterval, Bool, Bool, Bool) -> Void = BeAroundSDK.configure(businessToken:scanPrecision:maxQueuedPayloads:technology:periodicReconciliationEnabled:periodicReconciliationInterval:periodicScanDuration:presenceHeartbeatInterval:collectAdvertisingId:collectLocation:collectWifi:)
+        _ = configure
+    }
+
 }

@@ -1,5 +1,6 @@
 #!/bin/bash
 set -euo pipefail
+command -v python3 >/dev/null 2>&1 || { echo "Python 3 is required for framework provenance verification" >&2; exit 1; }
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 HELPER="${REPO_ROOT}/scripts/adaptive-bench-build.py"
@@ -81,7 +82,7 @@ if [ "$BUILD_ONLY" = true ]; then
     SIGNING+=('CODE_SIGNING_ALLOWED=NO' 'CODE_SIGNING_REQUIRED=NO' 'CODE_SIGN_IDENTITY=')
 else
     if [ -z "$DEVICE_ID" ]; then
-        DEVICE_ID=$(xcrun devicectl list devices 2>/dev/null | awk '/available/ {print $(NF-3)}' | rg '^[0-9A-F-]{36}$' | head -1) || true
+        DEVICE_ID=$(xcrun devicectl list devices 2>/dev/null | awk '/available/ {print $(NF-3)}' | grep -E '^[0-9A-F-]{36}$' | head -1) || true
     fi
     [ -n "$DEVICE_ID" ] || fail 'No physical device available; use --build-only for an unsigned generic build'
     DESTINATION="platform=iOS,id=${DEVICE_ID}"

@@ -141,38 +141,6 @@ final class BackgroundSessionManager: NSObject {
     /// and preserves an honest `.background` mode for callers without an execution
     /// window. Background sessions reject `httpBody` on upload tasks, so the body is
     /// staged to a temp file (deleted in didCompleteWithError).
-    func upload(
-        request: URLRequest,
-        bodyData: Data,
-        persistedBatchIds: [String] = [],
-        completion: @escaping (Result<Void, Error>) -> Void
-    ) {
-        let fileURL = FileManager.default.temporaryDirectory
-            .appendingPathComponent("bearound-upload-\(UUID().uuidString).json")
-        do {
-            try bodyData.write(to: fileURL, options: .atomic)
-        } catch {
-            NSLog("[BeAroundSDK] Failed to stage upload body: %@", error.localizedDescription)
-            completion(.failure(error))
-            return
-        }
-
-        let task = session.uploadTask(with: request, fromFile: fileURL)
-        // taskDescription survives process death with the task (the background
-        // daemon persists it). It carries the persisted-batch id(s) this upload
-        // represents, so didCompleteWithError can reconcile OfflineBatchStorage
-        // even when the in-memory `completions` map died with the old process.
-        if !persistedBatchIds.isEmpty {
-            task.taskDescription = persistedBatchIds.joined(separator: ",")
-        }
-        lock.lock()
-        completions[task.taskIdentifier] = completion
-        responseData[task.taskIdentifier] = Data()
-        taskFiles[task.taskIdentifier] = fileURL
-        lock.unlock()
-        task.resume()
-    }
-
     func uploadObservation(
         request: URLRequest, bodyData: Data, reconciliation: ObservationDeliveryReconciliation,
         stagingDirectory: URL = FileManager.default.temporaryDirectory,
@@ -346,15 +314,44 @@ enum DeliveryPath {
 
 class APIClient {
     private let configuration: SDKConfiguration
-    var responseObserver: ((Data, SamplingClock, SamplingClock) -> Void)?
-    var submissionContextProvider: ((@escaping (RequestSubmissionContext?) -> Void) -> Void)?
-    var gzipRejectionObserver: ((RequestEncodingLease, @escaping () -> Void) -> Void)?
-    var bodyAttemptObserver: ((Int) -> Void)?
-    var budgetRejectionObserver: ((Int) -> Void)?
-    var clockProvider: () -> SamplingClock = { SamplingClock.now() }
     typealias Transport = (URLRequest, Data, DeliveryPath, ObservationDeliveryReconciliation,
         @escaping () -> Bool, @escaping (Result<Data, Error>) -> Void) -> Void
-    var transport: Transport?
+    private let observerLock = NSLock()
+    private var _responseObserver: ((Data, SamplingClock, SamplingClock) -> Void)?
+    var responseObserver: ((Data, SamplingClock, SamplingClock) -> Void)? {
+        get { observerLock.lock(); defer { observerLock.unlock() }; return _responseObserver }
+        set { observerLock.lock(); defer { observerLock.unlock() }; _responseObserver = newValue }
+    }
+    private var _submissionContextProvider: ((@escaping (RequestSubmissionContext?) -> Void) -> Void)?
+    var submissionContextProvider: ((@escaping (RequestSubmissionContext?) -> Void) -> Void)? {
+        get { observerLock.lock(); defer { observerLock.unlock() }; return _submissionContextProvider }
+        set { observerLock.lock(); defer { observerLock.unlock() }; _submissionContextProvider = newValue }
+    }
+    private var _gzipRejectionObserver: ((RequestEncodingLease, @escaping () -> Void) -> Void)?
+    var gzipRejectionObserver: ((RequestEncodingLease, @escaping () -> Void) -> Void)? {
+        get { observerLock.lock(); defer { observerLock.unlock() }; return _gzipRejectionObserver }
+        set { observerLock.lock(); defer { observerLock.unlock() }; _gzipRejectionObserver = newValue }
+    }
+    private var _bodyAttemptObserver: ((Int) -> Void)?
+    var bodyAttemptObserver: ((Int) -> Void)? {
+        get { observerLock.lock(); defer { observerLock.unlock() }; return _bodyAttemptObserver }
+        set { observerLock.lock(); defer { observerLock.unlock() }; _bodyAttemptObserver = newValue }
+    }
+    private var _budgetRejectionObserver: ((Int) -> Void)?
+    var budgetRejectionObserver: ((Int) -> Void)? {
+        get { observerLock.lock(); defer { observerLock.unlock() }; return _budgetRejectionObserver }
+        set { observerLock.lock(); defer { observerLock.unlock() }; _budgetRejectionObserver = newValue }
+    }
+    private var _clockProvider: () -> SamplingClock = { SamplingClock.now() }
+    var clockProvider: () -> SamplingClock {
+        get { observerLock.lock(); defer { observerLock.unlock() }; return _clockProvider }
+        set { observerLock.lock(); defer { observerLock.unlock() }; _clockProvider = newValue }
+    }
+    private var _transport: Transport?
+    var transport: Transport? {
+        get { observerLock.lock(); defer { observerLock.unlock() }; return _transport }
+        set { observerLock.lock(); defer { observerLock.unlock() }; _transport = newValue }
+    }
 
     /// Short-timeout session for `.immediateFirst` deliveries. Ephemeral: no cache/cookies,
     /// nothing persisted — the durable path is the background session + OfflineBatchStorage.
@@ -420,7 +417,7 @@ class APIClient {
             }, completion: { result in
                 if case .success(let data) = result, envelope.deliveryProtocol == .adaptive,
                    AdaptiveSamplingResponse.decode(data)?.samplingAck?.confirms(envelope.batchId) != true {
-                    completion(.failure(APIError.invalidResponse)); return
+                    completion(.failure(APIError.invalidSamplingAcknowledgment)); return
                 }
                 completion(result)
             })
@@ -442,16 +439,23 @@ class APIClient {
                 let encoded: EncodedRequestBody
                 do {
                     let original = try body(context, requestedAt)
-                    guard !original.isEmpty, original.count <= min(524_288, context.maximumJSONBytes) else {
-                        self.budgetRejectionObserver?(original.count)
+                    let adaptive = reconciliation.adaptiveBatchId != nil
+                    let maximum = adaptive ? min(524_288, context.maximumJSONBytes) : 1_048_576
+                    guard !original.isEmpty, original.count <= maximum else {
+                        if adaptive { self.budgetRejectionObserver?(original.count) }
                         throw RequestBodyEncoding.Failure.invalidBudget
                     }
-                    encoded = try RequestBodyEncoding.encode(original,
-                        gzipAllowed: !forceIdentity && !identityRetry && !forceAttemptIdentity && requestedAt.isReliable
-                            && context.gzipLease?.bootIdentifier == requestedAt.bootIdentifier
-                            && (context.gzipLease?.expiresAtMonotonicMs ?? 0) > requestedAt.monotonicTimeMs
-                            && !BackgroundSessionManager.requiresIdentity(reconciliation),
-                        maximumJSONBytes: context.maximumJSONBytes)
+                    if !adaptive && original.count > 524_288 {
+                        encoded = EncodedRequestBody(data: original, contentType: "application/json",
+                            contentEncoding: nil, originalJsonBytes: original.count)
+                    } else {
+                        encoded = try RequestBodyEncoding.encode(original,
+                            gzipAllowed: !forceIdentity && !identityRetry && !forceAttemptIdentity && requestedAt.isReliable
+                                && context.gzipLease?.bootIdentifier == requestedAt.bootIdentifier
+                                && (context.gzipLease?.expiresAtMonotonicMs ?? 0) > requestedAt.monotonicTimeMs
+                                && !BackgroundSessionManager.requiresIdentity(reconciliation),
+                            maximumJSONBytes: adaptive ? context.maximumJSONBytes : 524_288)
+                    }
                 } catch { completion(.failure(error)); return }
                 var request = URLRequest(url: url)
                 request.httpMethod = "POST"
@@ -820,6 +824,7 @@ class APIClient {
 enum APIError: LocalizedError {
     case invalidURL
     case invalidResponse
+    case invalidSamplingAcknowledgment
     case httpError(statusCode: Int, body: String? = nil)
 
     var errorDescription: String? {
@@ -828,6 +833,8 @@ enum APIError: LocalizedError {
             "Invalid API URL"
         case .invalidResponse:
             "Invalid server response"
+        case .invalidSamplingAcknowledgment:
+            "Missing or invalid durable sampling acknowledgment"
         case .httpError(let code, let body):
             if let body, !body.isEmpty {
                 "HTTP error: \(code) — \(body)"

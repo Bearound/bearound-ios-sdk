@@ -53,7 +53,7 @@ struct SamplingClock: Equatable {
     static func now() -> SamplingClock {
         SamplingClock(
             wallTimeMs: Int64(Date().timeIntervalSince1970 * 1_000),
-            monotonicTimeMs: Int64(ProcessInfo.processInfo.systemUptime * 1_000),
+            monotonicTimeMs: Int64(AppPresenceClock.continuousSeconds() * 1_000),
             bootIdentifier: processIdentifier
         )
     }

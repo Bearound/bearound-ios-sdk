@@ -764,6 +764,78 @@ struct APIClientTests {
         }
     }
 
+    @Test("A valid durable ACK survives malformed optional capability and missing ACK still fails")
+    func independentAcknowledgmentDecode() async throws {
+        let (client, envelope, _, _) = try encodingFixture()
+        let valid = try #require(JSONSerialization.jsonObject(with: durableAck(envelope)) as? [String: Any])
+        var malformed = valid
+        malformed["capabilities"] = ["adaptiveSampling": ["version": 1]]
+        for body in [valid, malformed] {
+            client.transport = { _, _, _, _, submit, finish in
+                #expect(submit())
+                finish(.success(try! JSONSerialization.data(withJSONObject: body)))
+            }
+            _ = try await deliver(client, envelope).get()
+        }
+        client.transport = { _, _, _, _, submit, finish in #expect(submit()); finish(.success(Data("{}".utf8))) }
+        let rejected = await deliver(client, envelope)
+        guard case .failure(APIError.invalidSamplingAcknowledgment) = rejected else { Issue.record("Missing ACK must remain a typed failure"); return }
+    }
+
+    @Test("Observer callback publication tolerates concurrent replacement without exposing mutable storage")
+    func observerPublication() {
+        let client = APIClient(configuration: SDKConfiguration(businessToken: "fixture-token"))
+        DispatchQueue.concurrentPerform(iterations: 200) { _ in
+            client.responseObserver = { _, _, _ in }
+            let callback = client.responseObserver
+            callback?(Data(), SamplingClock.now(), SamplingClock.now())
+            client.bodyAttemptObserver = { _ in }
+            client.bodyAttemptObserver?(1)
+        }
+    }
+
+    @Test("Legacy snapshots bypass negotiated adaptive budgets and retain identity support through one MiB", arguments: [4096, 600_000, 1_048_576])
+    func legacyBudgetCompatibility(size: Int) async throws {
+        let (client, original, _, lease) = try encodingFixture()
+        var payload = original.originalPayload.mapValues { $0.foundationValue }
+        payload["userProperties"] = ["internalId": "original-user", "padding": ""]
+        let paddingCount = size == 1_048_576 ? size - (try JSONSerialization.data(withJSONObject: payload).count) : size
+        payload["userProperties"] = ["internalId": "original-user", "padding": String(repeating: "x", count: paddingCount)]
+        let legacy = try StoredObservationEnvelope(batchId: original.batchId, storedAtMs: original.storedAtMs,
+            tenantFingerprint: original.tenantFingerprint, originalPayload: payload, sampling: nil, deliveryProtocol: .legacy)
+        let storage = OfflineBatchStorage(directoryName: "com.bearound.sdk.test.legacy-budget.\(UUID().uuidString)")
+        defer { storage.clearAllBatches() }
+        let storageID = try #require(storage.saveObservation(legacy))
+        let tenant = try #require(legacy.tenantFingerprint)
+        let selected = try #require(storage.loadReplayGroup(tenantFingerprint: tenant,
+            capabilityAvailable: false, maximumJSONBytes: 100).first)
+        #expect(selected.storageId == storageID && selected.envelope.originalPayload == legacy.originalPayload)
+        client.submissionContextProvider = {
+            $0(RequestSubmissionContext(policy: .allEnabled, gzipLease: lease, maximumJSONBytes: 100, adaptiveAllowed: false))
+        }
+        var requests = 0
+        client.transport = { request, data, _, descriptor, submit, finish in
+            #expect(submit()); requests += 1
+            #expect(descriptor.adaptiveBatchId == nil)
+            let decoded: Data
+            if size > 524_288 {
+                #expect(request.value(forHTTPHeaderField: "Content-Encoding") == nil)
+                #expect(data.count > 524_288 && data.count <= 1_048_576)
+                if size == 1_048_576 { #expect(data.count == size) }
+                decoded = data
+            } else {
+                decoded = request.value(forHTTPHeaderField: "Content-Encoding") == "gzip" ? try! RequestBodyEncodingTests.gunzip(data) : data
+            }
+            let body = try! JSONSerialization.jsonObject(with: decoded) as! [String: Any]
+            #expect(body["sampling"] == nil && body["syncTrigger"] as? String == "original-trigger")
+            #expect(((body["userProperties"] as! [String: Any])["padding"] as! String).count == paddingCount)
+            #expect(((body["device"] as! [String: Any])["timestamp"] as! NSNumber).int64Value == original.storedAtMs)
+            finish(.success(Data("{}".utf8)))
+        }
+        _ = try await deliver(client, selected.envelope).get()
+        #expect(requests == 1 && storage.batchCount == 1)
+    }
+
 }
 
 private final class CompletedUploadFixtureProtocol: URLProtocol {
@@ -797,5 +869,7 @@ private final class CompletedUploadFixtureProtocol: URLProtocol {
     }
 
     override func stopLoading() {}
+
+
 
 }

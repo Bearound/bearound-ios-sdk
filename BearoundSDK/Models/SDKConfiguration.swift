@@ -255,6 +255,26 @@ public struct SDKConfiguration {
 
     public init(
         businessToken: String,
+        scanPrecision: ScanPrecision,
+        maxQueuedPayloads: MaxQueuedPayloads,
+        technology: String,
+        periodicReconciliationEnabled: Bool,
+        periodicReconciliationInterval: TimeInterval,
+        periodicScanDuration: TimeInterval,
+        presenceHeartbeatInterval: TimeInterval,
+        collectAdvertisingId: Bool,
+        collectLocation: Bool,
+        collectWifi: Bool
+    ) {
+        self.init(businessToken: businessToken, scanPrecision: scanPrecision, maxQueuedPayloads: maxQueuedPayloads,
+            technology: technology, periodicReconciliationEnabled: periodicReconciliationEnabled,
+            periodicReconciliationInterval: periodicReconciliationInterval, periodicScanDuration: periodicScanDuration,
+            presenceHeartbeatInterval: presenceHeartbeatInterval, collectAdvertisingId: collectAdvertisingId,
+            collectLocation: collectLocation, collectWifi: collectWifi, adaptiveSamplingEnabled: true, collectMotionSensors: nil)
+    }
+
+    public init(
+        businessToken: String,
         scanPrecision: ScanPrecision = .high,
         maxQueuedPayloads: MaxQueuedPayloads = .medium,
         technology: String = "ios-native",

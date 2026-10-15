@@ -165,7 +165,7 @@ struct AdaptiveSamplingDiagnosticsTests {
         #expect(pending.contains { $0.sampling?.kind == .summary })
     }
 
-    @Test("Original legacy clock allows fresh compatibility retry and rejects stale rebooted or missing provenance")
+    @Test("Complete legacy snapshots remain durable across outages and process relaunch")
     func legacyReplayFreshness() throws {
         let runtime = runtime()
         observe(runtime)
@@ -174,11 +174,11 @@ struct AdaptiveSamplingDiagnosticsTests {
             "rssi": -70, "timestamp": base, "accuracy": -1, "proximity": "bt"]]
         let envelope = try runtime.legacyEnvelope(beacons: [beacon()], payload: payload, at: clock())
         #expect(AdaptiveSamplingRuntime.canDeliver(envelope, at: clock(30_000), capabilityAvailable: false))
-        #expect(!AdaptiveSamplingRuntime.canDeliver(envelope, at: clock(30_001), capabilityAvailable: false))
-        #expect(!AdaptiveSamplingRuntime.canDeliver(envelope, at: clock(1, boot: UUID().uuidString), capabilityAvailable: true))
+        #expect(AdaptiveSamplingRuntime.canDeliver(envelope, at: clock(60_000), capabilityAvailable: false))
+        #expect(AdaptiveSamplingRuntime.canDeliver(envelope, at: clock(1, boot: UUID().uuidString), capabilityAvailable: false))
         let missing = try StoredObservationEnvelope(batchId: UUID().uuidString, storedAtMs: base,
             tenantFingerprint: runtime.tenantFingerprint, originalPayload: payload, sampling: nil, deliveryProtocol: .legacy)
-        #expect(!AdaptiveSamplingRuntime.canDeliver(missing, at: clock(), capabilityAvailable: false))
+        #expect(AdaptiveSamplingRuntime.canDeliver(missing, at: clock(), capabilityAvailable: false))
     }
 
     @Test("Clock discontinuity closes original history and invalidates capability without new stale samples")
@@ -505,6 +505,57 @@ struct AdaptiveSamplingDiagnosticsTests {
         }
         #expect(normalDebug == nil)
     }
+    #endif
+
+
+    @Test("Legacy physical provenance survives adaptive pressure and preserves medium precision grace", arguments: [false, true])
+    func independentLegacyProvenance(enabled: Bool) throws {
+        let config = SDKConfiguration(businessToken: "fixture-token", scanPrecision: .medium, adaptiveSamplingEnabled: enabled)
+        let runtime = AdaptiveSamplingRuntime(configuration: config, deviceID: "device")
+        observe(runtime)
+        #expect(runtime.legacyEvidenceIsSendable(beacon(), at: clock(119_000)))
+        #expect(!runtime.legacyEvidenceIsSendable(beacon(), at: clock(120_001)))
+        #expect(!runtime.physicalEvidenceIsFresh(beacon(), at: clock(31_000)))
+        let replacement = AdaptiveSamplingRuntime(configuration: config, deviceID: "device", generation: 2)
+        replacement.inheritLegacyPhysical(from: runtime)
+        #expect(replacement.legacyEvidenceIsSendable(beacon(), at: clock(60_000)))
+    }
+
+    @Test("Adaptive pending capacity cannot prevent recording independent legacy provenance")
+    func pendingCapacityPreservesLegacy() throws {
+        let runtime = runtime()
+        var advertised = try #require(JSONSerialization.jsonObject(with: response()) as? [String: Any])
+        var capabilities = advertised["capabilities"] as! [String: Any]
+        var capability = capabilities["adaptiveSampling"] as! [String: Any]
+        capability["servicesCadenceMs"] = 5_000; capabilities["adaptiveSampling"] = capability; advertised["capabilities"] = capabilities
+        runtime.acceptResponse(try JSONSerialization.data(withJSONObject: advertised), requestedAt: clock(), receivedAt: clock(), generation: runtime.generation)
+        for offset in stride(from: Int64(0), through: 220_000, by: 5_000) { observe(runtime, offset) }
+        #expect(runtime.diagnostics.policyDenials > 0)
+        #expect(runtime.legacyEvidenceIsSendable(beacon(220_000), at: clock(220_000)))
+    }
+
+    @Test("Invalid durable acknowledgment degrades once and waits before accepting a new capability")
+    func invalidAckBackoff() throws {
+        let runtime = runtime(); try negotiate(runtime)
+        runtime.deliveryFailed(APIError.invalidSamplingAcknowledgment, at: clock())
+        #expect(!runtime.hasCapability(at: clock()))
+        try negotiate(runtime, at: 59_999)
+        #expect(!runtime.hasCapability(at: clock(59_999)))
+        try negotiate(runtime, at: 60_000)
+        #expect(runtime.hasCapability(at: clock(60_000)))
+    }
+
+    #if DEBUG
+    @Test("Debug fixture endpoints fail closed for missing public and malformed origins")
+    func fixtureEndpointGuard() {
+        #expect(AdaptiveSamplingBench.validatedEndpoint(nil) == nil)
+        for value in ["https://ingest.bearound.io", "http://127.0.0.1", "https://fixture.example", "https://127.0.0.1/path", "https://user@127.0.0.1"] {
+            #expect(AdaptiveSamplingBench.validatedEndpoint(value) == nil)
+        }
+        #expect(AdaptiveSamplingBench.validatedEndpoint("https://192.168.1.2:18081/") == "https://192.168.1.2:18081")
+        #expect(AdaptiveSamplingBench.validatedEndpoint("https://localhost:18081") != nil)
+    }
+
     #endif
 
 }

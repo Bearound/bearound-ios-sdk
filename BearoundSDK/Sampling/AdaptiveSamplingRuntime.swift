@@ -50,6 +50,14 @@ struct AdaptiveSamplingResponse: Decodable {
     let samplingAck: Ack?
     let capabilities: Capabilities?
 
+    private enum CodingKeys: String, CodingKey { case samplingAck, capabilities }
+
+    init(from decoder: Decoder) throws {
+        let fields = try decoder.container(keyedBy: CodingKeys.self)
+        samplingAck = try? fields.decodeIfPresent(Ack.self, forKey: .samplingAck)
+        capabilities = try? fields.decodeIfPresent(Capabilities.self, forKey: .capabilities)
+    }
+
     static func decode(_ data: Data) -> AdaptiveSamplingResponse? {
         try? JSONDecoder().decode(Self.self, from: data)
     }
@@ -83,6 +91,8 @@ final class AdaptiveSamplingRuntime {
     private var pending: [StoredObservationEnvelope] = []
     private var adaptiveWindowEligible = false
     private var minimumSourceTimestampMs: Int64 = 0
+    private var legacySourceTimes: [String: Int64] = [:]
+    private var acknowledgmentRetryAfter: Int64 = 0
 
     init(configuration: SDKConfiguration, deviceID: String, generation: UInt64 = 0) {
         self.configuration = configuration
@@ -151,6 +161,7 @@ final class AdaptiveSamplingRuntime {
             invalidateCapability(reason: "degraded")
             return
         }
+        guard receivedAt.monotonicTimeMs >= acknowledgmentRetryAfter else { return }
         guard configuration.adaptiveSamplingEnabled, let advertised = response.capabilities?.adaptiveSampling,
               advertised.isValid(baselineMs: baselineMs), requestedAt.isReliable, receivedAt.isReliable,
               requestedAt.bootIdentifier == receivedAt.bootIdentifier,
@@ -245,6 +256,7 @@ final class AdaptiveSamplingRuntime {
         contextProvider: () -> [String: Any]
     ) {
         guard isPhysical else { diagnostics.cachedCallbacks += 1; return }
+        recordLegacyPhysical(beacons, at: now)
         guard pending.count < 32 else {
             invalidateCapability(reason: "capacity")
             diagnostics.policyDenials += 1
@@ -417,18 +429,42 @@ final class AdaptiveSamplingRuntime {
     static func canDeliver(_ envelope: StoredObservationEnvelope, at now: SamplingClock, capabilityAvailable: Bool) -> Bool {
         guard envelope.canReplay else { return false }
         if envelope.deliveryProtocol == .adaptive { return capabilityAvailable }
-        guard let original = envelope.sampling, now.isReliable,
-              original.clock.bootId == now.bootIdentifier,
-              now.monotonicTimeMs >= original.clock.monotonicTimeMs,
-              abs((now.wallTimeMs - original.clock.wallTimeMs) - (now.monotonicTimeMs - original.clock.monotonicTimeMs)) <= 5_000,
-              original.observedTo <= now.wallTimeMs, now.wallTimeMs - original.observedFrom <= 30_000 else { return false }
         return true
     }
 
-    func deliveryFailed(_ error: Error) {
+    func deliveryFailed(_ error: Error, at now: SamplingClock = .now()) {
+        if case APIError.invalidSamplingAcknowledgment = error {
+            acknowledgmentRetryAfter = now.monotonicTimeMs + 60_000
+            invalidateCapability(reason: "invalid_acknowledgment")
+            return
+        }
         if case APIError.httpError(let status, _) = error, [400, 401, 413, 422, 503].contains(status) {
             invalidateCapability(reason: "rejected")
         }
+    }
+
+    func inheritLegacyPhysical(from previous: AdaptiveSamplingRuntime) {
+        guard tenantFingerprint == previous.tenantFingerprint else { return }
+        legacySourceTimes = previous.legacySourceTimes
+    }
+
+    func recordLegacyPhysical(_ beacons: [Beacon], at now: SamplingClock) {
+        let maximumAge = baselineMs * 2
+        for beacon in beacons where beacon.major < Int(EncounterMeshManager.virtualBeaconMajorFloor) {
+            let timestamp = Int64(beacon.timestamp.timeIntervalSince1970 * 1_000)
+            guard timestamp <= now.wallTimeMs, now.wallTimeMs - timestamp <= maximumAge else { continue }
+            legacySourceTimes[key(beacon)] = max(legacySourceTimes[key(beacon)] ?? 0, timestamp)
+        }
+        legacySourceTimes = legacySourceTimes.filter { now.wallTimeMs - $0.value <= maximumAge }
+        if legacySourceTimes.count > 4096 {
+            legacySourceTimes = Dictionary(uniqueKeysWithValues: legacySourceTimes.sorted { $0.value > $1.value }.prefix(4096).map { ($0.key, $0.value) })
+        }
+    }
+
+    func legacyEvidenceIsSendable(_ beacon: Beacon, at now: SamplingClock) -> Bool {
+        let timestamp = Int64(beacon.timestamp.timeIntervalSince1970 * 1_000)
+        return legacySourceTimes[key(beacon)] == timestamp && timestamp <= now.wallTimeMs
+            && now.wallTimeMs - timestamp <= baselineMs * 2
     }
 
     func physicalEvidenceIsFresh(_ beacon: Beacon, at now: SamplingClock) -> Bool {

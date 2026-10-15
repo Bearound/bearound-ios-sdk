@@ -120,4 +120,25 @@ struct InertialMotionMonitorTests {
         }
     }
 
+
+    @Test("Sensor source times map into a sleep inclusive timeline without callback retimestamping")
+    func continuousSensorMapping() {
+        #expect(CoreMotionInertialProvider.continuousTimestamp(sourceSeconds: 100.25,
+            sourceUptimeMs: 100_000, continuousMs: 400_000) == 400_250)
+        #expect(CoreMotionInertialProvider.continuousTimestamp(sourceSeconds: 100.10,
+            sourceUptimeMs: 100_000, continuousMs: 400_000) == 400_100)
+        let clock = SamplingClock.now()
+        let continuous = Int64(AppPresenceClock.continuousSeconds() * 1_000)
+        #expect(abs(clock.monotonicTimeMs - continuous) < 100)
+    }
+
+    @Test("Sleep during a burst discards it and continuous elapsed time still permits the next bounded start")
+    func sleepAcrossBurst() {
+        let h = Harness(); #expect(h.start()); h.emit()
+        h.move(303_000); h.closures[0]()
+        #expect(h.windows.isEmpty && h.provider.stops == 1)
+        #expect(h.start())
+        h.monitor.stop()
+    }
+
 }

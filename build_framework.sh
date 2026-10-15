@@ -1,5 +1,6 @@
 #!/bin/bash
 set -euo pipefail
+command -v python3 >/dev/null 2>&1 || { echo "Python 3 is required for framework provenance verification" >&2; exit 1; }
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CONFIGURATION=Release

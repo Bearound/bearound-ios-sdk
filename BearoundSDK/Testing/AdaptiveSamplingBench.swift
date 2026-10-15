@@ -5,13 +5,27 @@ import Foundation
 /// HTTPS requests still use the production URLSession trust and authorization paths.
 public enum AdaptiveSamplingBench {
     public static var isEnabled: Bool {
-        Bundle.main.object(forInfoDictionaryKey: "BEAROUND_ADAPTIVE_BENCH") as? Bool == true
+        Bundle.main.object(forInfoDictionaryKey: "BEAROUND_ADAPTIVE_BENCH") as? Bool == true && endpoint != nil
     }
 
     static var endpoint: String? {
-        guard isEnabled, let value = Bundle.main.object(forInfoDictionaryKey: "BEAROUND_ADAPTIVE_BENCH_ENDPOINT") as? String,
+        guard Bundle.main.object(forInfoDictionaryKey: "BEAROUND_ADAPTIVE_BENCH") as? Bool == true, let value = Bundle.main.object(forInfoDictionaryKey: "BEAROUND_ADAPTIVE_BENCH_ENDPOINT") as? String,
               let url = URL(string: value), url.scheme == "https", url.host != nil,
               url.user == nil, url.password == nil, url.query == nil, url.fragment == nil else { return nil }
+        return validatedEndpoint(value)
+    }
+
+    static func validatedEndpoint(_ value: String?) -> String? {
+        guard let value, let url = URL(string: value), url.scheme == "https", let host = url.host?.lowercased(),
+              url.user == nil, url.password == nil, url.query == nil, url.fragment == nil,
+              url.path.isEmpty || url.path == "/", url.port != 0 else { return nil }
+        let parts = host.split(separator: ".").compactMap { Int($0) }
+        let privateV4 = parts.count == 4 && parts.allSatisfy { (0...255).contains($0) }
+            && (parts[0] == 10 || parts[0] == 127 || parts[0] == 192 && parts[1] == 168
+                || parts[0] == 172 && (16...31).contains(parts[1]))
+        guard host == "localhost" || host.hasSuffix(".local") || privateV4 || host == "::1"
+            || host.hasPrefix("fc") && host.contains(":") || host.hasPrefix("fd") && host.contains(":")
+            || host.hasPrefix("fe80:") else { return nil }
         return value.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
     }
 

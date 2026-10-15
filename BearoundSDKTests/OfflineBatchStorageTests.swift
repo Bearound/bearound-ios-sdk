@@ -535,6 +535,36 @@ struct OfflineBatchStorageTests {
         #expect(!storage.observationRecords().contains { $0.storageId == id })
     }
 
+
+    @Test("Negotiated budget skips an oversized original without starving a later compatible replay")
+    func replayBudgetForwardProgress() throws {
+        let storage = makeStorage(); defer { storage.clearAllBatches() }
+        var large = try makeEnvelope(contextLabel: "large")
+        large.originalPayload["extra"] = .string(String(repeating: "x", count: 8_000))
+        let small = try makeEnvelope(contextLabel: "small")
+        #expect(storage.saveObservation(large) != nil && storage.saveObservation(small) != nil)
+        let budget = try JSONSerialization.data(withJSONObject: APIClient.observationPayload(small,
+            manifest: SamplingReplayManifest(drainId: UUID().uuidString, batchIds: [small.batchId], index: 0, count: 1))).count + 100
+        let selected = try #require(storage.loadReplayGroup(tenantFingerprint: tenantA, capabilityAvailable: true,
+            maximumJSONBytes: budget).first)
+        #expect(selected.envelope.batchId == small.batchId)
+        #expect(storage.observationRecords().first { $0.envelope.batchId == large.batchId }?.envelope.originalPayload == large.originalPayload)
+        #expect(storage.acknowledge(batchIds: [small.batchId], tenantFingerprint: tenantA) == 1)
+        #expect(storage.loadReplayGroup(tenantFingerprint: tenantA, capabilityAvailable: true).first?.envelope.batchId == large.batchId)
+    }
+
+    @Test("Rejected diagnostic files have a separate bounded capacity from pending snapshots")
+    func rejectedCapacityIsIndependent() throws {
+        let storage = makeStorage(); defer { storage.clearAllBatches() }; storage.maxBatchCount = 1
+        let first = try makeEnvelope()
+        let firstID = try #require(storage.saveObservation(first))
+        #expect(storage.quarantineBatch(id: firstID))
+        let second = try makeEnvelope()
+        #expect(storage.saveObservation(second) != nil)
+        #expect(storage.observationRecords().map { $0.envelope.batchId } == [second.batchId])
+        #expect(storage.observationRecords(includeQuarantined: true).count == 2)
+    }
+
     private func makeEnvelope(
         tenant: String? = nil, stream: String = UUID().uuidString,
         kind: SamplingEnvelope.Kind = .summary, contextLabel: String = "original",
@@ -592,7 +622,7 @@ struct OfflineBatchStorageTests {
 
 // MARK: - Captured context and retry drain
 
-@Suite("OfflineBatchStorage captured context")
+@Suite("OfflineBatchStorage captured context", .serialized)
 struct OfflineBatchCapturedContextTests {
 
     private let testDirectory = "com.bearound.sdk.test.batches.\(UUID().uuidString)"
@@ -810,5 +840,182 @@ struct OfflineBatchCapturedContextTests {
         #expect(restored.acknowledge(batchIds: [id], tenantFingerprint: tenant) == 1)
         #expect(restored.batchCount == 0)
     }
+
+
+
+
+    #if DEBUG
+    private final class SyncDelegate: BeAroundSDKDelegate {
+        var starts = 0
+        var completion: ((Bool, Error?) -> Void)?
+        func didUpdateBeacons(_ beacons: [Beacon]) {}
+        func willStartSync(beaconCount: Int) { starts += 1 }
+        func didCompleteSync(beaconCount: Int, success: Bool, error: Error?) { completion?(success, error) }
+    }
+
+    @Test("A nil adaptive runtime still sends frozen legacy data and balances delegate terminals")
+    func nilRuntimeLegacyTerminal() async throws {
+        let storage = makeStorage(); defer { storage.clearAllBatches() }
+        let configuration = SDKConfiguration(businessToken: "fixture-nil-runtime", adaptiveSamplingEnabled: false)
+        let client = APIClient(configuration: configuration)
+        let sdk = BeAroundSDK.samplingTransportFixture(configuration: configuration, client: client,
+            storage: storage, withRuntime: false)
+        let delegate = SyncDelegate(); sdk.delegate = delegate
+        let now = Date(); let device = makeDevice(latitude: -23.1, fixAt: now)
+        client.transport = { _, data, _, _, submit, finish in
+            #expect(submit())
+            let payload = try! JSONSerialization.jsonObject(with: data) as! [String: Any]
+            #expect(payload["sampling"] == nil)
+            #expect((payload["location"] as? [String: Any])?["latitude"] as? Double == -23.1)
+            sdk.endSamplingFixture()
+            finish(.success(Data("{}".utf8)))
+        }
+        let successful: Bool = await withCheckedContinuation { continuation in
+            delegate.completion = { success, error in #expect(error == nil); continuation.resume(returning: success) }
+            sdk.syncSamplingFixture(beacons: makeBeacons(major: 1), device: device)
+        }
+        #expect(successful && delegate.starts == 1)
+        #expect(storage.batchCount == 0)
+    }
+
+    @Test("Foreground retains negotiated runtime and exact ownership of an in flight upload")
+    func foregroundUploadOwnership() async throws {
+        let storage = makeStorage(); defer { storage.clearAllBatches() }
+        let configuration = SDKConfiguration(businessToken: "fixture-foreground")
+        let client = APIClient(configuration: configuration)
+        let sdk = BeAroundSDK.samplingTransportFixture(configuration: configuration, client: client, storage: storage)
+        let now = SamplingClock.now()
+        let device = makeDevice(latitude: -23.1, fixAt: Date())
+        let beacon = makeBeacons(major: 1)[0]
+        let payload = APIClient.makeObservationPayload([beacon], sdkInfo: SDKInfo(appId: configuration.appId, build: 1),
+            userDevice: device, userProperties: nil, syncTrigger: "fixture-original")
+        let original: (AdaptiveSamplingRuntime, StoredObservationEnvelope) = try await withCheckedThrowingContinuation { continuation in
+            sdk.inspectSamplingFixture { runtime, _ in
+                do {
+                    let runtime = try #require(runtime)
+                    let response: [String: Any] = ["capabilities": ["adaptiveSampling": ["version": 1,
+                        "modes": ["live", "summary", "transition"], "leaseMs": 300000, "serverTimeMs": now.wallTimeMs,
+                        "servicesCadenceMs": 5000, "mapTtlMs": 90000, "sessionTimeoutMs": 1800000,
+                        "liveEvidenceMaxAgeMs": 30000, "clockSkewToleranceMs": 120000, "maxPayloadBytes": 524288]]]
+                    runtime.acceptResponse(try JSONSerialization.data(withJSONObject: response), requestedAt: now,
+                        receivedAt: now, generation: runtime.generation)
+                    continuation.resume(returning: (runtime, try runtime.legacyEnvelope(beacons: [beacon], payload: payload, at: now)))
+                } catch { continuation.resume(throwing: error) }
+            }
+        }
+        let id = try #require(storage.saveObservation(original.1))
+        var requests = 0
+        let finish: (Result<Data, Error>) -> Void = await withCheckedContinuation { continuation in
+            client.transport = { _, _, _, _, submit, finish in
+                #expect(submit()); requests += 1; continuation.resume(returning: finish)
+            }
+            sdk.submitSamplingFixture(original.1, storageID: id)
+        }
+        sdk.foregroundSamplingFixture()
+        await withCheckedContinuation { continuation in
+            sdk.inspectSamplingFixture { runtime, syncing in
+                #expect(runtime === original.0 && syncing && runtime?.hasCapability(at: SamplingClock.now()) == true)
+                #expect(requests == 1); continuation.resume()
+            }
+        }
+        let delegate = SyncDelegate(); sdk.delegate = delegate
+        let completion: Bool = await withCheckedContinuation { continuation in
+            delegate.completion = { success, error in
+                guard let error = error as? APIError, case .httpError(let status, _) = error else { Issue.record("Original transport error must reach delegate"); continuation.resume(returning: false); return }
+                #expect(status == 429); continuation.resume(returning: success)
+            }
+            sdk.endSamplingFixture(); finish(.failure(APIError.httpError(statusCode: 429)))
+        }
+        #expect(!completion && requests == 1 && storage.batchCount == 1)
+    }
+
+
+    @Test("SDK legacy capture retains the main grace window without adaptive capability", arguments: [false, true], [31, 60, 119])
+    func legacySourceAgeSDK(enabled: Bool, age: Int) async throws {
+        let storage = makeStorage(); defer { storage.clearAllBatches() }
+        let configuration = SDKConfiguration(businessToken: "fixture-source-age", scanPrecision: .medium,
+            adaptiveSamplingEnabled: enabled)
+        let client = APIClient(configuration: configuration)
+        let sdk = BeAroundSDK.samplingTransportFixture(configuration: configuration, client: client, storage: storage)
+        let captured = Date().addingTimeInterval(-Double(age))
+        let beacon = Beacon(uuid: BeaconConstants.uuid, major: 1, minor: 1, rssi: -60, proximity: .near,
+            accuracy: 1, timestamp: captured)
+        let delegate = SyncDelegate(); sdk.delegate = delegate
+        client.transport = { _, data, _, _, submit, finish in
+            #expect(submit())
+            let body = try! JSONSerialization.jsonObject(with: data) as! [String: Any]
+            #expect(body["sampling"] == nil)
+            let beacons = body["beacons"] as! [[String: Any]]
+            #expect(beacons.count == 1)
+            #expect((beacons[0]["timestamp"] as! NSNumber).int64Value == Int64(captured.timeIntervalSince1970 * 1_000))
+            sdk.endSamplingFixture(); finish(.success(Data("{}".utf8)))
+        }
+        let delivered: Bool = await withCheckedContinuation { continuation in
+            delegate.completion = { success, error in #expect(error == nil); continuation.resume(returning: success) }
+            sdk.syncSamplingFixture(beacons: [beacon], device: makeDevice(latitude: -23.1, fixAt: captured))
+        }
+        #expect(delivered && delegate.starts == 1 && storage.batchCount == 0)
+    }
+
+    @Test("SDK physical callback preserves legacy provenance before persistence capacity returns")
+    func physicalCallbackAtPersistenceCapacity() async throws {
+        let storage = makeStorage(); defer { storage.clearAllBatches() }
+        let configuration = SDKConfiguration(businessToken: "fixture-capacity")
+        let client = APIClient(configuration: configuration)
+        let sdk = BeAroundSDK.samplingTransportFixture(configuration: configuration, client: client, storage: storage)
+        let beacon = makeBeacons(major: 1)[0]
+        let payload = APIClient.makeObservationPayload([beacon], sdkInfo: SDKInfo(appId: configuration.appId, build: 1),
+            userDevice: makeDevice(latitude: -23.1, fixAt: Date()), userProperties: nil, syncTrigger: "fixture")
+        let pending = try StoredObservationEnvelope(batchId: UUID().uuidString, storedAtMs: SamplingClock.now().wallTimeMs,
+            tenantFingerprint: SamplingTenantFingerprint.make(endpoint: configuration.apiBaseURL, appID: configuration.appId,
+                deviceID: "device-1", businessToken: configuration.businessToken), originalPayload: payload,
+            sampling: nil, deliveryProtocol: .legacy)
+        await withCheckedContinuation { continuation in
+            sdk.captureAtCapacitySamplingFixture([beacon], pending: pending) { runtime in
+                #expect(runtime?.legacyEvidenceIsSendable(beacon, at: SamplingClock.now()) == true)
+                #expect(runtime?.diagnostics.uniqueSamples == 0)
+                continuation.resume()
+            }
+        }
+        sdk.endSamplingFixture()
+    }
+
+    @Test("SDK durable legacy drain delivers an original sixty second snapshot after relaunch without capability", arguments: [false, true])
+    func durableLegacySDKDrain(enabled: Bool) async throws {
+        let storage = makeStorage(); defer { storage.clearAllBatches() }
+        let configuration = SDKConfiguration(businessToken: "fixture-old-legacy", adaptiveSamplingEnabled: enabled)
+        let before = Date().addingTimeInterval(-60)
+        let capturedClock = SamplingClock(wallTimeMs: Int64(before.timeIntervalSince1970 * 1_000),
+            monotonicTimeMs: 1_000_000, bootIdentifier: UUID().uuidString)
+        let device = makeDevice(latitude: -23.1, fixAt: before)
+        let beacon = Beacon(uuid: BeaconConstants.uuid, major: 1, minor: 1, rssi: -60, proximity: .near,
+            accuracy: 1, timestamp: before)
+        let payload = APIClient.makeObservationPayload([beacon], sdkInfo: SDKInfo(appId: configuration.appId, build: 1),
+            userDevice: device, userProperties: UserProperties(internalId: "original-user"), syncTrigger: "original-timer")
+        let oldRuntime = AdaptiveSamplingRuntime(configuration: configuration, deviceID: device.deviceId)
+        let envelope = try oldRuntime.legacyEnvelope(beacons: [beacon], payload: payload, at: capturedClock)
+        #expect(storage.saveObservation(envelope) != nil)
+        let restored = makeStorage()
+        let client = APIClient(configuration: configuration)
+        let sdk = BeAroundSDK.samplingTransportFixture(configuration: configuration, client: client, storage: restored)
+        let delegate = SyncDelegate(); sdk.delegate = delegate
+        client.transport = { _, data, _, descriptor, submit, finish in
+            #expect(submit() && descriptor.adaptiveBatchId == nil)
+            let body = try! JSONSerialization.jsonObject(with: data) as! [String: Any]
+            #expect(body["sampling"] == nil && body["syncTrigger"] as? String == "original-timer")
+            #expect((body["userProperties"] as? [String: Any])?["internalId"] as? String == "original-user")
+            let seen = (body["beacons"] as! [[String: Any]])[0]["timestamp"] as! NSNumber
+            #expect(seen.int64Value == capturedClock.wallTimeMs)
+            #expect(((body["location"] as! [String: Any])["timestamp"] as! NSNumber).int64Value == capturedClock.wallTimeMs)
+            sdk.endSamplingFixture(); finish(.success(Data("{}".utf8)))
+        }
+        let delivered: Bool = await withCheckedContinuation { continuation in
+            delegate.completion = { success, error in #expect(error == nil); continuation.resume(returning: success) }
+            sdk.replaySamplingFixture()
+        }
+        #expect(delivered && restored.batchCount == 0)
+    }
+
+    #endif
 
 }
