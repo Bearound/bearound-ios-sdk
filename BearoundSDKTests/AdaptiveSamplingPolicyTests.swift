@@ -363,6 +363,17 @@ struct AdaptiveSamplingPolicyTests {
             #expect(plan.contextIntervalMs == nil && plan.summaryIntervalMs == 60_000)
         }
     }
+
+    @Test("Ineligible physical collection preserves the established live cadence and complementary budgets",
+          arguments: [Int64(5_000), 15_000, 60_000])
+    func freshPhysicalZoneIneligibleCadences(baseline: Int64) {
+        let policy = stablePolicy()
+        let configuration = SamplingConfiguration(legacySyncIntervalMs: baseline, capability: self.configuration.capability)
+        let plan = policy.plan(at: clock(120), configuration: configuration, hasFreshPhysicalZone: false)
+        #expect(plan.liveIntervalMs == baseline)
+        #expect(plan.contextIntervalMs == 300_000 && plan.summaryIntervalMs == 300_000)
+        #expect(plan.mode == .stable && !plan.flushRelevantTransition)
+    }
     private func inertial(_ end: Int64, generation: UInt64 = 0,
                           classification: InertialWindow.Classification = .active) -> InertialWindow {
         InertialWindow(generation: generation, startedAtMonotonicMs: end * 1_000 - 3_000,

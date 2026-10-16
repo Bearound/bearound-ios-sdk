@@ -221,6 +221,10 @@ public class BeAroundSDK {
     private var samplingGeneration: UInt64 = 0
     private let samplingLifecycleLock = NSLock()
     private var publishedSamplingGeneration: UInt64 = 0
+    private var samplingBluetoothAvailable = false
+    private var samplingPhysicalScanRegistered = false
+    private var samplingPhysicalCollectionRevision: UInt64 = 0
+    private var samplingPhysicalZoneEligibility: PhysicalZoneCollectionEligibility?
     private let motionMonitor = MotionMonitor()
     private let inertialMotionMonitor = InertialMotionMonitor()
     private var motionCollectionRunning = false
@@ -765,7 +769,8 @@ public class BeAroundSDK {
 
         // Lifecycle: scanner stopped by host/SDK — surfaced for observability, never
         // translated into a presence exit.
-        bluetoothManager.onScanningStopped = {
+        bluetoothManager.onScanningStopped = { [weak self] in
+            self?.updatePhysicalZoneCollectionEligibility(scanRegistered: false)
             DetectionLogStore.append(type: "BLE_SCAN_STOPPED", detail: "scanner desligado (lifecycle, não presença)")
         }
 
@@ -773,6 +778,11 @@ public class BeAroundSDK {
         // notifyScanModeChanged already dispatches on main, but we re-route through
         // the same path the other delegate calls use for consistency.
         bluetoothManager.onScanModeChanged = { [weak self] mode, nextIdleScanAt in
+            // Idle keeps the native scan registered; explicit stop clears eligibility separately.
+            if let self, mode == .active {
+                self.updatePhysicalZoneCollectionEligibility(bluetoothAvailable: self.bluetoothManager.isPoweredOn,
+                    scanRegistered: true)
+            }
             NSLog("[SDK] BT scan mode → %@ (nextIdleScanAt=%@)",
                   mode.rawValue,
                   nextIdleScanAt.map { "\($0)" } ?? "nil")
@@ -1299,6 +1309,7 @@ public class BeAroundSDK {
     }
 
     public func stopScanning() {
+        updatePhysicalZoneCollectionEligibility(scanRegistered: false)
         renewSamplingLifecycle(startMotion: false)
         appPresence.stop()
         bluetoothManager.setEncounterMesh(enabled: false)
@@ -2811,8 +2822,11 @@ public class BeAroundSDK {
             self.publishedSamplingGeneration = self.samplingGeneration
             self.motionCollectionRunning = startMotion && config.adaptiveSamplingEnabled && config.dataCollectionPolicy.motionSensors
             self.samplingLifecycleLock.unlock()
+            let generation = self.samplingGeneration
             let runtime = AdaptiveSamplingRuntime(configuration: config, deviceID: deviceID ?? DeviceIdentifier.getDeviceId(),
-                generation: self.samplingGeneration)
+                generation: generation, physicalZoneCollectionEligibilityProvider: { [weak self] in
+                    self?.physicalZoneCollectionEligibility(generation: generation)
+                })
             if let previous = self.samplingRuntime { runtime.inheritLegacyPhysical(from: previous) }
             self.samplingRuntime = runtime
             let client = self.apiClient
@@ -2918,6 +2932,30 @@ public class BeAroundSDK {
 
     private func renewSamplingLifecycle(startMotion: Bool) {
         if let configuration { configureSampling(configuration, startMotion: startMotion) }
+    }
+
+    private func updatePhysicalZoneCollectionEligibility(bluetoothAvailable: Bool? = nil, scanRegistered: Bool? = nil) {
+        samplingLifecycleLock.lock()
+        defer { samplingLifecycleLock.unlock() }
+        let previousBluetooth = samplingBluetoothAvailable
+        let previousScan = samplingPhysicalScanRegistered
+        if let bluetoothAvailable {
+            samplingBluetoothAvailable = bluetoothAvailable
+            if !bluetoothAvailable { samplingPhysicalScanRegistered = false }
+        }
+        if let scanRegistered { samplingPhysicalScanRegistered = scanRegistered && samplingBluetoothAvailable }
+        guard previousBluetooth != samplingBluetoothAvailable || previousScan != samplingPhysicalScanRegistered else { return }
+        samplingPhysicalCollectionRevision &+= 1
+        samplingPhysicalZoneEligibility = samplingBluetoothAvailable && samplingPhysicalScanRegistered
+            ? PhysicalZoneCollectionEligibility(revision: samplingPhysicalCollectionRevision, enabledAt: .now()) : nil
+    }
+
+    private func physicalZoneCollectionEligibility(generation: UInt64) -> PhysicalZoneCollectionEligibility? {
+        guard SDKConfigStorage.loadIsScanning() else { return nil }
+        samplingLifecycleLock.lock()
+        defer { samplingLifecycleLock.unlock() }
+        guard publishedSamplingGeneration == generation else { return nil }
+        return samplingPhysicalZoneEligibility
     }
 
     private func invalidateSamplingMetadata() {
@@ -3475,6 +3513,7 @@ extension BeAroundSDK: BluetoothManagerDelegate {
     }
 
     func didUpdateBluetoothState(isPoweredOn: Bool) {
+        updatePhysicalZoneCollectionEligibility(bluetoothAvailable: isPoweredOn)
         if !isPoweredOn {
             NSLog("[BeAroundSDK] Bluetooth powered off")
         }

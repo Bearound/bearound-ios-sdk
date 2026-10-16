@@ -63,6 +63,11 @@ struct AdaptiveSamplingResponse: Decodable {
     }
 }
 
+struct PhysicalZoneCollectionEligibility: Equatable {
+    let revision: UInt64
+    let enabledAt: SamplingClock
+}
+
 final class AdaptiveSamplingRuntime {
     let configuration: SDKConfiguration
     let tenantFingerprint: String
@@ -83,7 +88,8 @@ final class AdaptiveSamplingRuntime {
     private var lastSummaryAtMs: Int64?
     private var lastClock: SamplingClock?
     private var freshSourceTimes: [String: Int64] = [:]
-    private var physicalZoneEvidence: (beacon: Beacon, clock: SamplingClock)?
+    private var physicalZoneEvidence: (beacon: Beacon, clock: SamplingClock, eligibility: PhysicalZoneCollectionEligibility)?
+    private let physicalZoneCollectionEligibilityProvider: () -> PhysicalZoneCollectionEligibility?
     private var sourceSet = Set<String>()
     private var venueRSSIs: [String: Int] = [:]
     private var previousState: MotionState?
@@ -95,9 +101,11 @@ final class AdaptiveSamplingRuntime {
     private var legacySourceTimes: [String: Int64] = [:]
     private var acknowledgmentRetryAfter: Int64 = 0
 
-    init(configuration: SDKConfiguration, deviceID: String, generation: UInt64 = 0) {
+    init(configuration: SDKConfiguration, deviceID: String, generation: UInt64 = 0,
+         physicalZoneCollectionEligibilityProvider: @escaping () -> PhysicalZoneCollectionEligibility? = { nil }) {
         self.configuration = configuration
         self.generation = generation
+        self.physicalZoneCollectionEligibilityProvider = physicalZoneCollectionEligibilityProvider
         tenantFingerprint = SamplingTenantFingerprint.make(endpoint: configuration.apiBaseURL,
             appID: configuration.appId, deviceID: deviceID, businessToken: configuration.businessToken)
         policy = AdaptiveSamplingPolicy(generation: generation)
@@ -295,13 +303,17 @@ final class AdaptiveSamplingRuntime {
                 && timestamp > (freshSourceTimes[key($0)] ?? 0)
         }
         guard !fresh.isEmpty else { diagnostics.cachedCallbacks += 1; return }
+        let collectionEligibility = physicalZoneCollectionEligibilityProvider()
         for beacon in fresh {
-            freshSourceTimes[key(beacon)] = Int64(beacon.timestamp.timeIntervalSince1970 * 1_000)
-            if (0 ..< Int(EncounterMeshManager.virtualBeaconMajorFloor)).contains(beacon.major),
+            let observed = Int64(beacon.timestamp.timeIntervalSince1970 * 1_000)
+            freshSourceTimes[key(beacon)] = observed
+            if let collectionEligibility, collectionPermits(collectionEligibility, at: now),
+               now.monotonicTimeMs - (now.wallTimeMs - observed) >= collectionEligibility.enabledAt.monotonicTimeMs,
+               (0 ..< Int(EncounterMeshManager.virtualBeaconMajorFloor)).contains(beacon.major),
                (0 ... 65535).contains(beacon.minor), (-127 ... 0).contains(beacon.rssi),
                beacon.accuracy.isFinite, beacon.accuracy >= -1,
                physicalZoneEvidence.map({ beacon.timestamp > $0.beacon.timestamp }) ?? true {
-                physicalZoneEvidence = (beacon, now)
+                physicalZoneEvidence = (beacon, now, collectionEligibility)
             }
         }
         freshSourceTimes = freshSourceTimes.filter { now.wallTimeMs - $0.value <= 30_000 }
@@ -479,7 +491,10 @@ final class AdaptiveSamplingRuntime {
     }
 
     private func physicalZoneIsFresh(at now: SamplingClock) -> Bool {
-        guard let physicalZoneEvidence, physicalEvidenceIsFresh(physicalZoneEvidence.beacon, at: now),
+        guard let collectionEligibility = physicalZoneCollectionEligibilityProvider(),
+              let physicalZoneEvidence, physicalZoneEvidence.eligibility == collectionEligibility,
+              collectionPermits(collectionEligibility, at: physicalZoneEvidence.clock),
+              physicalEvidenceIsFresh(physicalZoneEvidence.beacon, at: now),
               now.isReliable, physicalZoneEvidence.clock.bootIdentifier == now.bootIdentifier,
               now.monotonicTimeMs >= physicalZoneEvidence.clock.monotonicTimeMs,
               abs((now.wallTimeMs - physicalZoneEvidence.clock.wallTimeMs)
@@ -488,6 +503,12 @@ final class AdaptiveSamplingRuntime {
         let initialAge = physicalZoneEvidence.clock.wallTimeMs - observed
         return initialAge >= 0 && physicalZoneEvidence.clock.monotonicTimeMs >= initialAge
             && initialAge + now.monotonicTimeMs - physicalZoneEvidence.clock.monotonicTimeMs <= 30_000
+    }
+
+    private func collectionPermits(_ eligibility: PhysicalZoneCollectionEligibility, at callbackClock: SamplingClock) -> Bool {
+        eligibility.enabledAt.isReliable && callbackClock.isReliable
+            && callbackClock.bootIdentifier == eligibility.enabledAt.bootIdentifier
+            && callbackClock.monotonicTimeMs >= eligibility.enabledAt.monotonicTimeMs
     }
 
     func recordAttempt(_ envelope: StoredObservationEnvelope, bytes: Int, failed: Bool, at now: SamplingClock) {

@@ -20,9 +20,13 @@ struct AdaptiveSamplingDiagnosticsTests {
                     "network": ["type": "wifi", "apId": "stable-ap"]],
          "userProperties": ["internalId": label], "syncTrigger": "adaptive_physical"]
     }
-    private func runtime(enabled: Bool = true, generation: UInt64 = 1, precision: ScanPrecision = .high) -> AdaptiveSamplingRuntime {
+    private func runtime(enabled: Bool = true, generation: UInt64 = 1, precision: ScanPrecision = .high,
+                         eligibilityProvider: (() -> PhysicalZoneCollectionEligibility?)? = nil) -> AdaptiveSamplingRuntime {
         AdaptiveSamplingRuntime(configuration: SDKConfiguration(businessToken: "test-token",
-            scanPrecision: precision, adaptiveSamplingEnabled: enabled), deviceID: "device", generation: generation)
+            scanPrecision: precision, adaptiveSamplingEnabled: enabled), deviceID: "device", generation: generation,
+            physicalZoneCollectionEligibilityProvider: eligibilityProvider ?? {
+                PhysicalZoneCollectionEligibility(revision: 0, enabledAt: clock())
+            })
     }
     private func response(lease: Int64 = 300_000, version: Int = 1, modes: [String] = ["live", "summary", "transition"],
                           serverOffset: Int64 = 0, servicesCadenceMs: Int64 = 60_000) throws -> Data {
@@ -255,11 +259,67 @@ struct AdaptiveSamplingDiagnosticsTests {
         #expect(runtime.samplingPlan(at: clock(300_000)).mode == .legacy)
     }
 
+    @Test("The thirty second cap fails closed without current physical collection eligibility")
+    func freshZoneCollectionFailsClosed() throws {
+        let configuration = SDKConfiguration(businessToken: "test-token", scanPrecision: .medium)
+        let runtime = AdaptiveSamplingRuntime(configuration: configuration, deviceID: "device", generation: 1)
+        try negotiate(runtime)
+        observe(runtime)
+        #expect(runtime.hasCapability(at: clock()) && runtime.physicalEvidenceIsFresh(beacon(), at: clock()))
+        #expect(runtime.samplingPlan(at: clock()).liveIntervalMs == 60_000)
+        #expect(runtime.diagnostics.uniqueSamples == 1 && runtime.legacyEvidenceIsSendable(beacon(), at: clock()))
+        #expect(runtime.takePending(at: clock()).contains { $0.sampling?.kind == .live })
+    }
+
+    @Test("Radio loss and queued callbacks cannot reactivate the cap before new permitted physical evidence",
+          arguments: [ScanPrecision.medium, .low])
+    func freshZoneCurrentCollectionEligibility(precision: ScanPrecision) throws {
+        var eligibility: PhysicalZoneCollectionEligibility? = PhysicalZoneCollectionEligibility(revision: 0, enabledAt: clock())
+        let runtime = runtime(precision: precision, eligibilityProvider: { eligibility })
+        try negotiate(runtime)
+        var reads = 0
+        for offset in stride(from: Int64(0), through: 150_000, by: 30_000) {
+            runtime.observePhysical([beacon(offset)], callbackID: String(offset), at: clock(offset)) { reads += 1; return body() }
+            _ = runtime.takePending(at: clock(offset))
+        }
+        let stable = runtime.samplingPlan(at: clock(150_000))
+        let contextID = runtime.contextID
+        let contextDeadline = runtime.diagnostics.nextContextDeadlineMonotonicMs
+        let summaryDeadline = runtime.diagnostics.nextSummaryDeadlineMonotonicMs
+        let readsBefore = reads
+        #expect(stable.mode == .stable && stable.liveIntervalMs == 30_000)
+        eligibility = nil
+        #expect(runtime.physicalEvidenceIsFresh(beacon(150_000), at: clock(150_001)))
+        #expect(runtime.samplingPlan(at: clock(150_001)).liveIntervalMs == 60_000)
+        runtime.observePhysical([beacon(155_000)], callbackID: "radio-off", at: clock(155_000)) { reads += 1; return body() }
+        #expect(runtime.takePending(at: clock(155_000)).isEmpty)
+        #expect(runtime.samplingPlan(at: clock(155_000)).liveIntervalMs == 60_000)
+        eligibility = PhysicalZoneCollectionEligibility(revision: 1, enabledAt: clock(160_000))
+        runtime.observePhysical([beacon(159_000)], callbackID: "queued-before-radio-recovery", at: clock(159_000)) { reads += 1; return body() }
+        #expect(runtime.takePending(at: clock(160_000)).isEmpty)
+        #expect(runtime.physicalEvidenceIsFresh(beacon(159_000), at: clock(160_000)))
+        #expect(runtime.legacyEvidenceIsSendable(beacon(159_000), at: clock(160_000)))
+        #expect(runtime.samplingPlan(at: clock(160_000)).liveIntervalMs == 60_000)
+        runtime.observePhysical([beacon(159_000)], callbackID: "cached-after-radio-recovery", at: clock(161_000)) { reads += 1; return body() }
+        #expect(runtime.takePending(at: clock(161_000)).isEmpty)
+        #expect(runtime.samplingPlan(at: clock(161_000)).liveIntervalMs == 60_000)
+        runtime.observePhysical([beacon(180_000)], callbackID: "current-permitted-physical", at: clock(180_000)) { reads += 1; return body() }
+        let pending = runtime.takePending(at: clock(180_000))
+        let live = try #require(pending.first)
+        #expect(pending.count == 1 && live.sampling?.kind == .live && live.sampling?.observedTo == base + 180_000)
+        #expect(runtime.samplingPlan(at: clock(180_000)).liveIntervalMs == 30_000)
+        #expect(runtime.contextID == contextID && reads == readsBefore)
+        #expect(runtime.diagnostics.nextContextDeadlineMonotonicMs == contextDeadline)
+        #expect(runtime.diagnostics.nextSummaryDeadlineMonotonicMs == summaryDeadline)
+        #expect(runtime.diagnostics.uniqueSamples == 9)
+    }
+
     @Test("Thirty second live persistence preserves immutable replay and collection opt outs")
     func freshZoneImmutableReplayAndPrivacy() throws {
         let configuration = SDKConfiguration(businessToken: "test-token", scanPrecision: .medium,
             collectAdvertisingId: false, collectLocation: false, collectWifi: false, collectMotionSensors: false)
-        let runtime = AdaptiveSamplingRuntime(configuration: configuration, deviceID: "device", generation: 1)
+        let runtime = AdaptiveSamplingRuntime(configuration: configuration, deviceID: "device", generation: 1,
+            physicalZoneCollectionEligibilityProvider: { PhysicalZoneCollectionEligibility(revision: 0, enabledAt: clock()) })
         try negotiate(runtime)
         var payload = body()
         payload["location"] = ["timestamp": base, "latitude": 1.0, "longitude": 1.0, "accuracy": 5.0]
