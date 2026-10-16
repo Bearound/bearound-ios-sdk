@@ -11,17 +11,16 @@ import Testing
 
 @testable import BearoundSDK
 
-@Suite("OfflineBatchStorage Tests")
+@Suite("OfflineBatchStorage Tests", .serialized)
 struct OfflineBatchStorageTests {
 
     /// A unique directory per test instance isolates the on-disk batch store, so
-    /// batches from one test never leak into another. Swift Testing creates a fresh
-    /// struct instance per test and runs tests in parallel, so this is the reliable
-    /// isolation seam (the shared production directory caused order-dependent failures).
+    /// batches from one test never leak into another. The suite is serialized and
+    /// Swift Testing creates a fresh struct instance per test.
     private let testDirectory = "com.bearound.sdk.test.batches.\(UUID().uuidString)"
 
-    private func makeStorage() -> OfflineBatchStorage {
-        OfflineBatchStorage(directoryName: testDirectory)
+    private func makeStorage(now: @escaping () -> Date = Date.init) -> OfflineBatchStorage {
+        OfflineBatchStorage(directoryName: testDirectory, now: now)
     }
 
 
@@ -185,7 +184,419 @@ struct OfflineBatchStorageTests {
         }
     }
     
+    @Test("Version two preserves the complete original payload and identities after relaunch")
+    func completeEnvelopeRoundTrip() throws {
+        let storage = makeStorage()
+        let original = try makeEnvelope()
+        let filename = try #require(storage.saveObservation(original))
+        let restored = makeStorage().observationRecords()
+        #expect(restored.count == 1 && restored[0].storageId == filename)
+        #expect(restored[0].envelope == original)
+        #expect(restored[0].envelope.originalPayload["beacons"]?.array?[0].object?["rssiSamples"]?.object?["count"] == .number(3))
+        #expect(restored[0].envelope.originalPayload["encounterIds"] == .array([.string("original-rpi")]))
+        #expect(restored[0].envelope.originalPayload["businessToken"] == nil)
+    }
+
+    @Test("Legacy migration preserves original beacon time and explicit missing context without assigning tenant")
+    func legacyMissingContext() throws {
+        let storage = makeStorage()
+        let beacons = createTestBeacons(count: 1)
+        let filename = try #require(storage.saveBatchReturningId(beacons))
+        let migrated = try #require(storage.observationRecords().first?.envelope)
+        #expect(migrated.version == 2 && migrated.migratedFromVersion == 1)
+        #expect(migrated.tenantFingerprint == nil && migrated.contextFingerprint == nil && migrated.sampling == nil)
+        #expect(migrated.absentFields.contains("sdk") && migrated.absentFields.contains("device"))
+        #expect(migrated.absentFields.contains("clock") && migrated.absentFields.contains("location"))
+        let captured = try #require(migrated.originalPayload["beacons"]?.array?.first?.object?["timestamp"])
+        if case .number(let timestamp) = captured {
+            #expect(abs(timestamp - beacons[0].timestamp.timeIntervalSince1970 * 1_000) < 1_000)
+        } else { Issue.record("Original beacon timestamp is missing") }
+        #expect(storage.loadOldestBatchesWithIds(5).isEmpty)
+        #expect(storage.batchCount == 0)
+        #expect(storage.observationRecords(includeQuarantined: true).first?.storageId == "\(filename).rejected")
+    }
+
+    @Test("A legacy writer fingerprint survives migration but does not fabricate missing SDK or device")
+    func legacyWriterBinding() throws {
+        let storage = makeStorage()
+        let filename = try #require(storage.saveBatchReturningId(createTestBeacons(count: 1)))
+        let url = storageURL.appendingPathComponent(filename)
+        var json = try #require(JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [String: Any])
+        json["tenantFingerprint"] = tenantA
+        try JSONSerialization.data(withJSONObject: json).write(to: url, options: .atomic)
+        let migrated = try #require(storage.observationRecords().first?.envelope)
+        #expect(migrated.tenantFingerprint == tenantA && !migrated.canReplay)
+        #expect(storage.loadReplayGroup(tenantFingerprint: tenantA, capabilityAvailable: true).isEmpty)
+        #expect(storage.observationRecords(includeQuarantined: true).count == 1)
+    }
+
+    @Test("Unverifiable tenants are quarantined and another tenant remains pending")
+    func tenantIsolation() throws {
+        let storage = makeStorage()
+        let unknown = try makeEnvelope(tenant: nil, useDefaultTenant: false)
+        let a = try makeEnvelope()
+        let b = try makeEnvelope(tenant: tenantB)
+        #expect(storage.saveObservation(unknown) != nil)
+        #expect(storage.saveObservation(a) != nil)
+        #expect(storage.saveObservation(b) != nil)
+        let replay = storage.loadReplayGroup(tenantFingerprint: tenantA, capabilityAvailable: true)
+        #expect(replay.map { $0.envelope.batchId } == [a.batchId])
+        #expect(storage.batchCount == 2)
+        #expect(storage.observationRecords(includeQuarantined: true).count == 3)
+        #expect(storage.loadReplayGroup(tenantFingerprint: tenantB, capabilityAvailable: true).first?.envelope.batchId == b.batchId)
+        #expect(tenantA != tenantB)
+    }
+
+    @Test("Acknowledgment removes only exact batch IDs belonging to the captured tenant")
+    func exactAcknowledgment() throws {
+        let storage = makeStorage()
+        let first = try makeEnvelope()
+        let second = try makeEnvelope()
+        let other = try makeEnvelope(tenant: tenantB)
+        #expect(storage.saveObservation(first) != nil)
+        #expect(storage.saveObservation(second) != nil)
+        #expect(storage.saveObservation(other) != nil)
+        #expect(storage.acknowledge(batchIds: [first.batchId], tenantFingerprint: tenantB) == 0)
+        #expect(storage.acknowledge(batchIds: [first.batchId, first.batchId, UUID().uuidString], tenantFingerprint: tenantA) == 1)
+        #expect(Set(storage.observationRecords().map { $0.envelope.batchId }) == Set([second.batchId, other.batchId]))
+        #expect(!storage.removeBatch(id: "../outside.json"))
+    }
+
+    @Test("Atomic save is idempotent and conflicting content cannot replace the same batch")
+    func atomicSaveAndIdentity() throws {
+        let storage = makeStorage()
+        let envelope = try makeEnvelope()
+        let first = try #require(storage.saveObservation(envelope))
+        #expect(storage.saveObservation(envelope) == first && storage.batchCount == 1)
+        var conflicting = envelope
+        conflicting.originalPayload["syncTrigger"] = .string("different")
+        #expect(storage.saveObservation(conflicting) == nil)
+        let files = try FileManager.default.contentsOfDirectory(atPath: storageURL.path)
+        #expect(files == [first])
+        #expect(try JSONDecoder().decode(StoredObservationEnvelope.self, from: Data(contentsOf: storageURL.appendingPathComponent(first))) == envelope)
+    }
+
+    @Test("Disabled signals are absent from new durable copies while beacons encounters and IDs remain")
+    func filteringBeforePersistence() throws {
+        let storage = makeStorage()
+        let original = try makeEnvelope()
+        let disabled = DataCollectionPolicy(advertisingId: false, location: false, wifi: false)
+        #expect(storage.saveObservation(original, policy: disabled) != nil)
+        let filtered = try #require(storage.observationRecords().first?.envelope)
+        #expect(filtered.originalPayload["location"] == nil && filtered.originalPayload["wifis"] == nil)
+        #expect(filtered.originalPayload["device"]?.object?["network"]?.object?["apId"] == nil)
+        #expect(filtered.originalPayload["device"]?.object?["network"]?.object?["wifiSSID"] == nil)
+        #expect(filtered.originalPayload["device"]?.object?["permissions"]?.object?["advertisingId"] == nil)
+        #expect(filtered.originalPayload["device"]?.object?["permissions"]?.object?["trackingAuthorization"] == nil)
+        #expect(filtered.sampling?.motion.state == .unknown && filtered.sampling?.motion.reason == "source_disabled")
+        #expect(filtered.originalPayload["beacons"] == original.originalPayload["beacons"])
+        #expect(filtered.originalPayload["encounters"] == original.originalPayload["encounters"])
+        #expect(filtered.batchId == original.batchId && filtered.sampling?.windowId == original.sampling?.windowId)
+        #expect(filtered.absentFields.contains("location") && filtered.absentFields.contains("device.permissions.advertisingId"))
+    }
+
+    @Test("Replay redacts persisted signals without recollection and enabling collection does not restore them")
+    func pendingPolicyRevocation() throws {
+        let storage = makeStorage()
+        let original = try makeEnvelope()
+        #expect(storage.saveObservation(original) != nil)
+        let disabled = DataCollectionPolicy(advertisingId: false, location: false, wifi: false)
+        storage.applyCollectionPolicy(disabled)
+        let replay = try #require(storage.loadReplayGroup(tenantFingerprint: tenantA, policy: disabled, capabilityAvailable: true).first)
+        let payload = try #require(try replay.envelope.replayPayload(manifest: replay.manifest))
+        #expect(payload["location"] == nil && payload["wifis"] == nil)
+        let sampling = try #require(payload["sampling"] as? [String: Any])
+        let motion = try #require(sampling["motion"] as? [String: Any])
+        #expect(motion["observedAtMs"] is NSNull && motion["ageMs"] is NSNull)
+        storage.applyCollectionPolicy(.allEnabled)
+        let restored = try #require(makeStorage().observationRecords().first?.envelope)
+        #expect(restored.originalPayload["location"] == nil && restored.originalPayload["wifis"] == nil)
+        #expect(restored.sampling?.observedFrom == original.sampling?.observedFrom)
+    }
+
+    @Test("Replay manifests group original context and stream without modifying capture clock or sent time")
+    func replayManifest() throws {
+        let storage = makeStorage()
+        let stream = UUID().uuidString
+        let first = try makeEnvelope(stream: stream)
+        let second = try makeEnvelope(stream: stream, deviceTimestampOffsetMs: 1_000)
+        #expect(storage.saveObservation(first) != nil)
+        #expect(storage.saveObservation(second) != nil)
+        let records = storage.loadReplayGroup(tenantFingerprint: tenantA, capabilityAvailable: true)
+        #expect(records.count == 2)
+        #expect(records[0].envelope.originalPayload["device"] != records[1].envelope.originalPayload["device"])
+        #expect(records[0].manifest.batchIds == [first.batchId, second.batchId])
+        #expect(records[0].manifest.index == 0 && records[1].manifest.index == 1)
+        #expect(records[0].manifest.drainId == records[1].manifest.drainId && records[0].manifest.count == 2)
+        let payload = try #require(try records[1].envelope.replayPayload(manifest: records[1].manifest))
+        let sampling = try #require(payload["sampling"] as? [String: Any])
+        #expect((sampling["sentAt"] as? NSNumber)?.int64Value == second.sampling?.sentAt)
+        #expect((sampling["clock"] as? [String: Any])?["serverOffsetMs"] is NSNull)
+        #expect(records[1].envelope.sampling?.clock == second.sampling?.clock)
+        let invalid = SamplingReplayManifest(drainId: UUID().uuidString, batchIds: [first.batchId], index: 0, count: 1)
+        #expect(try second.replayPayload(manifest: invalid) == nil)
+        #expect(storage.acknowledge(batchIds: [first.batchId], tenantFingerprint: tenantA) == 1)
+        let remaining = try #require(makeStorage().loadReplayGroup(tenantFingerprint: tenantA, capabilityAvailable: true).first)
+        #expect(remaining.manifest == records[1].manifest)
+        #expect(storage.saveObservation(second) == records[1].storageId)
+    }
+
+    @Test("Different contexts and streams replay separately while transition priority preserves stream FIFO")
+    func replayGroupingAndPriority() throws {
+        let storage = makeStorage()
+        let stream = UUID().uuidString
+        let first = try makeEnvelope(stream: stream)
+        let changed = try makeEnvelope(stream: stream, contextLabel: "changed")
+        #expect(storage.saveObservation(first) != nil)
+        #expect(storage.saveObservation(changed) != nil)
+        #expect(storage.loadReplayGroup(tenantFingerprint: tenantA, capabilityAvailable: true).map { $0.envelope.batchId } == [first.batchId])
+        let transition = try makeEnvelope(kind: .transition)
+        #expect(storage.saveObservation(transition) != nil)
+        #expect(storage.loadReplayGroup(tenantFingerprint: tenantA, capabilityAvailable: true).first?.envelope.batchId == transition.batchId)
+        #expect(storage.acknowledge(batchIds: [transition.batchId], tenantFingerprint: tenantA) == 1)
+        let laterTransition = try makeEnvelope(stream: stream, kind: .transition)
+        #expect(storage.saveObservation(laterTransition) != nil)
+        #expect(storage.loadReplayGroup(tenantFingerprint: tenantA, capabilityAvailable: true).first?.envelope.batchId == first.batchId)
+    }
+
+    @Test("Stable context identity ignores device updates and separates changed AP location or generation")
+    func stableContextIdentity() throws {
+        let original = try makeEnvelope()
+        let updated = try makeEnvelope(deviceTimestampOffsetMs: 1_000)
+        #expect(original.contextFingerprint == updated.contextFingerprint)
+        let changedGeneration = try makeEnvelope(contextLabel: "new-context")
+        #expect(original.contextFingerprint != changedGeneration.contextFingerprint)
+        let untagged = try makeEnvelope(contextID: nil)
+        var payload = untagged.originalPayload.mapValues { $0.foundationValue }
+        payload["location"] = ["latitude": 1, "longitude": 3, "timestamp": captureTimeMs]
+        let changedLocation = try StoredObservationEnvelope(batchId: UUID().uuidString, storedAtMs: captureTimeMs,
+            tenantFingerprint: tenantA, originalPayload: payload, sampling: nil)
+        #expect(untagged.contextFingerprint != changedLocation.contextFingerprint)
+        payload = untagged.originalPayload.mapValues { $0.foundationValue }
+        payload["wifis"] = [["apId": "new-ap", "connected": true, "timestamp": captureTimeMs]]
+        let changedAP = try StoredObservationEnvelope(batchId: UUID().uuidString, storedAtMs: captureTimeMs,
+            tenantFingerprint: tenantA, originalPayload: payload, sampling: nil)
+        #expect(untagged.contextFingerprint != changedAP.contextFingerprint)
+        payload["location"] = ["latitude": 8, "longitude": 9, "timestamp": captureTimeMs]
+        let sameGeneration = try StoredObservationEnvelope(batchId: UUID().uuidString, storedAtMs: captureTimeMs,
+            tenantFingerprint: tenantA, originalPayload: payload, sampling: nil, contextID: "original")
+        #expect(original.contextFingerprint == sameGeneration.contextFingerprint)
+    }
+
+    @Test("Seven day retention expires pending and quarantined envelopes using original observation time")
+    func sevenDayExpiry() throws {
+        var current = Date(timeIntervalSince1970: Double(captureTimeMs) / 1_000)
+        let storage = makeStorage(now: { current })
+        let first = try makeEnvelope()
+        let unknown = try makeEnvelope(tenant: nil, useDefaultTenant: false)
+        #expect(storage.saveObservation(first) != nil && storage.saveObservation(unknown) != nil)
+        #expect(storage.loadReplayGroup(tenantFingerprint: tenantA, capabilityAvailable: true).count == 1)
+        current = current.addingTimeInterval(7 * 24 * 60 * 60 - 1)
+        #expect(storage.observationRecords(includeQuarantined: true).count == 2)
+        current = current.addingTimeInterval(2)
+        #expect(storage.observationRecords(includeQuarantined: true).isEmpty)
+        #expect(storage.saveObservation(first) == nil)
+    }
+
+    @Test("Queue bounds evict ordinary observations before protected transitions and remain finite")
+    func queueBounds() throws {
+        let storage = makeStorage()
+        storage.maxBatchCount = 2
+        let ordinary = try makeEnvelope()
+        let transition = try makeEnvelope(kind: .transition)
+        let latest = try makeEnvelope()
+        #expect(storage.saveObservation(ordinary) != nil)
+        #expect(storage.saveObservation(transition) != nil)
+        #expect(storage.saveObservation(latest) != nil)
+        #expect(Set(storage.observationRecords().map { $0.envelope.batchId }) == Set([transition.batchId, latest.batchId]))
+        storage.maxBatchCount = 0
+        #expect(storage.maxBatchCount == 1 && storage.observationRecords(includeQuarantined: true).count == 1)
+    }
+
+    @Test("Beacon bucket payload and replay manifest limits reject oversized storage without partial files")
+    func payloadBounds() throws {
+        let storage = makeStorage()
+        var oversized = try makeEnvelope()
+        oversized.originalPayload["beacons"] = .array(Array(repeating: .object([:]), count: 101))
+        #expect(storage.saveObservation(oversized) == nil)
+        oversized.originalPayload["beacons"] = .array([.object(["temporalBuckets": .array(Array(repeating: .null, count: 41))])])
+        #expect(storage.saveObservation(oversized) == nil)
+        oversized.originalPayload["beacons"] = .array([])
+        oversized.originalPayload["large"] = .string(String(repeating: "x", count: 524_288))
+        #expect(storage.saveObservation(oversized) == nil && storage.batchCount == 0)
+        let envelope = try makeEnvelope()
+        let ids = [envelope.batchId] + (0 ..< 128).map { _ in UUID().uuidString }
+        #expect(try envelope.replayPayload(manifest: SamplingReplayManifest(drainId: UUID().uuidString,
+            batchIds: ids, index: 0, count: ids.count)) == nil)
+    }
+
+    @Test("Capability absence keeps historical summaries durable and never exposes them to legacy drain")
+    func capabilityRollback() throws {
+        let storage = makeStorage()
+        let envelope = try makeEnvelope()
+        #expect(storage.saveObservation(envelope) != nil)
+        #expect(storage.loadReplayGroup(tenantFingerprint: tenantA, capabilityAvailable: false).isEmpty)
+        #expect(storage.loadOldestBatchesWithIds(5).isEmpty)
+        #expect(storage.batchCount == 1 && storage.observationRecords().first?.envelope == envelope)
+        #expect(storage.loadReplayGroup(tenantFingerprint: tenantA, capabilityAvailable: true).count == 1)
+    }
+
+    @Test("Complete new legacy snapshots drain without capability and never invent current context")
+    func completeLegacyReplay() throws {
+        let storage = makeStorage()
+        let original = try makeEnvelope()
+        let legacy = try StoredObservationEnvelope(batchId: original.batchId, storedAtMs: original.storedAtMs,
+            tenantFingerprint: tenantA, originalPayload: original.originalPayload.mapValues { $0.foundationValue },
+            sampling: original.sampling, contextID: original.contextID, deliveryProtocol: .legacy)
+        let unknownMotionLegacy = try StoredObservationEnvelope(batchId: UUID().uuidString, storedAtMs: captureTimeMs,
+            tenantFingerprint: tenantA, originalPayload: original.originalPayload.mapValues { $0.foundationValue }, sampling: nil,
+            contextID: original.contextID)
+        #expect(storage.saveObservation(legacy) != nil && storage.saveObservation(unknownMotionLegacy) != nil)
+        let replay = try #require(storage.loadReplayGroup(tenantFingerprint: tenantA, capabilityAvailable: false).first)
+        let body = try #require(try replay.envelope.replayPayload(manifest: replay.manifest))
+        #expect(body["sampling"] == nil)
+        #expect(try ObservationJSONValue.snapshot(body) == original.originalPayload)
+        #expect(replay.envelope.sampling?.clock == original.sampling?.clock)
+        #expect(storage.acknowledge(batchIds: [legacy.batchId], tenantFingerprint: tenantA) == 1)
+        #expect(storage.loadReplayGroup(tenantFingerprint: tenantA, capabilityAvailable: false).first?.envelope.batchId == unknownMotionLegacy.batchId)
+        #expect(storage.batchCount == 1)
+    }
+
     // MARK: - Helper Methods
+
+    private let captureTimeMs = Int64(Date().timeIntervalSince1970 * 1_000)
+    private var tenantA: String { SamplingTenantFingerprint.make(endpoint: "https://ingest.test", appID: "test.app", deviceID: "test-device", businessToken: "tenant-a") }
+    private var tenantB: String { SamplingTenantFingerprint.make(endpoint: "https://ingest.test", appID: "test.app", deviceID: "test-device", businessToken: "tenant-b") }
+    private var storageURL: URL {
+        FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent(testDirectory)
+    }
+
+    @Test("Retained stale legacy head does not starve supported adaptive history")
+    func excludesRetainedLegacyHead() throws {
+        let storage = makeStorage()
+        defer { storage.clearAllBatches() }
+        let original = try makeEnvelope()
+        let legacy = try StoredObservationEnvelope(batchId: original.batchId, storedAtMs: original.storedAtMs,
+            tenantFingerprint: tenantA, originalPayload: original.originalPayload.mapValues { $0.foundationValue },
+            sampling: original.sampling, contextID: original.contextID, deliveryProtocol: .legacy)
+        let historical = try makeEnvelope()
+        #expect(storage.saveObservation(legacy) != nil && storage.saveObservation(historical) != nil)
+        let replay = storage.loadReplayGroup(tenantFingerprint: tenantA, capabilityAvailable: true,
+            excludingBatchIds: [legacy.batchId])
+        #expect(replay.map { $0.envelope.batchId } == [historical.batchId])
+        #expect(storage.observationRecords().contains { $0.envelope.batchId == legacy.batchId })
+        #expect(storage.acknowledge(batchIds: [historical.batchId], tenantFingerprint: tenantA) == 1)
+        #expect(storage.observationRecords().map { $0.envelope.batchId } == [legacy.batchId])
+    }
+
+
+    @Test("Missing legacy motion switch decodes without changing original context fingerprints or queue bytes")
+    func legacyMotionSwitchCompatibility() throws {
+        let storage = makeStorage()
+        let original = try makeEnvelope()
+        let id = try #require(storage.saveObservation(original))
+        let url = try #require(storage.observationRecords().first).storageId
+        #expect(url == id)
+        let before = try JSONEncoder().encode(original)
+        let decoded = try JSONDecoder().decode(StoredObservationEnvelope.self, from: before)
+        #expect(decoded.capturedPolicy.motionSensors == nil && decoded.capturedPolicy.effectiveMotionSensors)
+        #expect(decoded.filtered(policy: .allEnabled) == original)
+        storage.applyCollectionPolicy(.allEnabled)
+        #expect(storage.observationRecords().first?.envelope == original)
+        var allOff = original
+        allOff.capturedPolicy.location = false; allOff.capturedPolicy.wifi = false
+        let restored = try JSONDecoder().decode(StoredObservationEnvelope.self, from: JSONEncoder().encode(allOff))
+        #expect(!restored.capturedPolicy.effectiveMotionSensors)
+        #expect(restored.contextFingerprint == original.contextFingerprint)
+    }
+
+    @Test("Reserved inertial evidence survives explicit motion opt in without location or wifi and opt out filters replay")
+    func motionQueuePolicy() throws {
+        let storage = makeStorage()
+        var envelope = try makeEnvelope()
+        envelope.sampling?.motion = MotionEvidence(state: .movingInferred, source: .contextFusion, confidence: .low,
+            reason: "context_changed", observedAtMs: captureTimeMs, ageMs: 0, contextStable: true)
+        let onlyMotion = DataCollectionPolicy(location: false, wifi: false, motionSensors: true)
+        let stored = envelope.filtered(policy: onlyMotion)
+        #expect(stored.sampling?.motion.isInertialInference == true)
+        #expect(stored.capturedPolicy.motionSensors == true)
+        let id = try #require(storage.saveObservation(stored, policy: onlyMotion))
+        let pending = try #require(storage.loadReplayGroup(tenantFingerprint: tenantA, policy: onlyMotion,
+            capabilityAvailable: true).first)
+        #expect(pending.envelope.sampling?.motion.isInertialInference == true)
+        let denied = DataCollectionPolicy(location: false, wifi: false, motionSensors: false)
+        let retry = try #require(storage.loadReplayGroup(tenantFingerprint: tenantA, policy: denied,
+            capabilityAvailable: true).first)
+        #expect(retry.envelope.sampling?.motion.state == .unknown)
+        #expect(retry.envelope.batchId == envelope.batchId && retry.envelope.sampling?.clock == envelope.sampling?.clock)
+        #expect(retry.envelope.contextFingerprint == stored.contextFingerprint)
+        #expect(retry.envelope.sampling?.observedFrom == envelope.sampling?.observedFrom)
+        #expect(storage.acknowledge(batchIds: [envelope.batchId], tenantFingerprint: tenantA) == 1)
+        #expect(!storage.observationRecords().contains { $0.storageId == id })
+    }
+
+
+    @Test("Negotiated budget skips an oversized original without starving a later compatible replay")
+    func replayBudgetForwardProgress() throws {
+        let storage = makeStorage(); defer { storage.clearAllBatches() }
+        var large = try makeEnvelope(contextLabel: "large")
+        large.originalPayload["extra"] = .string(String(repeating: "x", count: 8_000))
+        let small = try makeEnvelope(contextLabel: "small")
+        #expect(storage.saveObservation(large) != nil && storage.saveObservation(small) != nil)
+        let budget = try JSONSerialization.data(withJSONObject: APIClient.observationPayload(small,
+            manifest: SamplingReplayManifest(drainId: UUID().uuidString, batchIds: [small.batchId], index: 0, count: 1))).count + 100
+        let selected = try #require(storage.loadReplayGroup(tenantFingerprint: tenantA, capabilityAvailable: true,
+            maximumJSONBytes: budget).first)
+        #expect(selected.envelope.batchId == small.batchId)
+        #expect(storage.observationRecords().first { $0.envelope.batchId == large.batchId }?.envelope.originalPayload == large.originalPayload)
+        #expect(storage.acknowledge(batchIds: [small.batchId], tenantFingerprint: tenantA) == 1)
+        #expect(storage.loadReplayGroup(tenantFingerprint: tenantA, capabilityAvailable: true).first?.envelope.batchId == large.batchId)
+    }
+
+    @Test("Rejected diagnostic files have a separate bounded capacity from pending snapshots")
+    func rejectedCapacityIsIndependent() throws {
+        let storage = makeStorage(); defer { storage.clearAllBatches() }; storage.maxBatchCount = 1
+        let first = try makeEnvelope()
+        let firstID = try #require(storage.saveObservation(first))
+        #expect(storage.quarantineBatch(id: firstID))
+        let second = try makeEnvelope()
+        #expect(storage.saveObservation(second) != nil)
+        #expect(storage.observationRecords().map { $0.envelope.batchId } == [second.batchId])
+        #expect(storage.observationRecords(includeQuarantined: true).count == 2)
+    }
+
+    private func makeEnvelope(
+        tenant: String? = nil, stream: String = UUID().uuidString,
+        kind: SamplingEnvelope.Kind = .summary, contextLabel: String = "original",
+        useDefaultTenant: Bool = true, deviceTimestampOffsetMs: Int64 = 0, contextID: String? = "original"
+    ) throws -> StoredObservationEnvelope {
+        let batchId = UUID().uuidString
+        let sampling = SamplingEnvelope(version: 1, kind: kind, batchId: batchId, captureStreamId: stream,
+            windowId: UUID().uuidString, observedFrom: captureTimeMs, observedTo: captureTimeMs,
+            sentAt: captureTimeMs, motion: MotionEvidence(state: .stationaryInferred, source: .contextFusion,
+                confidence: .low, reason: "stationary_inferred", observedAtMs: captureTimeMs, ageMs: 0, contextStable: true),
+            clock: SamplingEnvelopeClock(bootId: UUID().uuidString, wallTimeMs: captureTimeMs, monotonicTimeMs: 20_000),
+            transitionReason: kind == .transition ? .contextChanged : nil)
+        let payload: [String: Any] = [
+            "beacons": [["uuid": "E25B8D3C-947A-452F-A13F-589CB706D2E5", "major": 1, "minor": 2, "rssi": -60, "timestamp": captureTimeMs,
+                         "rssiSamples": ["count": 3, "min": -61, "max": -59, "avg": -60, "stdDev": 1],
+                         "temporalBuckets": [["bucketId": UUID().uuidString, "firstSampleId": UUID().uuidString,
+                             "lastSampleId": UUID().uuidString, "firstSeen": captureTimeMs, "lastSeen": captureTimeMs,
+                             "count": 3, "min": -61, "max": -59, "avg": -60, "stdDev": 1]]]],
+            "sdk": ["version": "test", "platform": "ios", "appId": "test.app", "build": 1],
+            "device": ["deviceId": "test-device", "timestamp": captureTimeMs + deviceTimestampOffsetMs,
+                       "network": ["type": "wifi", "apId": "original-ap", "wifiSSID": "original-ssid"],
+                       "permissions": ["advertisingId": "original-idfa", "trackingAuthorization": "authorized"]],
+            "userProperties": ["internalId": contextLabel], "syncTrigger": "original_trigger",
+            "location": ["latitude": 1, "longitude": 2, "timestamp": captureTimeMs - 10_000],
+            "wifis": [["apId": "original-ap", "connected": true, "timestamp": captureTimeMs - 5_000]],
+            "encounters": [["rpi": "original-peer", "firstSeen": captureTimeMs, "lastSeen": captureTimeMs]],
+            "encounterIds": ["original-rpi"], "businessToken": "not-persisted"
+        ]
+        return try StoredObservationEnvelope(batchId: batchId, storedAtMs: captureTimeMs,
+            tenantFingerprint: useDefaultTenant ? (tenant ?? tenantA) : tenant,
+            originalPayload: payload, sampling: sampling, contextID: contextID == "original" ? contextLabel : contextID)
+    }
     
     private func createTestBeacons(count: Int) -> [Beacon] {
         var beacons: [Beacon] = []
@@ -211,7 +622,7 @@ struct OfflineBatchStorageTests {
 
 // MARK: - Captured context and retry drain
 
-@Suite("OfflineBatchStorage captured context")
+@Suite("OfflineBatchStorage captured context", .serialized)
 struct OfflineBatchCapturedContextTests {
 
     private let testDirectory = "com.bearound.sdk.test.batches.\(UUID().uuidString)"
@@ -255,36 +666,31 @@ struct OfflineBatchCapturedContextTests {
             .appendingPathComponent(testDirectory)
     }
 
-    @Test("A legacy batch without the new fields decodes and only it falls back to a fresh context")
-    func legacyBatchDecodesWithFallback() throws {
+    @Test("A context-less legacy batch is quarantined without changing a captured main batch")
+    func legacyBatchWithoutContextRemainsFailClosed() throws {
         let storage = makeStorage()
+        defer { storage.clearAllBatches() }
+        let legacyId = UUID().uuidString
+        let now = ISO8601DateFormatter().string(from: Date())
         let legacyJSON = """
-        {"id":"legacy","timestamp":"2026-09-01T12:00:00Z","beacons":[{"uuid":"E25B8D3C-947A-452F-A13F-589CB706D2E5",\
-        "major":7,"minor":8,"rssi":-70,"proximity":2,"accuracy":2.5,"timestamp":"2026-09-01T12:00:00Z","txPower":-59}]}
+        {"id":"\(legacyId)","timestamp":"\(now)","beacons":[{"uuid":"E25B8D3C-947A-452F-A13F-589CB706D2E5",\
+        "major":7,"minor":8,"rssi":-70,"proximity":2,"accuracy":2.5,"timestamp":"\(now)","txPower":-59}]}
         """
-        let legacyName = "\(Int(Date().timeIntervalSince1970) - 10)_legacy.json"
+        let legacyName = "\(Int(Date().timeIntervalSince1970) - 10)_\(legacyId).json"
         try Data(legacyJSON.utf8).write(to: storageDirectoryURL().appendingPathComponent(legacyName))
         let captured = makeDevice(latitude: -23.1, fixAt: Date())
         #expect(storage.saveBatch(makeBeacons(major: 1), userDevice: captured, syncTrigger: "precision_high_timer"))
 
         let records = storage.loadOldestBatchesWithIds(5)
-        #expect(records.count == 2)
-        let legacy = try #require(records.first { $0.id == legacyName })
-        #expect(legacy.beacons.first?.major == 7)
-        #expect(legacy.userDevice == nil)
-        #expect(legacy.syncTrigger == nil)
-
-        var fallbackCalls = 0
-        let fallback = makeDevice(latitude: -10, fixAt: Date())
-        let legacyContext = BeAroundSDK.retryContext(for: legacy) { fallbackCalls += 1; return fallback }
-        #expect(legacyContext.syncTrigger == BeAroundSDK.legacyRetryTrigger)
-        #expect(legacyContext.userDevice == fallback)
-
-        let modern = try #require(records.first { $0.id != legacyName })
-        let modernContext = BeAroundSDK.retryContext(for: modern) { fallbackCalls += 1; return fallback }
+        #expect(records.count == 1)
+        let modern = try #require(records.first)
+        let modernContext = BeAroundSDK.retryContext(for: modern) {
+            Issue.record("captured context must not be replaced at retry time")
+            return makeDevice(latitude: -10, fixAt: Date())
+        }
         #expect(modernContext.userDevice == captured)
         #expect(modernContext.syncTrigger == "precision_high_timer")
-        #expect(fallbackCalls == 1)
+        #expect(storage.observationRecords(includeQuarantined: true).first?.storageId == "\(legacyName).rejected")
     }
 
     @Test("Draining N batches with different captured context yields N requests, each with its own context")
@@ -360,4 +766,256 @@ struct OfflineBatchCapturedContextTests {
         #expect(records.filter { $0.id != visitId }.count == 2)
         #expect(storage.batchCount == 3)
     }
+    @Test("Captured visits retain priority and context beside adaptive envelopes after relaunch")
+    func capturedVisitAndAdaptiveQueueStaySeparate() async throws {
+        let storage = makeStorage()
+        defer { storage.clearAllBatches() }
+        storage.maxBatchCount = 2
+        let now = Int64(Date().timeIntervalSince1970 * 1_000)
+        let id = UUID().uuidString
+        let clock = SamplingClock(wallTimeMs: now, monotonicTimeMs: 10_000, bootIdentifier: "fixture-boot")
+        let sampling = SamplingEnvelope(version: 1, kind: .summary, batchId: id,
+            captureStreamId: UUID().uuidString, windowId: UUID().uuidString,
+            observedFrom: now, observedTo: now, sentAt: now,
+            motion: MotionEvidence(state: .unknown, source: .none, confidence: .none,
+                reason: "no_evidence", observedAtMs: nil, ageMs: nil, contextStable: false),
+            clock: SamplingEnvelopeClock(bootId: clock.bootIdentifier, wallTimeMs: now, monotonicTimeMs: 10_000))
+        let tenant = String(repeating: "a", count: 64)
+        let envelope = try StoredObservationEnvelope(batchId: id, storedAtMs: now, tenantFingerprint: tenant,
+            originalPayload: ["sdk": ["appId": "fixture-app"], "device": ["deviceId": "fixture-device"],
+                "beacons": [["uuid": UUID().uuidString, "major": 1, "minor": 1, "timestamp": now]]], sampling: sampling)
+        #expect(storage.saveObservation(envelope) != nil)
+        let fix = Date().addingTimeInterval(-90)
+        var visit = BeAroundSDK.visitUserDevice(for: visitEvent(at: fix), collected: makeDevice(latitude: 0, fixAt: Date()))
+        visit.wifis = [WifiObservation(apId: "fixture-ap", ssid: "fixture-wifi", rssi: nil, connected: true,
+            frequencyMhz: nil, timestamp: Int(fix.timeIntervalSince1970 * 1_000))]
+        let visitId = try #require(storage.saveBatchReturningId([], userDevice: visit, syncTrigger: "visit"))
+        let restored = makeStorage()
+        let captured = try #require(restored.loadOldestBatchesWithIds(1).first)
+        #expect(captured.id == visitId && captured.userDevice == visit && captured.syncTrigger == "visit")
+        #expect(restored.observationRecords().map { $0.envelope.batchId } == [id])
+        let replay = try #require(restored.loadReplayGroup(tenantFingerprint: tenant, capabilityAvailable: true).first)
+        #expect(replay.envelope.batchId == id && replay.envelope.originalPayload == envelope.originalPayload)
+        let context = BeAroundSDK.retryContext(for: captured) {
+            Issue.record("a captured visit must never collect a replacement fix")
+            return makeDevice(latitude: 80, fixAt: Date())
+        }
+        let client = APIClient(configuration: SDKConfiguration(businessToken: "fixture-captured-visit"))
+        client.submissionContextProvider = { $0(RequestSubmissionContext(policy: .allEnabled)) }
+        var submissions = 0
+        var reconciliation: ObservationDeliveryReconciliation?
+        client.transport = { _, data, path, descriptor, submit, finish in
+            submissions += 1
+            #expect(path == .immediateFirst)
+            #expect(descriptor.adaptiveBatchId == nil && descriptor.tenantFingerprint == nil)
+            #expect(descriptor.storageIds == [visitId])
+            reconciliation = descriptor
+            do {
+                let payload = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
+                #expect(payload["sampling"] == nil && payload["syncTrigger"] as? String == "visit")
+                #expect((payload["beacons"] as? [Any])?.isEmpty == true)
+                let location = try #require(payload["location"] as? [String: Any])
+                #expect(location["latitude"] as? Double == -23.5611)
+                #expect((location["timestamp"] as? NSNumber)?.intValue == Int(fix.timeIntervalSince1970 * 1_000))
+                let wifi = try #require((payload["wifis"] as? [[String: Any]])?.first)
+                #expect(wifi["apId"] as? String == "fixture-ap")
+                #expect((wifi["timestamp"] as? NSNumber)?.intValue == Int(fix.timeIntervalSince1970 * 1_000))
+            } catch { Issue.record(error) }
+            submit()
+            finish(.success(Data("{}".utf8)))
+        }
+        let delivered: Result<Void, Error> = await withCheckedContinuation { continuation in
+            client.sendBeacons([], sdkInfo: SDKInfo(appId: "fixture-app", build: 1), userDevice: context.userDevice,
+                userProperties: nil, syncTrigger: context.syncTrigger, delivery: .immediateFirst,
+                persistedBatchIds: [visitId]) { continuation.resume(returning: $0) }
+        }
+        _ = try delivered.get()
+        #expect(submissions == 1)
+        let descriptor = try #require(reconciliation)
+        let description = try #require(String(data: JSONEncoder().encode(descriptor), encoding: .utf8))
+        #expect(BackgroundSessionManager.reconcileObservation(description: description, responseBody: Data("{}".utf8),
+            successful: true, storage: restored) == 1)
+        #expect(restored.loadOldestBatchesWithIds(1).isEmpty)
+        #expect(restored.observationRecords().map { $0.envelope.batchId } == [id])
+        #expect(restored.acknowledge(batchIds: [id], tenantFingerprint: tenant) == 1)
+        #expect(restored.batchCount == 0)
+    }
+
+
+
+
+    #if DEBUG
+    private final class SyncDelegate: BeAroundSDKDelegate {
+        var starts = 0
+        var completion: ((Bool, Error?) -> Void)?
+        func didUpdateBeacons(_ beacons: [Beacon]) {}
+        func willStartSync(beaconCount: Int) { starts += 1 }
+        func didCompleteSync(beaconCount: Int, success: Bool, error: Error?) { completion?(success, error) }
+    }
+
+    @Test("A nil adaptive runtime still sends frozen legacy data and balances delegate terminals")
+    func nilRuntimeLegacyTerminal() async throws {
+        let storage = makeStorage(); defer { storage.clearAllBatches() }
+        let configuration = SDKConfiguration(businessToken: "fixture-nil-runtime", adaptiveSamplingEnabled: false)
+        let client = APIClient(configuration: configuration)
+        let sdk = BeAroundSDK.samplingTransportFixture(configuration: configuration, client: client,
+            storage: storage, withRuntime: false)
+        let delegate = SyncDelegate(); sdk.delegate = delegate
+        let now = Date(); let device = makeDevice(latitude: -23.1, fixAt: now)
+        client.transport = { _, data, _, _, submit, finish in
+            #expect(submit())
+            let payload = try! JSONSerialization.jsonObject(with: data) as! [String: Any]
+            #expect(payload["sampling"] == nil)
+            #expect((payload["location"] as? [String: Any])?["latitude"] as? Double == -23.1)
+            sdk.endSamplingFixture()
+            finish(.success(Data("{}".utf8)))
+        }
+        let successful: Bool = await withCheckedContinuation { continuation in
+            delegate.completion = { success, error in #expect(error == nil); continuation.resume(returning: success) }
+            sdk.syncSamplingFixture(beacons: makeBeacons(major: 1), device: device)
+        }
+        #expect(successful && delegate.starts == 1)
+        #expect(storage.batchCount == 0)
+    }
+
+    @Test("Foreground retains negotiated runtime and exact ownership of an in flight upload")
+    func foregroundUploadOwnership() async throws {
+        let storage = makeStorage(); defer { storage.clearAllBatches() }
+        let configuration = SDKConfiguration(businessToken: "fixture-foreground")
+        let client = APIClient(configuration: configuration)
+        let sdk = BeAroundSDK.samplingTransportFixture(configuration: configuration, client: client, storage: storage)
+        let now = SamplingClock.now()
+        let device = makeDevice(latitude: -23.1, fixAt: Date())
+        let beacon = makeBeacons(major: 1)[0]
+        let payload = APIClient.makeObservationPayload([beacon], sdkInfo: SDKInfo(appId: configuration.appId, build: 1),
+            userDevice: device, userProperties: nil, syncTrigger: "fixture-original")
+        let original: (AdaptiveSamplingRuntime, StoredObservationEnvelope) = try await withCheckedThrowingContinuation { continuation in
+            sdk.inspectSamplingFixture { runtime, _ in
+                do {
+                    let runtime = try #require(runtime)
+                    let response: [String: Any] = ["capabilities": ["adaptiveSampling": ["version": 1,
+                        "modes": ["live", "summary", "transition"], "leaseMs": 300000, "serverTimeMs": now.wallTimeMs,
+                        "servicesCadenceMs": 5000, "mapTtlMs": 90000, "sessionTimeoutMs": 1800000,
+                        "liveEvidenceMaxAgeMs": 30000, "clockSkewToleranceMs": 120000, "maxPayloadBytes": 524288]]]
+                    runtime.acceptResponse(try JSONSerialization.data(withJSONObject: response), requestedAt: now,
+                        receivedAt: now, generation: runtime.generation)
+                    continuation.resume(returning: (runtime, try runtime.legacyEnvelope(beacons: [beacon], payload: payload, at: now)))
+                } catch { continuation.resume(throwing: error) }
+            }
+        }
+        let id = try #require(storage.saveObservation(original.1))
+        var requests = 0
+        let finish: (Result<Data, Error>) -> Void = await withCheckedContinuation { continuation in
+            client.transport = { _, _, _, _, submit, finish in
+                #expect(submit()); requests += 1; continuation.resume(returning: finish)
+            }
+            sdk.submitSamplingFixture(original.1, storageID: id)
+        }
+        sdk.foregroundSamplingFixture()
+        await withCheckedContinuation { continuation in
+            sdk.inspectSamplingFixture { runtime, syncing in
+                #expect(runtime === original.0 && syncing && runtime?.hasCapability(at: SamplingClock.now()) == true)
+                #expect(requests == 1); continuation.resume()
+            }
+        }
+        let delegate = SyncDelegate(); sdk.delegate = delegate
+        let completion: Bool = await withCheckedContinuation { continuation in
+            delegate.completion = { success, error in
+                guard let error = error as? APIError, case .httpError(let status, _) = error else { Issue.record("Original transport error must reach delegate"); continuation.resume(returning: false); return }
+                #expect(status == 429); continuation.resume(returning: success)
+            }
+            sdk.endSamplingFixture(); finish(.failure(APIError.httpError(statusCode: 429)))
+        }
+        #expect(!completion && requests == 1 && storage.batchCount == 1)
+    }
+
+
+    @Test("SDK legacy capture retains the main grace window without adaptive capability", arguments: [false, true], [31, 60, 119])
+    func legacySourceAgeSDK(enabled: Bool, age: Int) async throws {
+        let storage = makeStorage(); defer { storage.clearAllBatches() }
+        let configuration = SDKConfiguration(businessToken: "fixture-source-age", scanPrecision: .medium,
+            adaptiveSamplingEnabled: enabled)
+        let client = APIClient(configuration: configuration)
+        let sdk = BeAroundSDK.samplingTransportFixture(configuration: configuration, client: client, storage: storage)
+        let captured = Date().addingTimeInterval(-Double(age))
+        let beacon = Beacon(uuid: BeaconConstants.uuid, major: 1, minor: 1, rssi: -60, proximity: .near,
+            accuracy: 1, timestamp: captured)
+        let delegate = SyncDelegate(); sdk.delegate = delegate
+        client.transport = { _, data, _, _, submit, finish in
+            #expect(submit())
+            let body = try! JSONSerialization.jsonObject(with: data) as! [String: Any]
+            #expect(body["sampling"] == nil)
+            let beacons = body["beacons"] as! [[String: Any]]
+            #expect(beacons.count == 1)
+            #expect((beacons[0]["timestamp"] as! NSNumber).int64Value == Int64(captured.timeIntervalSince1970 * 1_000))
+            sdk.endSamplingFixture(); finish(.success(Data("{}".utf8)))
+        }
+        let delivered: Bool = await withCheckedContinuation { continuation in
+            delegate.completion = { success, error in #expect(error == nil); continuation.resume(returning: success) }
+            sdk.syncSamplingFixture(beacons: [beacon], device: makeDevice(latitude: -23.1, fixAt: captured))
+        }
+        #expect(delivered && delegate.starts == 1 && storage.batchCount == 0)
+    }
+
+    @Test("SDK physical callback preserves legacy provenance before persistence capacity returns")
+    func physicalCallbackAtPersistenceCapacity() async throws {
+        let storage = makeStorage(); defer { storage.clearAllBatches() }
+        let configuration = SDKConfiguration(businessToken: "fixture-capacity")
+        let client = APIClient(configuration: configuration)
+        let sdk = BeAroundSDK.samplingTransportFixture(configuration: configuration, client: client, storage: storage)
+        let beacon = makeBeacons(major: 1)[0]
+        let payload = APIClient.makeObservationPayload([beacon], sdkInfo: SDKInfo(appId: configuration.appId, build: 1),
+            userDevice: makeDevice(latitude: -23.1, fixAt: Date()), userProperties: nil, syncTrigger: "fixture")
+        let pending = try StoredObservationEnvelope(batchId: UUID().uuidString, storedAtMs: SamplingClock.now().wallTimeMs,
+            tenantFingerprint: SamplingTenantFingerprint.make(endpoint: configuration.apiBaseURL, appID: configuration.appId,
+                deviceID: "device-1", businessToken: configuration.businessToken), originalPayload: payload,
+            sampling: nil, deliveryProtocol: .legacy)
+        await withCheckedContinuation { continuation in
+            sdk.captureAtCapacitySamplingFixture([beacon], pending: pending) { runtime in
+                #expect(runtime?.legacyEvidenceIsSendable(beacon, at: SamplingClock.now()) == true)
+                #expect(runtime?.diagnostics.uniqueSamples == 0)
+                continuation.resume()
+            }
+        }
+        sdk.endSamplingFixture()
+    }
+
+    @Test("SDK durable legacy drain delivers an original sixty second snapshot after relaunch without capability", arguments: [false, true])
+    func durableLegacySDKDrain(enabled: Bool) async throws {
+        let storage = makeStorage(); defer { storage.clearAllBatches() }
+        let configuration = SDKConfiguration(businessToken: "fixture-old-legacy", adaptiveSamplingEnabled: enabled)
+        let before = Date().addingTimeInterval(-60)
+        let capturedClock = SamplingClock(wallTimeMs: Int64(before.timeIntervalSince1970 * 1_000),
+            monotonicTimeMs: 1_000_000, bootIdentifier: UUID().uuidString)
+        let device = makeDevice(latitude: -23.1, fixAt: before)
+        let beacon = Beacon(uuid: BeaconConstants.uuid, major: 1, minor: 1, rssi: -60, proximity: .near,
+            accuracy: 1, timestamp: before)
+        let payload = APIClient.makeObservationPayload([beacon], sdkInfo: SDKInfo(appId: configuration.appId, build: 1),
+            userDevice: device, userProperties: UserProperties(internalId: "original-user"), syncTrigger: "original-timer")
+        let oldRuntime = AdaptiveSamplingRuntime(configuration: configuration, deviceID: device.deviceId)
+        let envelope = try oldRuntime.legacyEnvelope(beacons: [beacon], payload: payload, at: capturedClock)
+        #expect(storage.saveObservation(envelope) != nil)
+        let restored = makeStorage()
+        let client = APIClient(configuration: configuration)
+        let sdk = BeAroundSDK.samplingTransportFixture(configuration: configuration, client: client, storage: restored)
+        let delegate = SyncDelegate(); sdk.delegate = delegate
+        client.transport = { _, data, _, descriptor, submit, finish in
+            #expect(submit() && descriptor.adaptiveBatchId == nil)
+            let body = try! JSONSerialization.jsonObject(with: data) as! [String: Any]
+            #expect(body["sampling"] == nil && body["syncTrigger"] as? String == "original-timer")
+            #expect((body["userProperties"] as? [String: Any])?["internalId"] as? String == "original-user")
+            let seen = (body["beacons"] as! [[String: Any]])[0]["timestamp"] as! NSNumber
+            #expect(seen.int64Value == capturedClock.wallTimeMs)
+            #expect(((body["location"] as! [String: Any])["timestamp"] as! NSNumber).int64Value == capturedClock.wallTimeMs)
+            sdk.endSamplingFixture(); finish(.success(Data("{}".utf8)))
+        }
+        let delivered: Bool = await withCheckedContinuation { continuation in
+            delegate.completion = { success, error in #expect(error == nil); continuation.resume(returning: success) }
+            sdk.replaySamplingFixture()
+        }
+        #expect(delivered && restored.batchCount == 0)
+    }
+
+    #endif
+
 }

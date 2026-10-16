@@ -1,0 +1,917 @@
+import Foundation
+import Testing
+@testable import BearoundSDK
+
+@Suite("Adaptive Sampling Diagnostics Tests", .serialized)
+struct AdaptiveSamplingDiagnosticsTests {
+    private let base: Int64 = 1_791_907_200_000
+    private let boot = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+
+    private func clock(_ offset: Int64 = 0, boot: String? = nil) -> SamplingClock {
+        SamplingClock(wallTimeMs: base + offset, monotonicTimeMs: 1_000_000 + offset, bootIdentifier: boot ?? self.boot)
+    }
+    private func beacon(_ offset: Int64 = 0, minor: Int = 1, major: Int = 1, rssi: Int = -70) -> Beacon {
+        Beacon(uuid: BeaconConstants.uuid, major: major, minor: minor, rssi: rssi, proximity: .bt,
+            accuracy: -1, timestamp: Date(timeIntervalSince1970: Double(base + offset) / 1_000))
+    }
+    private func body(_ label: String = "original") -> [String: Any] {
+        ["sdk": ["version": "test", "platform": "ios", "appId": "test.app", "build": 1],
+         "device": ["deviceId": "device", "timestamp": base, "pushToken": label,
+                    "network": ["type": "wifi", "apId": "stable-ap"]],
+         "userProperties": ["internalId": label], "syncTrigger": "adaptive_physical"]
+    }
+    private func runtime(enabled: Bool = true, generation: UInt64 = 1, precision: ScanPrecision = .high,
+                         eligibilityProvider: (() -> PhysicalZoneCollectionEligibility?)? = nil) -> AdaptiveSamplingRuntime {
+        AdaptiveSamplingRuntime(configuration: SDKConfiguration(businessToken: "test-token",
+            scanPrecision: precision, adaptiveSamplingEnabled: enabled), deviceID: "device", generation: generation,
+            physicalZoneCollectionEligibilityProvider: eligibilityProvider ?? {
+                PhysicalZoneCollectionEligibility(revision: 0, enabledAt: clock())
+            })
+    }
+    private func response(lease: Int64 = 300_000, version: Int = 1, modes: [String] = ["live", "summary", "transition"],
+                          serverOffset: Int64 = 0, servicesCadenceMs: Int64 = 60_000) throws -> Data {
+        try JSONSerialization.data(withJSONObject: ["capabilities": ["adaptiveSampling": [
+            "version": version, "modes": modes, "leaseMs": lease, "serverTimeMs": base + serverOffset,
+            "servicesCadenceMs": servicesCadenceMs, "mapTtlMs": 300_000, "sessionTimeoutMs": 1_800_000,
+            "liveEvidenceMaxAgeMs": 30_000, "clockSkewToleranceMs": 120_000, "maxPayloadBytes": 524_288]]])
+    }
+    private func negotiate(_ runtime: AdaptiveSamplingRuntime, at offset: Int64 = 0) throws {
+        runtime.acceptResponse(try response(serverOffset: offset), requestedAt: clock(offset), receivedAt: clock(offset), generation: runtime.generation)
+    }
+    private func observe(_ runtime: AdaptiveSamplingRuntime, _ offset: Int64 = 0, label: String = "original",
+                         beacons: [Beacon]? = nil, physical: Bool = true) {
+        runtime.observePhysical(beacons ?? [beacon(offset)], callbackID: UUID().uuidString,
+            at: clock(offset), isPhysical: physical) { body(label) }
+    }
+
+    @Test("Capability starts legacy and binds the current generation with a monotonic lease")
+    func generationAndLease() throws {
+        let runtime = runtime()
+        #expect(runtime.samplingPlan(at: clock()).mode == .legacy)
+        runtime.acceptResponse(try response(), requestedAt: clock(), receivedAt: clock(), generation: 0)
+        #expect(!runtime.hasCapability(at: clock()))
+        try negotiate(runtime)
+        #expect(runtime.hasCapability(at: clock(299_999)))
+        #expect(!runtime.hasCapability(at: clock(300_000)))
+        #expect(!runtime.hasCapability(at: clock(1, boot: UUID().uuidString)))
+        #expect(!runtime.hasCapability(at: SamplingClock(wallTimeMs: base + 10_000,
+            monotonicTimeMs: 1_000_001, bootIdentifier: boot)))
+    }
+
+    @Test("Unsupported capability limits and locally disabled adaptive sampling stay legacy")
+    func incompatibleAndRollback() throws {
+        for data in [try response(version: 2), try response(lease: 300_001), try response(modes: ["live"])] {
+            let runtime = runtime()
+            runtime.acceptResponse(data, requestedAt: clock(), receivedAt: clock(), generation: 1)
+            #expect(!runtime.hasCapability(at: clock()))
+        }
+        let disabled = runtime(enabled: false)
+        try negotiate(disabled)
+        observe(disabled)
+        disabled.close(at: clock())
+        #expect(disabled.takePending(at: clock()).isEmpty)
+        #expect(disabled.samplingPlan(at: clock()).mode == .legacy)
+    }
+
+    @Test("Degraded durable ACK immediately closes v1 history and falls back without waiting for lease")
+    func degradedAck() throws {
+        let runtime = runtime()
+        try negotiate(runtime)
+        observe(runtime)
+        _ = runtime.takePending(at: clock())
+        let data = try JSONSerialization.data(withJSONObject: ["samplingAck": ["batchId": UUID().uuidString,
+            "archive": "durable", "projection": "archive_only", "reason": "ledger_unavailable",
+            "fallback": "legacy_now", "invalidateCapability": true]])
+        runtime.acceptResponse(data, requestedAt: clock(), receivedAt: clock(1_000), generation: 1)
+        #expect(!runtime.hasCapability(at: clock(1_000)))
+        #expect(runtime.samplingPlan(at: clock(1_000)).mode == .legacy)
+        #expect(runtime.takePending(at: clock(1_000)).contains { $0.deliveryProtocol == .adaptive && $0.sampling?.kind == .summary })
+    }
+
+    @Test("Cache stale and repeated source callbacks never create samples or read complementary sources")
+    func physicalProvenance() throws {
+        let runtime = runtime()
+        try negotiate(runtime)
+        var reads = 0
+        runtime.observePhysical([beacon()], callbackID: "cache", at: clock(), isPhysical: false) { reads += 1; return body() }
+        runtime.observePhysical([beacon(-30_001)], callbackID: "stale", at: clock()) { reads += 1; return body() }
+        #expect(runtime.diagnostics.uniqueSamples == 0 && reads == 0)
+        runtime.observePhysical([beacon()], callbackID: "physical", at: clock()) { reads += 1; return body() }
+        let first = runtime.takePending(at: clock())
+        runtime.observePhysical([beacon()], callbackID: "new-cache-id", at: clock(1_000)) { reads += 1; return body("wrong") }
+        #expect(runtime.diagnostics.uniqueSamples == 1 && reads == 1)
+        #expect(first.count == 1 && runtime.takePending(at: clock(1_000)).isEmpty)
+        #expect(runtime.diagnostics.cachedCallbacks == 3)
+    }
+
+    @Test("Metadata mutation closes frozen history and the next live body uses current identity and push")
+    func immediateMetadataRefresh() throws {
+        let runtime = runtime()
+        try negotiate(runtime)
+        observe(runtime)
+        let originalID = runtime.contextID
+        _ = runtime.takePending(at: clock())
+        runtime.invalidateContextMetadata(at: clock(1_000))
+        let old = try #require(runtime.takePending(at: clock(1_000)).first)
+        observe(runtime, 15_000, label: "current")
+        let current = try #require(runtime.takePending(at: clock(15_000)).first { $0.sampling?.kind == .live })
+        #expect(old.contextID == originalID && current.contextID != originalID)
+        #expect(old.originalPayload["userProperties"]?.object?["internalId"] == .string("original"))
+        #expect(old.originalPayload["device"]?.object?["pushToken"] == .string("original"))
+        #expect(current.originalPayload["userProperties"]?.object?["internalId"] == .string("current"))
+        #expect(current.originalPayload["device"]?.object?["pushToken"] == .string("current"))
+        #expect(old.sampling?.sentAt == old.sampling?.clock.wallTimeMs)
+    }
+
+    @Test("Stable physical evidence reduces complementary reads while preserving live cadence and observation count")
+    func stableEconomy() throws {
+        let runtime = runtime()
+        try negotiate(runtime)
+        var reads = 0
+        var live = 0
+        for offset in stride(from: Int64(0), through: 280_000, by: 20_000) {
+            runtime.observePhysical([beacon(offset)], callbackID: String(offset), at: clock(offset)) { reads += 1; return body() }
+            live += runtime.takePending(at: clock(offset)).filter { $0.sampling?.kind == .live }.count
+        }
+        #expect(runtime.diagnostics.uniqueSamples == 15 && live == 15)
+        #expect(reads <= 6 && runtime.diagnostics.complementaryCacheReads >= 9)
+        #expect(runtime.samplingPlan(at: clock(280_000)).mode == .stable)
+        #expect(runtime.samplingPlan(at: clock(280_000)).liveIntervalMs <= 15_000)
+    }
+
+    @Test("Medium and low physical windows dispatch at thirty seconds with original provenance and stable budgets",
+          arguments: [ScanPrecision.medium, .low])
+    func freshZoneLiveBoundaries(precision: ScanPrecision) throws {
+        let runtime = runtime(precision: precision)
+        try negotiate(runtime)
+        #expect(runtime.samplingPlan(at: clock()).liveIntervalMs == 60_000)
+        var reads = 0
+        var payload = body()
+        payload["location"] = ["latitude": 1.0, "longitude": 1.0, "accuracy": 5.0, "timestamp": base]
+        payload["wifis"] = [["apId": "stable-ap", "timestamp": base]]
+        for offset in stride(from: Int64(0), through: 150_000, by: 30_000) {
+            runtime.observePhysical([beacon(offset)], callbackID: String(offset), at: clock(offset)) { reads += 1; return payload }
+            _ = runtime.takePending(at: clock(offset))
+        }
+        let stable = runtime.samplingPlan(at: clock(150_000))
+        #expect(stable.mode == .stable && stable.contextIntervalMs == 300_000 && stable.summaryIntervalMs == 300_000)
+        let contextID = runtime.contextID
+        let contextDeadline = runtime.diagnostics.nextContextDeadlineMonotonicMs
+        let summaryDeadline = runtime.diagnostics.nextSummaryDeadlineMonotonicMs
+        let readsBefore = reads
+        var live: [StoredObservationEnvelope] = []
+        for delta: Int64 in [0, 29_000, 30_000, 60_000] {
+            let offset = 180_000 + delta
+            runtime.observePhysical([beacon(offset)], callbackID: String(offset), at: clock(offset)) { reads += 1; return payload }
+            let pending = runtime.takePending(at: clock(offset))
+            if delta == 29_000 { #expect(pending.isEmpty) }
+            else {
+                let envelope = try #require(pending.first)
+                #expect(pending.count == 1 && envelope.sampling?.kind == .live)
+                let row = try #require(envelope.originalPayload["beacons"]?.array?.first?.object)
+                #expect(row["timestamp"] == .number(Double(base + offset)))
+                #expect(envelope.sampling?.observedFrom == base + offset && envelope.sampling?.observedTo == base + offset)
+                #expect(envelope.originalPayload["location"]?.object?["timestamp"] == .number(Double(base)))
+                #expect(envelope.originalPayload["wifis"]?.array?.first?.object?["timestamp"] == .number(Double(base)))
+                #expect(envelope.contextID == contextID)
+                live.append(envelope)
+            }
+            #expect(runtime.samplingPlan(at: clock(offset)).liveIntervalMs == 30_000)
+            #expect(runtime.diagnostics.nextContextDeadlineMonotonicMs == contextDeadline)
+            #expect(runtime.diagnostics.nextSummaryDeadlineMonotonicMs == summaryDeadline)
+        }
+        #expect(reads == readsBefore && live.count == 3)
+        #expect(Set(live.compactMap { $0.sampling?.windowId }).count == 1)
+        let rows = live.compactMap { $0.originalPayload["beacons"]?.array?.first?.object }
+        #expect(Set(rows.compactMap { $0["sampleId"]?.foundationValue as? String }).count == 3)
+        runtime.close(at: clock(240_000))
+        let archive = try #require(runtime.takePending(at: clock(240_000)).first { $0.sampling?.kind == .summary })
+        let buckets = try #require(archive.originalPayload["beacons"]?.array?.first?.object?["temporalBuckets"]?.array)
+        for row in rows {
+            #expect(buckets.contains { $0.object?["lastSampleId"] == row["sampleId"] && $0.object?["bucketId"] == row["bucketId"] })
+        }
+        #expect(runtime.diagnostics.uniqueSamples == 10)
+    }
+
+    @Test("High precision and faster Services preserve their existing physical callback deadlines",
+          arguments: [Int64(5_000), 15_000])
+    func freshZoneFasterRuntimeCadences(interval: Int64) throws {
+        let runtime = runtime()
+        runtime.acceptResponse(try response(servicesCadenceMs: interval), requestedAt: clock(), receivedAt: clock(), generation: 1)
+        observe(runtime)
+        let first = try #require(runtime.takePending(at: clock()).first)
+        observe(runtime, interval - 1)
+        #expect(runtime.takePending(at: clock(interval - 1)).isEmpty)
+        observe(runtime, interval)
+        let next = try #require(runtime.takePending(at: clock(interval)).first { $0.sampling?.kind == .live })
+        #expect(runtime.samplingPlan(at: clock(interval)).liveIntervalMs == interval)
+        #expect(next.sampling?.observedTo == base + interval && next.batchId != first.batchId)
+    }
+
+    @Test("Cached stale future reserved and invalid callbacks cannot activate the physical zone cap")
+    func freshZoneExcludesUnacceptedSources() throws {
+        let sources: [(Beacon, Bool, Int)] = [
+            (beacon(), false, 0), (beacon(-30_001), true, 0), (beacon(1), true, 0),
+            (beacon(major: Int(EncounterMeshManager.virtualBeaconMajorFloor)), true, 0),
+            (beacon(rssi: 1), true, 1), (beacon(major: -1), true, 1), (beacon(minor: 65_536), true, 1)
+        ]
+        for (source, physical, expectedReads) in sources {
+            let runtime = runtime(precision: .medium)
+            try negotiate(runtime)
+            var reads = 0
+            runtime.observePhysical([source], callbackID: "excluded", at: clock(), isPhysical: physical) { reads += 1; return body() }
+            #expect(runtime.samplingPlan(at: clock()).liveIntervalMs == 60_000)
+            #expect(runtime.diagnostics.uniqueSamples == 0 && runtime.takePending(at: clock()).isEmpty)
+            #expect(reads == expectedReads)
+        }
+    }
+
+    @Test("Physical freshness expires without renewal by repeated callbacks silence or another generation")
+    func freshZoneFreshnessAndLifecycle() throws {
+        let runtime = runtime(precision: .medium)
+        try negotiate(runtime)
+        observe(runtime)
+        let first = try #require(runtime.takePending(at: clock()).first)
+        for offset: Int64 in [29_999, 30_000] {
+            #expect(runtime.samplingPlan(at: clock(offset)).liveIntervalMs == 30_000)
+            #expect(runtime.physicalEvidenceIsFresh(beacon(), at: clock(offset)))
+        }
+        let elapsedStale = SamplingClock(wallTimeMs: base + 25_001, monotonicTimeMs: 1_030_001, bootIdentifier: boot)
+        #expect(runtime.hasCapability(at: elapsedStale) && runtime.physicalEvidenceIsFresh(beacon(), at: elapsedStale))
+        #expect(runtime.samplingPlan(at: elapsedStale).liveIntervalMs == 60_000)
+        #expect(runtime.samplingPlan(at: clock(30_001)).liveIntervalMs == 60_000)
+        observe(runtime, 30_001, beacons: [beacon()])
+        #expect(runtime.diagnostics.uniqueSamples == 1 && !runtime.physicalEvidenceIsFresh(beacon(), at: clock(30_001)))
+        #expect(runtime.takePending(at: clock(60_000)).allSatisfy { $0.sampling?.kind != .live })
+        #expect(first.sampling?.observedTo == base)
+        for invalid in [clock(1, boot: "another-boot"), clock(-1),
+                        SamplingClock(wallTimeMs: base + 1, monotonicTimeMs: 1_000_001, bootIdentifier: boot, isReliable: false)] {
+            #expect(runtime.samplingPlan(at: invalid).mode == .legacy)
+        }
+        let replacement = self.runtime(generation: 2, precision: .medium)
+        replacement.inheritLegacyPhysical(from: runtime)
+        replacement.acceptResponse(try response(), requestedAt: clock(), receivedAt: clock(), generation: 1)
+        #expect(replacement.samplingPlan(at: clock()).mode == .legacy)
+        try negotiate(replacement)
+        #expect(replacement.samplingPlan(at: clock()).liveIntervalMs == 60_000)
+        #expect(!replacement.physicalEvidenceIsFresh(beacon(), at: clock()))
+        #expect(replacement.legacyEvidenceIsSendable(beacon(), at: clock(60_000)))
+        #expect(runtime.samplingPlan(at: clock(300_000)).mode == .legacy)
+    }
+
+    @Test("The thirty second cap fails closed without current physical collection eligibility")
+    func freshZoneCollectionFailsClosed() throws {
+        let configuration = SDKConfiguration(businessToken: "test-token", scanPrecision: .medium)
+        let runtime = AdaptiveSamplingRuntime(configuration: configuration, deviceID: "device", generation: 1)
+        try negotiate(runtime)
+        observe(runtime)
+        #expect(runtime.hasCapability(at: clock()) && runtime.physicalEvidenceIsFresh(beacon(), at: clock()))
+        #expect(runtime.samplingPlan(at: clock()).liveIntervalMs == 60_000)
+        #expect(runtime.diagnostics.uniqueSamples == 1 && runtime.legacyEvidenceIsSendable(beacon(), at: clock()))
+        #expect(runtime.takePending(at: clock()).contains { $0.sampling?.kind == .live })
+    }
+
+    @Test("Radio loss and queued callbacks cannot reactivate the cap before new permitted physical evidence",
+          arguments: [ScanPrecision.medium, .low])
+    func freshZoneCurrentCollectionEligibility(precision: ScanPrecision) throws {
+        var eligibility: PhysicalZoneCollectionEligibility? = PhysicalZoneCollectionEligibility(revision: 0, enabledAt: clock())
+        let runtime = runtime(precision: precision, eligibilityProvider: { eligibility })
+        try negotiate(runtime)
+        var reads = 0
+        for offset in stride(from: Int64(0), through: 150_000, by: 30_000) {
+            runtime.observePhysical([beacon(offset)], callbackID: String(offset), at: clock(offset)) { reads += 1; return body() }
+            _ = runtime.takePending(at: clock(offset))
+        }
+        let stable = runtime.samplingPlan(at: clock(150_000))
+        let contextID = runtime.contextID
+        let contextDeadline = runtime.diagnostics.nextContextDeadlineMonotonicMs
+        let summaryDeadline = runtime.diagnostics.nextSummaryDeadlineMonotonicMs
+        let readsBefore = reads
+        #expect(stable.mode == .stable && stable.liveIntervalMs == 30_000)
+        eligibility = nil
+        #expect(runtime.physicalEvidenceIsFresh(beacon(150_000), at: clock(150_001)))
+        #expect(runtime.samplingPlan(at: clock(150_001)).liveIntervalMs == 60_000)
+        runtime.observePhysical([beacon(155_000)], callbackID: "radio-off", at: clock(155_000)) { reads += 1; return body() }
+        #expect(runtime.takePending(at: clock(155_000)).isEmpty)
+        #expect(runtime.samplingPlan(at: clock(155_000)).liveIntervalMs == 60_000)
+        eligibility = PhysicalZoneCollectionEligibility(revision: 1, enabledAt: clock(160_000))
+        runtime.observePhysical([beacon(159_000)], callbackID: "queued-before-radio-recovery", at: clock(159_000)) { reads += 1; return body() }
+        #expect(runtime.takePending(at: clock(160_000)).isEmpty)
+        #expect(runtime.physicalEvidenceIsFresh(beacon(159_000), at: clock(160_000)))
+        #expect(runtime.legacyEvidenceIsSendable(beacon(159_000), at: clock(160_000)))
+        #expect(runtime.samplingPlan(at: clock(160_000)).liveIntervalMs == 60_000)
+        runtime.observePhysical([beacon(159_000)], callbackID: "cached-after-radio-recovery", at: clock(161_000)) { reads += 1; return body() }
+        #expect(runtime.takePending(at: clock(161_000)).isEmpty)
+        #expect(runtime.samplingPlan(at: clock(161_000)).liveIntervalMs == 60_000)
+        runtime.observePhysical([beacon(180_000)], callbackID: "current-permitted-physical", at: clock(180_000)) { reads += 1; return body() }
+        let pending = runtime.takePending(at: clock(180_000))
+        let live = try #require(pending.first)
+        #expect(pending.count == 1 && live.sampling?.kind == .live && live.sampling?.observedTo == base + 180_000)
+        #expect(runtime.samplingPlan(at: clock(180_000)).liveIntervalMs == 30_000)
+        #expect(runtime.contextID == contextID && reads == readsBefore)
+        #expect(runtime.diagnostics.nextContextDeadlineMonotonicMs == contextDeadline)
+        #expect(runtime.diagnostics.nextSummaryDeadlineMonotonicMs == summaryDeadline)
+        #expect(runtime.diagnostics.uniqueSamples == 9)
+    }
+
+    @Test("Thirty second live persistence preserves immutable replay and collection opt outs")
+    func freshZoneImmutableReplayAndPrivacy() throws {
+        let configuration = SDKConfiguration(businessToken: "test-token", scanPrecision: .medium,
+            collectAdvertisingId: false, collectLocation: false, collectWifi: false, collectMotionSensors: false)
+        let runtime = AdaptiveSamplingRuntime(configuration: configuration, deviceID: "device", generation: 1,
+            physicalZoneCollectionEligibilityProvider: { PhysicalZoneCollectionEligibility(revision: 0, enabledAt: clock()) })
+        try negotiate(runtime)
+        var payload = body()
+        payload["location"] = ["timestamp": base, "latitude": 1.0, "longitude": 1.0, "accuracy": 5.0]
+        payload["wifis"] = [["apId": "private-ap", "timestamp": base]]
+        payload["advertisingId"] = "private-advertising-id"
+        var snapshots: [StoredObservationEnvelope] = []
+        for offset: Int64 in [0, 30_000] {
+            runtime.observePhysical([beacon(offset)], callbackID: String(offset), at: clock(offset)) { payload }
+            snapshots += runtime.takePending(at: clock(offset)).filter { $0.sampling?.kind == .live }
+        }
+        #expect(snapshots.count == 2 && runtime.samplingPlan(at: clock(30_000)).liveIntervalMs == 30_000)
+        let storage = OfflineBatchStorage(directoryName: "test.fresh-zone-replay.\(UUID().uuidString)")
+        defer { storage.clearAllBatches() }
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        for envelope in snapshots {
+            #expect(envelope.originalPayload["location"] == nil && envelope.originalPayload["wifis"] == nil)
+            #expect(envelope.originalPayload["advertisingId"] == nil)
+            #expect(envelope.originalPayload["device"]?.object?["network"]?.object?["apId"] == nil)
+            #expect(envelope.sampling?.motion.source == MotionSource.none)
+            #expect(storage.saveObservation(envelope) != nil)
+        }
+        let replacement = AdaptiveSamplingRuntime(configuration: configuration, deviceID: "device", generation: 2)
+        #expect(replacement.samplingPlan(at: clock(90_000)).mode == .legacy)
+        for record in storage.observationRecords() {
+            let original = try #require(snapshots.first { $0.batchId == record.envelope.batchId })
+            #expect(try encoder.encode(record.envelope) == encoder.encode(original))
+            #expect(!AdaptiveSamplingRuntime.canDeliver(record.envelope, at: clock(90_000), capabilityAvailable: false))
+            #expect(AdaptiveSamplingRuntime.canDeliver(record.envelope, at: clock(90_000), capabilityAvailable: true))
+            #expect(!AdaptiveSamplingRuntime.isCurrentLive(record.envelope, at: clock(90_000)))
+        }
+        #expect(storage.observationRecords().count == snapshots.count)
+    }
+
+    @Test("Reserved peer beacons stay in the encounter path and cannot become venue observations")
+    func peerIsNotMotionCue() throws {
+        let runtime = runtime()
+        try negotiate(runtime)
+        var contextID: String?
+        for offset in stride(from: Int64(0), through: 120_000, by: 20_000) {
+            observe(runtime, offset, beacons: [beacon(offset, major: Int(EncounterMeshManager.virtualBeaconMajor))])
+            _ = runtime.takePending(at: clock(offset))
+            if contextID == nil { contextID = runtime.contextID }
+        }
+        #expect(runtime.diagnostics.uniqueSamples == 0)
+        #expect(runtime.policy.evidence(at: clock(120_000)).state == .unknown)
+        #expect(!runtime.policy.evidence(at: clock(120_000)).contextStable)
+        #expect(runtime.contextID == contextID)
+    }
+
+    @Test("Pre-capability physical readings are never promoted into adaptive historical windows")
+    func legacyBoundary() throws {
+        let runtime = runtime()
+        observe(runtime)
+        runtime.close(at: clock(1_000))
+        #expect(runtime.takePending(at: clock(1_000)).isEmpty)
+        try negotiate(runtime, at: 15_000)
+        observe(runtime, 15_000)
+        runtime.close(at: clock(16_000))
+        let pending = runtime.takePending(at: clock(16_000))
+        #expect(pending.allSatisfy { $0.sampling!.observedFrom >= base + 15_000 })
+        #expect(pending.contains { $0.sampling?.kind == .summary })
+    }
+
+    @Test("Complete legacy snapshots remain durable across outages and process relaunch")
+    func legacyReplayFreshness() throws {
+        let runtime = runtime()
+        observe(runtime)
+        var payload = body()
+        payload["beacons"] = [["uuid": BeaconConstants.uuid.uuidString, "major": 1, "minor": 1,
+            "rssi": -70, "timestamp": base, "accuracy": -1, "proximity": "bt"]]
+        let envelope = try runtime.legacyEnvelope(beacons: [beacon()], payload: payload, at: clock())
+        #expect(AdaptiveSamplingRuntime.canDeliver(envelope, at: clock(30_000), capabilityAvailable: false))
+        #expect(AdaptiveSamplingRuntime.canDeliver(envelope, at: clock(60_000), capabilityAvailable: false))
+        #expect(AdaptiveSamplingRuntime.canDeliver(envelope, at: clock(1, boot: UUID().uuidString), capabilityAvailable: false))
+        let missing = try StoredObservationEnvelope(batchId: UUID().uuidString, storedAtMs: base,
+            tenantFingerprint: runtime.tenantFingerprint, originalPayload: payload, sampling: nil, deliveryProtocol: .legacy)
+        #expect(AdaptiveSamplingRuntime.canDeliver(missing, at: clock(), capabilityAvailable: false))
+    }
+
+    @Test("Clock discontinuity closes original history and invalidates capability without new stale samples")
+    func clockSafety() throws {
+        let runtime = runtime()
+        try negotiate(runtime)
+        observe(runtime)
+        _ = runtime.takePending(at: clock())
+        runtime.observePhysical([beacon()], callbackID: "reboot", at: clock(1_000, boot: UUID().uuidString)) { body("new") }
+        #expect(!runtime.hasCapability(at: clock(1_000)))
+        #expect(runtime.diagnostics.clockUncertainties == 1)
+        let saved = runtime.takePending(at: clock(1_000))
+        #expect(saved.allSatisfy { $0.sampling?.clock.bootId == boot })
+        #expect(saved.allSatisfy { $0.originalPayload["userProperties"]?.object?["internalId"] == .string("original") })
+    }
+
+    @Test("Attempt counters distinguish live summary transition bytes and retry lag")
+    func measurableDiagnostics() throws {
+        let runtime = runtime()
+        try negotiate(runtime)
+        observe(runtime)
+        let live = try #require(runtime.takePending(at: clock()).first)
+        runtime.close(at: clock(5_000), kind: .transition)
+        let transition = try #require(runtime.takePending(at: clock(5_000)).first)
+        runtime.recordAttempt(live, bytes: 200, failed: false, at: clock(5_000))
+        runtime.recordAttempt(transition, bytes: 400, failed: true, at: clock(10_000))
+        #expect(runtime.diagnostics.liveAttempts == 1 && runtime.diagnostics.transitionAttempts == 1)
+        #expect(runtime.diagnostics.serializedBytes == 600 && runtime.diagnostics.failures == 1)
+        #expect(runtime.diagnostics.retryLagMs == 10_000)
+    }
+
+    @Test("Context and native boundaries flush un-emitted fresh rows with original window and sample identity")
+    func boundaryLiveProvenance() throws {
+        for native in [false, true] {
+            let runtime = runtime()
+            try negotiate(runtime)
+            observe(runtime)
+            let first = try #require(runtime.takePending(at: clock()).first)
+            observe(runtime, 5_000)
+            #expect(runtime.takePending(at: clock(5_000)).isEmpty)
+            if native {
+                runtime.observeNative(NativeActivityObservation(observedAtMs: base + 6_000, walking: true, confidence: .high),
+                    at: clock(6_000), generation: 1)
+            } else { runtime.invalidateContextMetadata(at: clock(6_000)) }
+            let closed = runtime.takePending(at: clock(6_000))
+            let live = try #require(closed.first { $0.sampling?.kind == .live })
+            let archive = try #require(closed.first { $0.sampling?.kind != .live })
+            #expect(closed.first?.batchId == live.batchId)
+            #expect(live.sampling?.windowId == first.sampling?.windowId && archive.sampling?.windowId == live.sampling?.windowId)
+            #expect(live.contextID == first.contextID && archive.contextID == first.contextID)
+            #expect(live.sampling?.observedFrom == base + 5_000 && live.sampling?.observedTo == base + 5_000)
+            let row = try #require(live.originalPayload["beacons"]?.array?.first?.object)
+            let bucket = try #require(archive.originalPayload["beacons"]?.array?.first?.object?["temporalBuckets"]?.array?.first?.object)
+            #expect(row["sampleId"] == bucket["lastSampleId"] && row["bucketId"] == bucket["bucketId"])
+            #expect(runtime.diagnostics.uniqueSamples == 2)
+            #expect(AdaptiveSamplingRuntime.isCurrentLive(live, at: clock(30_000)))
+            #expect(!AdaptiveSamplingRuntime.isCurrentLive(live, at: clock(35_001)))
+        }
+    }
+
+    @Test("An automatic beacon-capacity close preserves the original fresh live page before archive")
+    func capacityBoundaryLive() throws {
+        let runtime = runtime()
+        try negotiate(runtime)
+        observe(runtime)
+        _ = runtime.takePending(at: clock())
+        // Reserved peer majors are absent. A physical roster is limited only at the wire window boundary.
+        let roster = (1 ... 101).map { beacon(5_000, minor: $0) }
+        observe(runtime, 5_000, beacons: roster)
+        let pending = runtime.takePending(at: clock(5_000))
+        #expect(runtime.diagnostics.uniqueSamples == 102)
+        #expect(roster.allSatisfy { runtime.physicalEvidenceIsFresh($0, at: clock(5_000)) })
+        #expect(pending.contains { $0.sampling?.kind == .live && $0.originalPayload["beacons"]?.array?.count == 100 })
+        #expect(pending.allSatisfy { ($0.originalPayload["beacons"]?.array?.count ?? 0) <= 100 })
+        for live in pending where live.sampling?.kind == .live {
+            #expect(AdaptiveSamplingRuntime.isCurrentLive(live, at: clock(5_000)))
+        }
+    }
+
+    @Test("Legacy physical capture never drains encounter windows needed by the existing sender")
+    func legacyCaptureDoesNotDrainEncounters() throws {
+        let runtime = runtime()
+        var drains = 0
+        runtime.observePhysical([beacon()], callbackID: "legacy", at: clock(), existingEncounterFieldsProvider: {
+            drains += 1
+            return ["encounters": [], "encounterIds": []]
+        }) { body() }
+        #expect(drains == 0 && !runtime.hasCapability(at: clock()))
+        try negotiate(runtime, at: 1_000)
+        runtime.observePhysical([beacon(1_000)], callbackID: "adaptive", at: clock(1_000), existingEncounterFieldsProvider: {
+            drains += 1
+            return ["encounters": [], "encounterIds": []]
+        }) { body() }
+        #expect(drains == 1)
+        runtime.invalidateCapability(reason: "fixture_fallback")
+        runtime.observePhysical([beacon(2_000)], callbackID: "fallback", at: clock(2_000), existingEncounterFieldsProvider: {
+            drains += 1
+            return ["encounters": [], "encounterIds": []]
+        }) { body() }
+        #expect(drains == 1)
+    }
+
+    @Test("Current encounters belong to live frames while summaries preserve their original complementary context")
+    func currentEncountersPreserved() throws {
+        let runtime = runtime()
+        try negotiate(runtime)
+        var reads = 0
+        func fields(_ offset: Int64) -> [String: Any] {
+            ["encounters": [EncounterObservation(rpi: String(repeating: "a", count: 32), rssi: -65,
+                sampleCount: 1, rssiMin: -65, rssiMax: -65, rssiAvg: -65,
+                firstSeen: Int(base + offset), lastSeen: Int(base + offset)).toDictionary()],
+             "encounterIds": [String(repeating: "b", count: 32)]]
+        }
+        runtime.observePhysical([beacon()], callbackID: "first", at: clock(), existingEncounterFieldsProvider: { fields(0) }) {
+            reads += 1; return body()
+        }
+        let first = runtime.takePending(at: clock())
+        runtime.observePhysical([beacon(15_000)], callbackID: "next", at: clock(15_000), existingEncounterFieldsProvider: { fields(15_000) }) {
+            reads += 1; return body()
+        }
+        let prepared = runtime.takePending(at: clock(15_000))
+        let current = try #require(prepared.first { $0.sampling?.kind == .live })
+        #expect(current.originalPayload["encounters"]?.array?.first?.object?["lastSeen"] == .number(Double(base + 15_000)))
+        let original = try #require(prepared.first { $0.sampling?.kind == .summary })
+        #expect(original.originalPayload["encounters"] == nil)
+        #expect(original.originalPayload["userProperties"] == first.first?.originalPayload["userProperties"])
+        #expect(original.originalPayload["device"]?.object?["timestamp"] == .number(Double(base)))
+        #expect((first + prepared).flatMap { $0.originalPayload["encounters"]?.array ?? [] }.count == 2)
+        #expect(reads == 1 && runtime.diagnostics.uniqueSamples == 2)
+    }
+
+    @Test("Intermediate encounter windows remain in the mesh until the next eligible live envelope owns them")
+    func intermediateEncounterOwnership() throws {
+        let runtime = runtime()
+        let advertised = try JSONSerialization.jsonObject(with: response()) as! [String: Any]
+        var capabilities = advertised["capabilities"] as! [String: Any]
+        var capability = capabilities["adaptiveSampling"] as! [String: Any]
+        capability["servicesCadenceMs"] = 5_000
+        capabilities["adaptiveSampling"] = capability
+        runtime.acceptResponse(try JSONSerialization.data(withJSONObject: ["capabilities": capabilities]),
+            requestedAt: clock(), receivedAt: clock(), generation: 1)
+        let encounter = EncounterObservation(rpi: String(repeating: "a", count: 32), rssi: -65,
+            sampleCount: 2, rssiMin: -70, rssiMax: -65, rssiAvg: -68,
+            firstSeen: Int(base + 900), lastSeen: Int(base + 1_000))
+        let captured = try ObservationJSONValue.snapshot(encounter.toDictionary())
+        var meshPending: [[String: Any]] = []
+        var drains = 0
+        var reads = 0
+        var envelopes: [StoredObservationEnvelope] = []
+        let storage = OfflineBatchStorage(directoryName: "test.encounter-ownership.\(UUID().uuidString)")
+        defer { storage.clearAllBatches() }
+        for offset: Int64 in [0, 1_000, 5_000] {
+            if offset == 1_000 { meshPending = [encounter.toDictionary()] }
+            runtime.observePhysical([beacon(offset)], callbackID: String(offset), at: clock(offset),
+                existingEncounterFieldsProvider: {
+                    drains += 1
+                    let fields: [String: Any] = ["encounters": meshPending, "encounterIds": [String(repeating: "b", count: 32)]]
+                    meshPending.removeAll()
+                    return fields
+                }) { reads += 1; return body() }
+            let pending = runtime.takePending(at: clock(offset))
+            if offset == 1_000 {
+                #expect(pending.isEmpty)
+                #expect(meshPending.count == 1 && drains == 1)
+            }
+            envelopes += pending
+        }
+        runtime.close(at: clock(6_000))
+        envelopes += runtime.takePending(at: clock(6_000))
+        #expect(drains == 2 && reads == 1 && meshPending.isEmpty)
+        #expect(envelopes.filter { $0.sampling?.kind == .live }.count == 2)
+        #expect(envelopes.filter { $0.sampling?.kind == .summary }.count == 1)
+        for envelope in envelopes { #expect(storage.saveObservation(envelope) != nil) }
+        let stored = storage.observationRecords().map(\.envelope)
+        let encounters = stored.flatMap { $0.originalPayload["encounters"]?.array ?? [] }
+        #expect(encounters == [.object(captured)])
+        let owner = try #require(stored.first { $0.originalPayload["encounters"]?.array?.isEmpty == false })
+        #expect(owner.sampling?.kind == .live && owner.sampling?.observedTo == base + 5_000)
+        #expect(owner.originalPayload["encounterIds"] == .array([.string(String(repeating: "b", count: 32))]))
+        #expect(owner.tenantFingerprint == runtime.tenantFingerprint)
+        #expect(!owner.absentFields.contains("encounters") && !owner.absentFields.contains("encounterIds"))
+    }
+
+    @Test("Ineligible live callbacks and capability rollback leave deferred encounters available to their existing owner")
+    func deferredEncountersAcrossCapabilityBoundary() throws {
+        let runtime = runtime()
+        try negotiate(runtime)
+        observe(runtime)
+        _ = runtime.takePending(at: clock())
+        let encounter = EncounterObservation(rpi: String(repeating: "a", count: 32), rssi: -65,
+            sampleCount: 1, rssiMin: -65, rssiMax: -65, rssiAvg: -65,
+            firstSeen: Int(base + 1_000), lastSeen: Int(base + 1_000)).toDictionary()
+        var meshPending = [encounter]
+        var drains = 0
+        let drain = { () -> [String: Any] in
+            drains += 1
+            let fields: [String: Any] = ["encounters": meshPending]
+            meshPending.removeAll()
+            return fields
+        }
+        runtime.observePhysical([beacon(1_000, rssi: 1)], callbackID: "invalid-live", at: clock(1_000),
+            existingEncounterFieldsProvider: drain) { body() }
+        runtime.invalidateContextMetadata(at: clock(2_000))
+        runtime.invalidateCapability(reason: "fixture_rollback")
+        runtime.observePhysical([beacon(3_000)], callbackID: "legacy", at: clock(3_000),
+            existingEncounterFieldsProvider: drain) { body() }
+        #expect(drains == 0 && meshPending.count == 1)
+        #expect(runtime.takePending(at: clock(3_000)).allSatisfy { $0.originalPayload["encounters"] == nil })
+        try negotiate(runtime, at: 15_000)
+        runtime.observePhysical([beacon(15_000)], callbackID: "renewed-live", at: clock(15_000),
+            existingEncounterFieldsProvider: drain) { body() }
+        let pending = runtime.takePending(at: clock(15_000))
+        #expect(drains == 1 && meshPending.isEmpty)
+        #expect(pending.flatMap { $0.originalPayload["encounters"]?.array ?? [] }
+            == [.object(try ObservationJSONValue.snapshot(encounter))])
+    }
+
+    @Test("A replacement runtime with collection opt-outs preserves mesh ownership and filters the live context")
+    func deferredEncountersAcrossRuntimeReplacement() throws {
+        let previous = runtime()
+        try negotiate(previous)
+        observe(previous)
+        _ = previous.takePending(at: clock())
+        let encounter = EncounterObservation(rpi: String(repeating: "a", count: 32), rssi: -65,
+            sampleCount: 1, rssiMin: -65, rssiMax: -65, rssiAvg: -65,
+            firstSeen: Int(base + 1_000), lastSeen: Int(base + 1_000)).toDictionary()
+        var meshPending = [encounter]
+        var drains = 0
+        let drain = { () -> [String: Any] in
+            drains += 1
+            let fields: [String: Any] = ["encounters": meshPending]
+            meshPending.removeAll()
+            return fields
+        }
+        previous.observePhysical([beacon(1_000)], callbackID: "deferred", at: clock(1_000),
+            existingEncounterFieldsProvider: drain) { body() }
+        previous.close(at: clock(2_000))
+        #expect(drains == 0 && meshPending.count == 1)
+        #expect(previous.takePending(at: clock(2_000)).allSatisfy { $0.originalPayload["encounters"] == nil })
+        let replacement = AdaptiveSamplingRuntime(configuration: SDKConfiguration(businessToken: "test-token",
+            collectAdvertisingId: false, collectLocation: false, collectWifi: false, collectMotionSensors: false),
+            deviceID: "device", generation: 2)
+        replacement.observePhysical([beacon(3_000)], callbackID: "no-capability", at: clock(3_000),
+            existingEncounterFieldsProvider: drain) { body() }
+        #expect(drains == 0)
+        try negotiate(replacement, at: 4_000)
+        replacement.observePhysical([beacon(4_000)], callbackID: "replacement", at: clock(4_000),
+            existingEncounterFieldsProvider: drain) { body() }
+        let pending = replacement.takePending(at: clock(4_000))
+        let live = try #require(pending.first { $0.sampling?.kind == .live })
+        #expect(drains == 1 && meshPending.isEmpty)
+        #expect(live.originalPayload["encounters"] == .array([.object(try ObservationJSONValue.snapshot(encounter))]))
+        #expect(live.originalPayload["device"]?.object?["network"]?.object?["apId"] == nil)
+        #expect(live.sampling?.motion.source == MotionSource.none && live.tenantFingerprint == previous.tenantFingerprint)
+    }
+
+    @Test("Fresh motion shortens a stable complementary deadline without an extra periodic wakeup")
+    func motionShortensDeadline() throws {
+        let runtime = runtime()
+        try negotiate(runtime)
+        var reads = 0
+        for offset in stride(from: Int64(0), through: 180_000, by: 20_000) {
+            runtime.observePhysical([beacon(offset)], callbackID: String(offset), at: clock(offset)) { reads += 1; return body() }
+            _ = runtime.takePending(at: clock(offset))
+        }
+        #expect(runtime.samplingPlan(at: clock(180_000)).mode == .stable)
+        #expect(runtime.diagnostics.nextContextDeadlineMonotonicMs == 1_480_000)
+        runtime.observeNative(NativeActivityObservation(observedAtMs: base + 181_000, walking: true, confidence: .high),
+            at: clock(181_000), generation: 1)
+        #expect(runtime.samplingPlan(at: clock(181_000)).mode == .novelty)
+        #expect(runtime.diagnostics.nextContextDeadlineMonotonicMs == 1_211_000)
+        let before = reads
+        runtime.observePhysical([beacon(211_000)], callbackID: "next", at: clock(211_000)) { reads += 1; return body() }
+        #expect(reads == before + 1)
+    }
+
+    @Test("Fresh material location changes rotate context while GPS jitter and native moving state preserve generation")
+    func materialLocationContext() throws {
+        let runtime = runtime()
+        try negotiate(runtime)
+        runtime.observeNative(NativeActivityObservation(observedAtMs: base, walking: true, confidence: .high), at: clock(), generation: 1)
+        func locationBody(_ offset: Int64, _ latitude: Double) -> [String: Any] {
+            var payload = body()
+            payload["location"] = ["latitude": latitude, "longitude": 1.0, "accuracy": 5.0,
+                "timestamp": base + offset, "source": "ios"]
+            return payload
+        }
+        runtime.observePhysical([beacon()], callbackID: "origin", at: clock()) { locationBody(0, 1) }
+        _ = runtime.takePending(at: clock())
+        let origin = runtime.contextID
+        runtime.observePhysical([beacon(30_000)], callbackID: "jitter", at: clock(30_000)) { locationBody(30_000, 1.000001) }
+        let history = try #require(runtime.takePending(at: clock(30_000)).first { $0.sampling?.kind == .summary })
+        #expect(runtime.contextID == origin)
+        runtime.observePhysical([beacon(60_000)], callbackID: "displaced", at: clock(60_000)) { locationBody(60_000, 1.001) }
+        let pending = runtime.takePending(at: clock(60_000))
+        #expect(runtime.policy.evidence(at: clock(60_000)).state == .movingConfirmed)
+        #expect(runtime.contextID != origin)
+        #expect(history.contextID == origin)
+        #expect(history.originalPayload["location"]?.object?["latitude"] == .number(1))
+        let live = try #require(pending.last { $0.sampling?.kind == .live })
+        #expect(live.contextID == runtime.contextID && live.originalPayload["location"]?.object?["latitude"] == .number(1.001))
+    }
+
+    @Test("Fresh CL-only zero RSSI preserves physical readings without renewing an old RSSI motion cue")
+    func clZeroDoesNotRenewCachedRssi() throws {
+        let runtime = runtime()
+        try negotiate(runtime)
+        observe(runtime)
+        _ = runtime.takePending(at: clock())
+        for offset in stride(from: Int64(20_000), through: 160_000, by: 20_000) {
+            observe(runtime, offset, beacons: [beacon(offset, rssi: 0)])
+            let pending = runtime.takePending(at: clock(offset))
+            #expect(pending.contains { $0.sampling?.kind == .live })
+        }
+        #expect(runtime.diagnostics.uniqueSamples == 9)
+        #expect(!runtime.policy.evidence(at: clock(160_000)).contextStable)
+        #expect(runtime.policy.evidence(at: clock(160_000)).state == .unknown)
+    }
+
+    @Test("Sampling counters survive generation reset without double counting or accepting stale callback snapshots")
+    func generationCounterTotals() {
+        let store = DiagnosticsStore()
+        store.recordComplementaryRead(fresh: true)
+        var first = BeAroundSamplingDiagnostics()
+        first.generation = 1
+        first.uniqueSamples = 2
+        first.liveAttempts = 1
+        first.serializedBytes = 100
+        first.cachedCallbacks = 3
+        first.buckets = 2
+        store.recordSampling(first)
+        store.recordSampling(first)
+        #expect(store.samplingSnapshot.uniqueSamples == 2 && store.samplingSnapshot.serializedBytes == 100)
+        var second = BeAroundSamplingDiagnostics()
+        second.generation = 2
+        store.recordSampling(second)
+        second.uniqueSamples = 1
+        second.liveAttempts = 1
+        second.serializedBytes = 50
+        second.cachedCallbacks = 1
+        second.buckets = 1
+        store.recordSampling(second)
+        store.recordSampling(first)
+        let result = store.samplingSnapshot
+        #expect(result.generation == 2 && result.uniqueSamples == 3 && result.liveAttempts == 2)
+        #expect(result.serializedBytes == 150 && result.cachedCallbacks == 4 && result.buckets == 3)
+        #expect(result.complementaryReads == 1)
+    }
+
+    #if DEBUG
+    @Test("Debug bench is disabled without the explicit host opt-in")
+    func benchHostGuard() {
+        #expect(!AdaptiveSamplingBench.isEnabled)
+        #expect(AdaptiveSamplingBench.endpoint == nil)
+    }
+    #endif
+    private func encodingResponse(_ encoding: Any?, lease: Int64 = 300_000, offset: Int64 = 0) throws -> Data {
+        var root = try JSONSerialization.jsonObject(with: response(lease: lease, serverOffset: offset)) as! [String: Any]
+        var capability = (root["capabilities"] as! [String: Any])["adaptiveSampling"] as! [String: Any]
+        capability["requestContentEncodings"] = encoding
+        root["capabilities"] = ["adaptiveSampling": capability]
+        return try JSONSerialization.data(withJSONObject: root)
+    }
+
+    @Test("Only the exact optional gzip array enables encoding without invalidating adaptive capability")
+    func optionalRequestEncodings() throws {
+        let invalid: [Any?] = [nil, NSNull(), [], ["br"], ["gzip", "gzip"], ["gzip", "br"], ["gzip", 1], "gzip", 1, ["gzip": true]]
+        for value in invalid {
+            let runtime = runtime()
+            runtime.acceptResponse(try encodingResponse(value), requestedAt: clock(), receivedAt: clock(), generation: 1)
+            #expect(runtime.hasCapability(at: clock()))
+            #expect(runtime.requestEncodingLease(at: clock()) == nil)
+        }
+        let runtime = runtime()
+        runtime.acceptResponse(try encodingResponse(["gzip"]), requestedAt: clock(), receivedAt: clock(), generation: 1)
+        #expect(runtime.requestEncodingLease(at: clock())?.expiresAtMonotonicMs == 1_300_000)
+        #expect(runtime.requestEncodingLease(at: clock(300_000)) == nil)
+        #expect(runtime.requestEncodingLease(at: clock(1, boot: UUID().uuidString)) == nil)
+    }
+
+    @Test("415 suppression retains original expiry despite new advertisements and stays client bound")
+    func gzipSuppression() throws {
+        let runtime = runtime()
+        runtime.acceptResponse(try encodingResponse(["gzip"], lease: 100_000), requestedAt: clock(), receivedAt: clock(), generation: 1)
+        let rejected = try #require(runtime.requestEncodingLease(at: clock()))
+        runtime.rejectRequestEncoding(rejected)
+        runtime.acceptResponse(try encodingResponse(["gzip"], lease: 100_000, offset: 50_000),
+            requestedAt: clock(50_000), receivedAt: clock(50_000), generation: 1)
+        #expect(runtime.requestEncodingLease(at: clock(99_999)) == nil)
+        #expect(runtime.requestEncodingLease(at: clock(100_000))?.expiresAtMonotonicMs == 1_150_000)
+        let other = self.runtime(generation: 2)
+        other.acceptResponse(try encodingResponse(["gzip"]), requestedAt: clock(), receivedAt: clock(), generation: 1)
+        #expect(other.requestEncodingLease(at: clock()) == nil)
+        other.acceptResponse(try encodingResponse(["gzip"]), requestedAt: clock(), receivedAt: clock(), generation: 2)
+        #expect(other.requestEncodingLease(at: clock()) != nil)
+    }
+
+    @Test("HTTP representation counters include every submission while logical attempts stay once")
+    func submittedRepresentationCounters() throws {
+        let runtime = runtime()
+        try negotiate(runtime)
+        observe(runtime)
+        let envelope = try #require(runtime.takePending(at: clock()).first)
+        runtime.recordAttempt(envelope, bytes: 0, failed: false, at: clock())
+        runtime.recordHTTPAttempt(bytes: 120)
+        runtime.recordHTTPAttempt(bytes: 4_200)
+        #expect(runtime.httpAttempts == 2 && runtime.diagnostics.serializedBytes == 4_320)
+        #expect(runtime.diagnostics.liveAttempts == 1 && runtime.diagnostics.failures == 0)
+    }
+
+    #if DEBUG
+    @Test("Opted in bench getter exports bounded queue confined counters without payload or collector reads")
+    func benchCounterSnapshot() async throws {
+        let runtime = runtime(generation: 7)
+        runtime.recordHTTPAttempt(bytes: 120)
+        runtime.recordHTTPAttempt(bytes: 4_200)
+        let queue = DispatchQueue(label: "io.bearound.sdk.bench-counter-test")
+        let queueKey = DispatchSpecificKey<Bool>()
+        queue.setSpecific(key: queueKey, value: true)
+        var reads = 0
+        let data: Data? = await withCheckedContinuation { continuation in
+            AdaptiveSamplingBench.captureCounters(on: queue, enabled: true, runtime: {
+                #expect(DispatchQueue.getSpecific(key: queueKey) == true)
+                reads += 1
+                return runtime
+            }, clock: { clock() }, completion: { continuation.resume(returning: $0) })
+        }
+        let serialized = try #require(data)
+        let wire = try #require(try JSONSerialization.jsonObject(with: serialized) as? [String: Any])
+        #expect(serialized.count <= 4_096 && reads == 1)
+        #expect(Set(wire.keys) == Set(["schemaVersion", "pid", "deviceTimestampMs", "counterScope", "generation",
+            "httpAttempts", "serializedBytes", "uniqueSamples", "complementaryReads", "complementaryCacheReads",
+            "cachedCallbacks", "liveAttempts", "summaryAttempts", "transitionAttempts", "failures", "policyDenials",
+            "clockUncertainties"]))
+        #expect(wire["counterScope"] as? String == "all_observation_bodies")
+        #expect((wire["pid"] as? NSNumber)?.int32Value == ProcessInfo.processInfo.processIdentifier)
+        #expect((wire["deviceTimestampMs"] as? NSNumber)?.int64Value == base)
+        #expect((wire["generation"] as? NSNumber)?.uint64Value == 7)
+        #expect((wire["httpAttempts"] as? NSNumber)?.int64Value == 2)
+        #expect((wire["serializedBytes"] as? NSNumber)?.int64Value == 4_320)
+        #expect(runtime.diagnostics.uniqueSamples == 0 && runtime.diagnostics.complementaryReads == 0)
+        let disabled: Data? = await withCheckedContinuation { continuation in
+            AdaptiveSamplingBench.captureCounters(on: queue, enabled: false, runtime: {
+                reads += 1
+                return runtime
+            }, completion: { continuation.resume(returning: $0) })
+        }
+        #expect(disabled == nil && reads == 1)
+        #expect(!AdaptiveSamplingBench.isEnabled)
+        let normalDebug: Data? = await withCheckedContinuation { continuation in
+            AdaptiveSamplingBench.counterSnapshot { continuation.resume(returning: $0) }
+        }
+        #expect(normalDebug == nil)
+    }
+    #endif
+
+
+    @Test("Legacy physical provenance survives adaptive pressure and preserves medium precision grace", arguments: [false, true])
+    func independentLegacyProvenance(enabled: Bool) throws {
+        let config = SDKConfiguration(businessToken: "fixture-token", scanPrecision: .medium, adaptiveSamplingEnabled: enabled)
+        let runtime = AdaptiveSamplingRuntime(configuration: config, deviceID: "device")
+        observe(runtime)
+        #expect(runtime.legacyEvidenceIsSendable(beacon(), at: clock(119_000)))
+        #expect(!runtime.legacyEvidenceIsSendable(beacon(), at: clock(120_001)))
+        #expect(!runtime.physicalEvidenceIsFresh(beacon(), at: clock(31_000)))
+        let replacement = AdaptiveSamplingRuntime(configuration: config, deviceID: "device", generation: 2)
+        replacement.inheritLegacyPhysical(from: runtime)
+        #expect(replacement.legacyEvidenceIsSendable(beacon(), at: clock(60_000)))
+    }
+
+    @Test("Adaptive pending capacity cannot prevent recording independent legacy provenance")
+    func pendingCapacityPreservesLegacy() throws {
+        let runtime = runtime()
+        var advertised = try #require(JSONSerialization.jsonObject(with: response()) as? [String: Any])
+        var capabilities = advertised["capabilities"] as! [String: Any]
+        var capability = capabilities["adaptiveSampling"] as! [String: Any]
+        capability["servicesCadenceMs"] = 5_000; capabilities["adaptiveSampling"] = capability; advertised["capabilities"] = capabilities
+        runtime.acceptResponse(try JSONSerialization.data(withJSONObject: advertised), requestedAt: clock(), receivedAt: clock(), generation: runtime.generation)
+        for offset in stride(from: Int64(0), through: 220_000, by: 5_000) { observe(runtime, offset) }
+        #expect(runtime.diagnostics.policyDenials > 0)
+        #expect(runtime.legacyEvidenceIsSendable(beacon(220_000), at: clock(220_000)))
+    }
+
+    @Test("Invalid durable acknowledgment degrades once and waits before accepting a new capability")
+    func invalidAckBackoff() throws {
+        let runtime = runtime(); try negotiate(runtime)
+        runtime.deliveryFailed(APIError.invalidSamplingAcknowledgment, at: clock())
+        #expect(!runtime.hasCapability(at: clock()))
+        try negotiate(runtime, at: 59_999)
+        #expect(!runtime.hasCapability(at: clock(59_999)))
+        try negotiate(runtime, at: 60_000)
+        #expect(runtime.hasCapability(at: clock(60_000)))
+    }
+
+    #if DEBUG
+    @Test("Debug fixture endpoints fail closed for missing public and malformed origins")
+    func fixtureEndpointGuard() {
+        #expect(AdaptiveSamplingBench.validatedEndpoint(nil) == nil)
+        let invalid = ["https://ingest.bearound.io", "http://127.0.0.1", "https://fixture.example",
+            "https://127.0.0.1/path", "https://user@127.0.0.1", "https://localhost?query=1", "https://localhost#fragment",
+            "https://10.0.0.1.example.com", "https://192.168.1.2.ingest.bearound.io", "https://+10.0.0.1",
+            "https://-10.0.0.1", "https://10..0.1", "https://10.0.1", "https://10.0.0.256", "https://010.0.0.1",
+            "https://localhost:0", "https://localhost:65536", "https://.local", "https://test..local",
+            "https://-test.local", "https://test-.local", "https://8.8.8.8", "https://172.15.0.1",
+            "https://172.32.0.1", "https://[2001:4860:4860::8888]"]
+        for value in invalid { #expect(AdaptiveSamplingBench.validatedEndpoint(value) == nil, "Invalid endpoint: \(value)") }
+        for value in ["https://127.0.0.1:18081", "https://localhost:18081", "https://test-host.local:18081",
+            "https://10.0.0.1", "https://172.16.0.1", "https://172.31.0.1", "https://192.168.1.2",
+            "https://[::1]:18081", "https://[fd00::1]:18081", "https://[fe80::1]:18081"] {
+            #expect(AdaptiveSamplingBench.validatedEndpoint(value) != nil, "Valid endpoint: \(value)")
+        }
+        #expect(AdaptiveSamplingBench.validatedEndpoint("https://192.168.1.2:18081/") == "https://192.168.1.2:18081")
+    }
+
+    #endif
+
+}

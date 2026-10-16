@@ -5,6 +5,272 @@ import CoreLocation
 import SwiftUI
 import UserNotifications
 
+#if DEBUG && BEAROUND_ADAPTIVE_BENCH && !BEAROUND_ADAPTIVE_BASELINE
+import CryptoKit
+import Security
+#endif
+
+#if DEBUG && BEAROUND_ADAPTIVE_BENCH
+struct AdaptiveBenchHostConfiguration {
+    let token: String
+    let user: String
+    let adaptiveEnabled: Bool
+
+    static func load() -> AdaptiveBenchHostConfiguration? {
+        let info = Bundle.main
+        guard info.object(forInfoDictionaryKey: "BEAROUND_ADAPTIVE_BENCH") as? Bool == true,
+              let endpoint = info.object(forInfoDictionaryKey: "BEAROUND_ADAPTIVE_BENCH_ENDPOINT") as? String,
+              let url = URL(string: endpoint), url.scheme == "https", let host = url.host,
+              url.user == nil, url.password == nil, url.query == nil, url.fragment == nil,
+              url.path.isEmpty || url.path == "/", isLocalHost(host),
+              let token = info.object(forInfoDictionaryKey: "BEAROUND_ADAPTIVE_BENCH_TOKEN") as? String,
+              let user = info.object(forInfoDictionaryKey: "BEAROUND_ADAPTIVE_BENCH_USER") as? String,
+              token.hasPrefix("fixture-"), user.hasPrefix("fixture-"),
+              let enabled = info.object(forInfoDictionaryKey: "BEAROUND_ADAPTIVE_BENCH_ENABLED") as? Bool,
+              info.bundleIdentifier?.hasSuffix(".adaptivebench") == true,
+              AdaptiveSamplingBench.isEnabled else { return nil }
+        #if BEAROUND_ADAPTIVE_BASELINE
+        guard info.object(forInfoDictionaryKey: "BEAROUND_ADAPTIVE_BENCH_BASELINE") as? Bool == true, !enabled else { return nil }
+        #else
+        guard info.object(forInfoDictionaryKey: "BEAROUND_ADAPTIVE_BENCH_BASELINE") as? Bool == false else { return nil }
+        #endif
+        return AdaptiveBenchHostConfiguration(token: token, user: user, adaptiveEnabled: enabled)
+    }
+
+    private static func isLocalHost(_ host: String) -> Bool {
+        let value = host.lowercased().trimmingCharacters(in: CharacterSet(charactersIn: "[]"))
+        if value == "localhost" || value.hasSuffix(".local") || value == "::1" { return true }
+        let parts = value.split(separator: ".")
+        let octets = parts.compactMap { Int($0) }
+        if parts.count == 4, octets.count == 4, octets.allSatisfy({ (0 ... 255).contains($0) }) {
+            return octets[0] == 127 || octets[0] == 10 || (octets[0] == 172 && (16 ... 31).contains(octets[1]))
+                || (octets[0] == 192 && octets[1] == 168)
+        }
+        return value.contains(":") && (value.hasPrefix("fc") || value.hasPrefix("fd") || value.hasPrefix("fe8")
+            || value.hasPrefix("fe9") || value.hasPrefix("fea") || value.hasPrefix("feb"))
+    }
+}
+#endif
+
+#if DEBUG && BEAROUND_ADAPTIVE_BENCH && !BEAROUND_ADAPTIVE_BASELINE
+enum AdaptiveBenchHostPauseState {
+    private static let key = "adaptiveBench.collectionPaused"
+
+    static var isPaused: Bool {
+        guard AdaptiveBenchHostConfiguration.load() != nil else { return false }
+        return apply(arguments: ProcessInfo.processInfo.arguments, defaults: .standard)
+    }
+
+    static func apply(arguments: [String], defaults: UserDefaults) -> Bool {
+        if arguments.contains("--adaptive-bench-probe-default-tls") {
+            defaults.set(true, forKey: key)
+        } else if arguments.contains("--adaptive-bench-resume-collection") {
+            defaults.removeObject(forKey: key)
+        }
+        return defaults.bool(forKey: key)
+    }
+}
+
+enum AdaptiveBenchHostDiagnostics {
+    nonisolated private static func sanitized(_ text: String, limit: Int) -> String {
+        var description = String(text.prefix(1024))
+        for pattern in [#"https?://\S+"#, #"fixture-[A-Za-z0-9_-]+"#,
+                        #"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}"#,
+                        #"\b[0-9A-Fa-f]{8}-[0-9A-Fa-f-]{27,}\b"#,
+                        #"\b[0-9A-Fa-f]{16,}\b"#, #"-?\d+\.\d+"#, #"[\"\u201c\u201d'][^\"\u201c\u201d']*[\"\u201c\u201d']"#] {
+            description = description.replacingOccurrences(of: pattern, with: "[redacted]", options: .regularExpression)
+        }
+        return String(description.prefix(limit))
+    }
+
+    nonisolated static func capturedTrust(_ trust: SecTrust) -> [String: Any] {
+        var result = SecTrustResultType.invalid
+        let status = SecTrustGetTrustResult(trust, &result)
+        var value: [String: Any] = ["peerTrustPresent": true, "readStatus": status, "recordedTrustResult": result.rawValue,
+            "evaluationAvailable": status == errSecSuccess && result != .invalid]
+        guard status == errSecSuccess, result != .invalid else {
+            value["certificateDERSHA256"] = [String]()
+            value["failureReasons"] = [String]()
+            return value
+        }
+        let certificates = SecTrustCopyCertificateChain(trust) as? [SecCertificate] ?? []
+        value["chainCount"] = certificates.count
+        value["certificateDERSHA256"] = certificates.prefix(4).map {
+            SHA256.hash(data: SecCertificateCopyData($0) as Data).map { String(format: "%02x", $0) }.joined()
+        }
+        let recorded = SecTrustCopyResult(trust) as? [String: Any]
+        value["copiedTrustResult"] = recorded?[kSecTrustResultValue as String] ?? NSNull()
+        let properties = SecTrustCopyProperties(trust) as? [[String: Any]] ?? []
+        value["failureReasons"] = Array(properties.prefix(4).compactMap { property -> String? in
+            let reason = property["type"] as? String == "error" ? property["value"] as? String
+                : property[kSecPropertyTypeError as String] as? String
+            return reason.map { sanitized($0, limit: 160) }
+        }.prefix(3))
+        return value
+    }
+
+    nonisolated private static func peerTrust(_ error: NSError) -> [String: Any] {
+        guard error.domain == NSURLErrorDomain, (-1206 ... -1200).contains(error.code) else {
+            return ["peerTrustPresent": false, "reason": "not_urlsession_tls_failure"]
+        }
+        var current: NSError? = error
+        var invalidType = false
+        for depth in 0 ..< 3 {
+            guard let candidate = current else { break }
+            if let raw = candidate.userInfo[NSURLErrorFailingURLPeerTrustErrorKey] {
+                if CFGetTypeID(raw as CFTypeRef) == SecTrustGetTypeID() {
+                    let trust = raw as! SecTrust
+                    var value = capturedTrust(trust)
+                    value["sourceErrorDepth"] = depth
+                    return value
+                }
+                invalidType = true
+            }
+            current = candidate.userInfo[NSUnderlyingErrorKey] as? NSError
+        }
+        return ["peerTrustPresent": false, "reason": invalidType ? "invalid_type" : "key_absent_within_depth_bound"]
+    }
+
+    nonisolated private static func failingEndpoint(_ error: NSError) -> [String: Any] {
+        var current: NSError? = error
+        for depth in 0 ..< 3 {
+            guard let candidate = current else { break }
+            let direct = candidate.userInfo[NSURLErrorFailingURLErrorKey] as? URL
+            let text = candidate.userInfo[NSURLErrorFailingURLStringErrorKey] as? String
+            if let url = direct ?? text.flatMap({ URL(string: $0) }) {
+                guard url.scheme == "https", let host = url.host?.lowercased(),
+                      ["192.168.15.25", "127.0.0.1", "localhost"].contains(host),
+                      let port = url.port, [18080, 18081].contains(port) else {
+                    return ["available": false, "unexpectedEndpoint": true]
+                }
+                let path = ["", "/", "/ingest", "/sdk/places/nearby", "/health"].contains(url.path) ? url.path : "[redacted]"
+                return ["available": true, "unexpectedEndpoint": false, "sourceErrorDepth": depth,
+                        "host": host, "port": port, "path": path]
+            }
+            current = candidate.userInfo[NSUnderlyingErrorKey] as? NSError
+        }
+        return ["available": false, "reason": "key_absent_within_depth_bound"]
+    }
+
+    nonisolated static func syncError(_ error: NSError) -> [String: Any] {
+        let domain = [NSURLErrorDomain, NSCocoaErrorDomain, "BeAroundSDK", "BearoundSDK.APIError"].contains(error.domain)
+            ? error.domain : "unrecognized_error_domain"
+        let usesSystemDescription = error.domain == NSURLErrorDomain
+        let description = usesSystemDescription ? error.localizedDescription
+            : NSError(domain: domain, code: error.code, userInfo: nil).localizedDescription
+        return ["domain": domain, "code": error.code, "description": sanitized(description, limit: 512),
+                "descriptionPolicy": usesSystemDescription ? "sanitized_system" : "domain_code_only",
+                "tls": peerTrust(error), "failingEndpoint": failingEndpoint(error)]
+    }
+
+    nonisolated static func encode(counters: Data, endpoint: String, locationAuthorization: Int,
+                                   permissionRequestInvoked: Bool, lastSync: [String: Any]?) -> Data? {
+        guard let original = try? JSONSerialization.jsonObject(with: counters) as? [String: Any] else { return nil }
+        let keys = ["schemaVersion", "pid", "deviceTimestampMs", "counterScope", "generation", "httpAttempts",
+                    "serializedBytes", "uniqueSamples", "complementaryReads", "complementaryCacheReads", "cachedCallbacks",
+                    "liveAttempts", "summaryAttempts", "transitionAttempts", "failures", "policyDenials", "clockUncertainties"]
+        var value = original.filter { keys.contains($0.key) }
+        value["hostEndpoint"] = endpoint
+        value["hostLocationAuthorization"] = locationAuthorization
+        value["hostForegroundLocationRequestInvoked"] = permissionRequestInvoked
+        value["hostLastSync"] = lastSync ?? NSNull()
+        guard let data = try? JSONSerialization.data(withJSONObject: value, options: [.sortedKeys]), data.count <= 4096 else { return nil }
+        return data
+    }
+}
+
+final class AdaptiveBenchDefaultTLSProbe: NSObject, URLSessionDelegate, URLSessionTaskDelegate, @unchecked Sendable {
+    nonisolated static let endpoint = URL(string: "https://192.168.15.25:18081/health")!
+    nonisolated private let lock = NSLock()
+    nonisolated private let outputFile: URL
+    nonisolated(unsafe) private var retainedTrust: SecTrust?
+    nonisolated(unsafe) private var session: URLSession?
+    nonisolated(unsafe) private var started = false
+    nonisolated(unsafe) private var unexpectedChallenge = false
+
+    init(outputFile: URL) { self.outputFile = outputFile }
+
+    nonisolated func start() {
+        lock.lock()
+        guard !started else { lock.unlock(); return }
+        started = true
+        lock.unlock()
+        write(["schemaVersion": 1, "pid": ProcessInfo.processInfo.processIdentifier,
+            "deviceTimestampMs": Int64(Date().timeIntervalSince1970 * 1000), "phase": "started",
+            "probeScope": "auxiliary_health_get", "observationBodyCountersIncluded": false,
+            "endpoint": Self.endpoint.absoluteString, "defaultHandling": true])
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.timeoutIntervalForRequest = 10
+        configuration.timeoutIntervalForResource = 15
+        configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
+        configuration.urlCache = nil
+        configuration.httpCookieStorage = nil
+        configuration.httpShouldSetCookies = false
+        let queue = OperationQueue()
+        queue.maxConcurrentOperationCount = 1
+        let activeSession = URLSession(configuration: configuration, delegate: self, delegateQueue: queue)
+        lock.lock(); session = activeSession; lock.unlock()
+        var request = URLRequest(url: Self.endpoint)
+        request.httpMethod = "GET"
+        request.timeoutInterval = 10
+        activeSession.dataTask(with: request) { [weak self] _, response, error in
+            self?.completed(response: response, error: error)
+        }.resume()
+    }
+
+    nonisolated func urlSession(_ session: URLSession, didReceive challenge: URLAuthenticationChallenge,
+                               completionHandler: @escaping (URLSession.AuthChallengeDisposition, URLCredential?) -> Void) {
+        if challenge.protectionSpace.authenticationMethod == NSURLAuthenticationMethodServerTrust,
+           challenge.protectionSpace.host == Self.endpoint.host,
+           challenge.protectionSpace.port == Self.endpoint.port {
+            lock.lock(); retainedTrust = challenge.protectionSpace.serverTrust; lock.unlock()
+        } else {
+            lock.lock(); unexpectedChallenge = true; lock.unlock()
+        }
+        completionHandler(.performDefaultHandling, nil)
+    }
+
+    nonisolated func urlSession(_ session: URLSession, task: URLSessionTask, didReceive challenge: URLAuthenticationChallenge,
+                               completionHandler: @escaping (URLSession.AuthChallengeDisposition, URLCredential?) -> Void) {
+        urlSession(session, didReceive: challenge, completionHandler: completionHandler)
+    }
+
+    nonisolated func urlSession(_ session: URLSession, task: URLSessionTask, willPerformHTTPRedirection response: HTTPURLResponse,
+                               newRequest request: URLRequest, completionHandler: @escaping (URLRequest?) -> Void) {
+        completionHandler(request.url == Self.endpoint ? request : nil)
+    }
+
+    nonisolated private func completed(response: URLResponse?, error: Error?) {
+        lock.lock()
+        let trust = retainedTrust
+        let unusual = unexpectedChallenge
+        let activeSession = session
+        session = nil
+        retainedTrust = nil
+        lock.unlock()
+        var value: [String: Any] = ["schemaVersion": 1, "pid": ProcessInfo.processInfo.processIdentifier, "phase": "completed",
+            "deviceTimestampMs": Int64(Date().timeIntervalSince1970 * 1000), "probeScope": "auxiliary_health_get",
+            "observationBodyCountersIncluded": false, "endpoint": Self.endpoint.absoluteString,
+            "defaultHandling": true, "unexpectedChallenge": unusual,
+            "httpStatus": (response as? HTTPURLResponse)?.statusCode as Any? ?? NSNull(),
+            "transportError": error.map { AdaptiveBenchHostDiagnostics.syncError($0 as NSError) } ?? NSNull()]
+        value["challengeTrust"] = trust.map { AdaptiveBenchHostDiagnostics.capturedTrust($0) }
+            ?? ["peerTrustPresent": false, "reason": "no_allowed_server_trust_challenge"]
+        write(value)
+        activeSession?.finishTasksAndInvalidate()
+    }
+
+    nonisolated private func write(_ value: [String: Any]) {
+        if let data = try? JSONSerialization.data(withJSONObject: value, options: [.sortedKeys]), data.count <= 4096 {
+            do {
+                try data.write(to: outputFile, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
+                try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: outputFile.path)
+            } catch {}
+        }
+    }
+}
+#endif
+
 private enum UserDefaultsKeys {
     static let scanPrecision = "scanPrecision"
     static let queueSize = "queueSize"
@@ -252,9 +518,36 @@ class BeaconViewModel: NSObject, ObservableObject, BeAroundSDKDelegate {
     private let notificationManager = NotificationManager.shared
     private var bluetoothManager: CBCentralManager?
     private var diagnosticTimer: Timer?
+    #if DEBUG && BEAROUND_ADAPTIVE_BENCH && !BEAROUND_ADAPTIVE_BASELINE
+    private var adaptiveBenchDiagnosticsURL: URL?
+    private var adaptiveBenchPermissionRequestInvoked = false
+    private var adaptiveBenchLastSync: [String: Any]?
+    private var adaptiveBenchDefaultTLSProbe: AdaptiveBenchDefaultTLSProbe?
+    #endif
 
     override init() {
         super.init()
+        #if DEBUG && BEAROUND_ADAPTIVE_BENCH
+        guard AdaptiveBenchHostConfiguration.load() != nil else {
+            statusMessage = "Configuração de bancada inválida"
+            return
+        }
+        #if !BEAROUND_ADAPTIVE_BASELINE
+        if AdaptiveBenchHostPauseState.isPaused {
+            statusMessage = "QA collection paused for TLS diagnosis"
+            for region in locationManager.monitoredRegions {
+                locationManager.stopMonitoring(for: region)
+            }
+            if ProcessInfo.processInfo.arguments.contains("--adaptive-bench-probe-default-tls") {
+                let sdk = BeAroundSDK.shared
+                sdk.setErrorReportingEnabled(false)
+                sdk.stopScanning()
+                startAdaptiveBenchTLSProbeIfRequested()
+            }
+            return
+        }
+        #endif
+        #endif
         locationManager.delegate = self
 
         // If the process is starting while not active, iOS relaunched us in the background
@@ -266,8 +559,10 @@ class BeaconViewModel: NSObject, ObservableObject, BeAroundSDKDelegate {
         setupLockObservers()
         setupTrackingPrompt()
 
+        #if !(DEBUG && BEAROUND_ADAPTIVE_BENCH)
         locationManager.requestAlwaysAuthorization()
         notificationManager.requestAuthorization()
+        #endif
         updatePermissionStatus()
         checkBluetoothStatus()
         checkNotificationStatus()
@@ -429,8 +724,77 @@ class BeaconViewModel: NSObject, ObservableObject, BeAroundSDKDelegate {
         permissionStatus = status
     }
 
+    #if DEBUG && BEAROUND_ADAPTIVE_BENCH
+    @MainActor
+    private func configureAdaptiveBench() -> Bool {
+        #if !BEAROUND_ADAPTIVE_BASELINE
+        guard !AdaptiveBenchHostPauseState.isPaused else { return false }
+        #endif
+        guard let bench = AdaptiveBenchHostConfiguration.load() else {
+            statusMessage = "Configuração de bancada inválida"
+            return false
+        }
+        let sdk = BeAroundSDK.shared
+        sdk.setErrorReportingEnabled(false)
+        #if BEAROUND_ADAPTIVE_BASELINE
+        sdk.configure(businessToken: bench.token, scanPrecision: scanPrecision, maxQueuedPayloads: queueSize,
+            requestTrackingOnStart: false)
+        #else
+        sdk.configure(businessToken: bench.token, scanPrecision: scanPrecision, maxQueuedPayloads: queueSize,
+            requestTrackingOnStart: false, adaptiveSamplingEnabled: bench.adaptiveEnabled)
+        #endif
+        userPropertyInternalId = bench.user
+        userPropertyEmail = ""
+        userPropertyName = ""
+        userPropertyCustom = ""
+        sdk.setUserProperties(UserProperties(internalId: bench.user))
+        #if !BEAROUND_ADAPTIVE_BASELINE
+        if adaptiveBenchDiagnosticsURL == nil,
+           let directory = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first {
+            do {
+                try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+                adaptiveBenchDiagnosticsURL = directory.appendingPathComponent("adaptive-bench-diagnostics.json")
+            } catch { statusMessage = "Could not prepare bench diagnostics" }
+        }
+        #endif
+        return true
+    }
+
+    #if !BEAROUND_ADAPTIVE_BASELINE
+    private func startAdaptiveBenchTLSProbeIfRequested() {
+        guard adaptiveBenchDefaultTLSProbe == nil,
+              ProcessInfo.processInfo.arguments.contains("--adaptive-bench-probe-default-tls"),
+              let directory = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first else { return }
+        do {
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            let file = directory.appendingPathComponent("adaptive-bench-default-tls.json")
+            let probe = AdaptiveBenchDefaultTLSProbe(outputFile: file)
+            adaptiveBenchDefaultTLSProbe = probe
+            probe.start()
+        } catch { statusMessage = "Could not prepare QA TLS diagnostics" }
+    }
+    #endif
+    #endif
+
     @MainActor
     private func initializeSDK() {
+        #if DEBUG && BEAROUND_ADAPTIVE_BENCH
+        #if !BEAROUND_ADAPTIVE_BASELINE
+        guard !AdaptiveBenchHostPauseState.isPaused else { return }
+        #endif
+        guard configureAdaptiveBench() else { return }
+        BeAroundSDK.shared.delegate = self
+        statusMessage = "Bancada local configurada"
+        #if !BEAROUND_ADAPTIVE_BASELINE
+        if !adaptiveBenchPermissionRequestInvoked,
+           ProcessInfo.processInfo.arguments.contains("--adaptive-bench-request-existing-permissions") {
+            adaptiveBenchPermissionRequestInvoked = true
+            BeAroundSDK.shared.requestLocationAuthorization(.whenInUse)
+        }
+        #endif
+        startScanning()
+        return
+        #else
         BeAroundSDK.shared.configure(
             businessToken: "ee2ec9c46d2b2ad99bddcdd0afe224e6",
             scanPrecision: scanPrecision,
@@ -455,10 +819,21 @@ class BeaconViewModel: NSObject, ObservableObject, BeAroundSDKDelegate {
         statusMessage = "Configurado"
 
         startScanning()
+        #endif
     }
     
     @MainActor
     func applySettings() {
+        #if DEBUG && BEAROUND_ADAPTIVE_BENCH
+        #if !BEAROUND_ADAPTIVE_BASELINE
+        guard !AdaptiveBenchHostPauseState.isPaused else { return }
+        #endif
+        let wasScanning = isScanning
+        if wasScanning { stopScanning() }
+        guard configureAdaptiveBench() else { return }
+        if wasScanning { startScanning() }
+        return
+        #else
         let wasScanning = isScanning
 
         if wasScanning {
@@ -490,10 +865,14 @@ class BeaconViewModel: NSObject, ObservableObject, BeAroundSDKDelegate {
         if wasScanning {
             startScanning()
         }
+        #endif
     }
 
     @MainActor
     func startScanning() {
+        #if DEBUG && BEAROUND_ADAPTIVE_BENCH && !BEAROUND_ADAPTIVE_BASELINE
+        guard !AdaptiveBenchHostPauseState.isPaused else { return }
+        #endif
         BeAroundSDK.shared.startScanning()
         isScanning = true
         statusMessage = "Scaneando..."
@@ -526,6 +905,9 @@ class BeaconViewModel: NSObject, ObservableObject, BeAroundSDKDelegate {
     }
 
     var scanPrecisionLabel: String {
+        #if DEBUG && BEAROUND_ADAPTIVE_BENCH && !BEAROUND_ADAPTIVE_BASELINE
+        if AdaptiveBenchHostPauseState.isPaused { return "QA paused" }
+        #endif
         switch BeAroundSDK.shared.currentScanPrecision ?? scanPrecision {
         case .high: return "Alta (Ininterrupto)"
         case .medium: return "Média (3x10s/min)"
@@ -542,8 +924,28 @@ class BeaconViewModel: NSObject, ObservableObject, BeAroundSDKDelegate {
     }
 
     private func startDiagnosticTimer() {
+        #if DEBUG && BEAROUND_ADAPTIVE_BENCH && !BEAROUND_ADAPTIVE_BASELINE
+        guard !AdaptiveBenchHostPauseState.isPaused else { return }
+        #endif
         diagnosticTimer = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) { [weak self] _ in
             self?.bleDiagnostic = BeAroundSDK.shared.bleDiagnosticInfo
+            #if DEBUG && BEAROUND_ADAPTIVE_BENCH && !BEAROUND_ADAPTIVE_BASELINE
+            guard AdaptiveSamplingBench.isEnabled, let self, let file = self.adaptiveBenchDiagnosticsURL,
+                  AdaptiveBenchHostConfiguration.load() != nil,
+                  let endpoint = Bundle.main.object(forInfoDictionaryKey: "BEAROUND_ADAPTIVE_BENCH_ENDPOINT") as? String else { return }
+            let authorization = Int(self.locationManager.authorizationStatus.rawValue)
+            let requestInvoked = self.adaptiveBenchPermissionRequestInvoked
+            let lastSync = self.adaptiveBenchLastSync
+            AdaptiveSamplingBench.counterSnapshot { data in
+                guard let counters = data,
+                      let data = AdaptiveBenchHostDiagnostics.encode(counters: counters, endpoint: endpoint,
+                          locationAuthorization: authorization, permissionRequestInvoked: requestInvoked, lastSync: lastSync) else { return }
+                do {
+                    try data.write(to: file, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
+                    try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: file.path)
+                } catch {}
+            }
+            #endif
         }
     }
 
@@ -697,6 +1099,10 @@ extension BeaconViewModel {
             self.lastSyncTime = Date()
             self.lastSyncBeaconCount = beaconCount
             self.retryBatchCount = BeAroundSDK.shared.pendingBatchCount
+            #if DEBUG && BEAROUND_ADAPTIVE_BENCH && !BEAROUND_ADAPTIVE_BASELINE
+            self.adaptiveBenchLastSync = ["completedAtMs": Int64(Date().timeIntervalSince1970 * 1000), "success": success,
+                "error": error.map { AdaptiveBenchHostDiagnostics.syncError($0 as NSError) } ?? NSNull()]
+            #endif
             if success {
                 NSLog("[BeaconViewModel] Sync completed successfully: %d beacons", beaconCount)
                 self.lastSyncResult = "Sucesso"

@@ -8,6 +8,16 @@ class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCenterDele
         didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil
     ) -> Bool {
 
+        #if DEBUG && BEAROUND_ADAPTIVE_BENCH
+        guard AdaptiveBenchHostConfiguration.load() != nil else { return true }
+        #if !BEAROUND_ADAPTIVE_BASELINE
+        if AdaptiveBenchHostPauseState.isPaused { return true }
+        #endif
+        BeAroundSDK.shared.setErrorReportingEnabled(false)
+        BeAroundSDK.shared.registerBackgroundTasks()
+        UNUserNotificationCenter.current().delegate = self
+        return true
+        #else
         BeAroundSDK.shared.registerBackgroundTasks()
 
         // App presence device E2E step: no push registration and no permission prompt.
@@ -46,6 +56,7 @@ class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCenterDele
         }
 
         return true
+        #endif
     }
 
     func application(
@@ -64,9 +75,13 @@ class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCenterDele
         _ application: UIApplication,
         didRegisterForRemoteNotificationsWithDeviceToken deviceToken: Data
     ) {
+        #if DEBUG && BEAROUND_ADAPTIVE_BENCH
+        return
+        #else
         let token = deviceToken.map { String(format: "%02x", $0) }.joined()
         NSLog("[BeAroundScan] APNS_DEVICE_TOKEN %@", token)
         Self.writeApnsStatus("token=\(token)")
+        #endif
         // NOTE: no setPushToken() call here — the SDK captures the token automatically via
         // AppDelegate swizzling (PushTokenAutoCapture). This proves the zero-client-code path.
     }
@@ -75,8 +90,12 @@ class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCenterDele
         _ application: UIApplication,
         didFailToRegisterForRemoteNotificationsWithError error: Error
     ) {
+        #if DEBUG && BEAROUND_ADAPTIVE_BENCH
+        return
+        #else
         NSLog("[BeAroundScan] APNs registration FAILED: %@", error.localizedDescription)
         Self.writeApnsStatus("error=\(error.localizedDescription)")
+        #endif
     }
 
     // MARK: - UNUserNotificationCenterDelegate
@@ -122,6 +141,9 @@ class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCenterDele
         completionHandler: @escaping () -> Void
     ) {
         NSLog("[BeAroundScan] handleEventsForBackgroundURLSession: %@", identifier)
+        #if DEBUG && BEAROUND_ADAPTIVE_BENCH && !BEAROUND_ADAPTIVE_BASELINE
+        if AdaptiveBenchHostPauseState.isPaused { BeAroundSDK.shared.setErrorReportingEnabled(false) }
+        #endif
         BeAroundSDK.shared.handleBackgroundURLSessionEvents(
             identifier: identifier,
             completionHandler: completionHandler

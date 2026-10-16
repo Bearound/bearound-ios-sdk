@@ -116,6 +116,7 @@ final class DeviceInfoCollector: @unchecked Sendable {
 		bluetoothState: String,
 		appInForeground: Bool
 	) -> UserDevice {
+		DiagnosticsStore.shared.recordComplementaryRead(fresh: true)
 		permissionLock.lock()
 		let notificationPermission = cachedNotificationPermission
 		let isCacheReady = permissionCacheReady

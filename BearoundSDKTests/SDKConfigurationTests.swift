@@ -11,6 +11,13 @@ import UIKit
 
 @Suite("SDKConfiguration Tests")
 struct SDKConfigurationTests {
+    @Test("Adaptive sampling defaults on and local rollback preserves collection switches")
+    func adaptiveDefaultsAndRollback() {
+        #expect(SDKConfiguration(businessToken: "t").adaptiveSamplingEnabled)
+        let config = SDKConfiguration(businessToken: "t", collectLocation: false, adaptiveSamplingEnabled: false)
+        #expect(!config.adaptiveSamplingEnabled && !config.collectLocation && config.collectWifi)
+    }
+
 
     @Test("SDKConfiguration basic initialization")
     func configurationInitialization() {
@@ -89,6 +96,21 @@ struct SDKConfigurationTests {
         // In tests, this might be "unknown" or the test bundle ID
         #expect(config.appId.isEmpty == false)
     }
+    @Test("Motion sensors default from host location or wifi flags and explicit opt in stays independent")
+    func motionSensorDefaults() {
+        for location in [false, true] {
+            for wifi in [false, true] {
+                let config = SDKConfiguration(businessToken: "test", collectLocation: location, collectWifi: wifi)
+                #expect(config.collectMotionSensors == nil)
+                #expect(config.dataCollectionPolicy.motionSensors == (location || wifi))
+                #expect(DataCollectionPolicy(location: location, wifi: wifi).motionSensors == (location || wifi))
+            }
+        }
+        let explicit = SDKConfiguration(businessToken: "test", collectLocation: false, collectWifi: false, collectMotionSensors: true)
+        #expect(explicit.collectMotionSensors == true && explicit.dataCollectionPolicy.motionSensors)
+        #expect(SDKConfiguration(businessToken: "test", collectMotionSensors: false).collectMotionSensors == false)
+    }
+
 }
 
 @Suite("Periodic Reconciliation Configuration")
@@ -240,4 +262,18 @@ struct SDKConfigurationSingleHostTests {
         #expect(request.url?.host == apiHost)
         #expect(request.url?.path == "/sdk/places/nearby")
     }
+
+
+    @Test("Original public initializer and configure signatures retain forwarding entrypoints")
+    func originalPublicSignatures() {
+        let policy: (Bool, Bool, Bool) -> DataCollectionPolicy = DataCollectionPolicy.init(advertisingId:location:wifi:)
+        #expect(!policy(false, false, false).motionSensors)
+        let configuration: (String, ScanPrecision, MaxQueuedPayloads, String, Bool, TimeInterval, TimeInterval,
+            TimeInterval, Bool, Bool, Bool) -> SDKConfiguration = SDKConfiguration.init(businessToken:scanPrecision:maxQueuedPayloads:technology:periodicReconciliationEnabled:periodicReconciliationInterval:periodicScanDuration:presenceHeartbeatInterval:collectAdvertisingId:collectLocation:collectWifi:)
+        #expect(configuration("fixture-token", .medium, .medium, "fixture", false, 1200, 12, 300, false, false, false).adaptiveSamplingEnabled)
+        let configure: (BeAroundSDK) -> (String, ScanPrecision, MaxQueuedPayloads, String, Bool, TimeInterval,
+            TimeInterval, TimeInterval, Bool, Bool, Bool) -> Void = BeAroundSDK.configure(businessToken:scanPrecision:maxQueuedPayloads:technology:periodicReconciliationEnabled:periodicReconciliationInterval:periodicScanDuration:presenceHeartbeatInterval:collectAdvertisingId:collectLocation:collectWifi:)
+        _ = configure
+    }
+
 }

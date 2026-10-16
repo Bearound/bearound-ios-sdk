@@ -63,12 +63,21 @@ enum PushTokenStore {
     /// (a) reset `lastSentAt` on every successful sync, so the 7-day heartbeat
     /// re-send never fires, and (b) mark a token that rotated mid-request as
     /// sent even though it never reached the server.
-    static func markSent(_ exactToken: String?) {
+    static func markSent(_ exactToken: String?, sdkVersion: String? = SDKVersion.resolved) {
         guard let token = exactToken, !token.isEmpty else { return }
         lock.lock(); defer { lock.unlock() }
         defaults.set(token, forKey: lastSentKey)
         defaults.set(Date(), forKey: lastSentAtKey)
-        defaults.set(SDKVersion.resolved, forKey: lastSentVersionKey)
+        defaults.set(sdkVersion, forKey: lastSentVersionKey)
+    }
+
+    /// Sampling ACKs confirm archival ownership, not push registration.
+    static func markSent(_ envelope: StoredObservationEnvelope) -> Bool {
+        guard envelope.deliveryProtocol == .legacy,
+              let token = envelope.originalPayload["device"]?.object?["pushToken"]?.foundationValue as? String,
+              !token.isEmpty else { return false }
+        markSent(token, sdkVersion: envelope.originalPayload["device"]?.object?["sdkVersion"]?.foundationValue as? String)
+        return true
     }
 
     static var maskedToken: String? {

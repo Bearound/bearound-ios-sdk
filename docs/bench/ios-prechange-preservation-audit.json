@@ -1,0 +1,603 @@
+{
+  "files": [
+    {
+      "after": "f417044617606f5c1b619ca8ffa066b010e412ce5e7809398127fcd91be57554",
+      "before": "f417044617606f5c1b619ca8ffa066b010e412ce5e7809398127fcd91be57554",
+      "path": ".github/workflows/ci.yml",
+      "unchanged": true
+    },
+    {
+      "after": "9ec4bbb72dfa8b93336dc458c06135b955a2d301478c492a9827126c8028247d",
+      "before": "9ec4bbb72dfa8b93336dc458c06135b955a2d301478c492a9827126c8028247d",
+      "path": ".github/workflows/release.yml",
+      "unchanged": true
+    },
+    {
+      "after": "86535a8ef533f77f97c7335b87edcbaee4ccf85873ecf859340e3161e463bcc7",
+      "before": "86535a8ef533f77f97c7335b87edcbaee4ccf85873ecf859340e3161e463bcc7",
+      "path": ".gitignore",
+      "unchanged": true
+    },
+    {
+      "after": "92c2c25148b861fbeea8d35da235f414bc454aa500772dc91d9e4856e17fd684",
+      "before": "92c2c25148b861fbeea8d35da235f414bc454aa500772dc91d9e4856e17fd684",
+      "path": "AI-AGENT-SETUP.md",
+      "unchanged": true
+    },
+    {
+      "after": "753e0833360d231e8ee69fbeabdbd9e75e2fc20c98f702df6cc671d1e7a31249",
+      "before": "753e0833360d231e8ee69fbeabdbd9e75e2fc20c98f702df6cc671d1e7a31249",
+      "path": "ANDROID.md",
+      "unchanged": true
+    },
+    {
+      "after": "d00d2ec70349eaf6a6624312ad1d9db6b49011299ba573129908340fcf89e997",
+      "before": "d00d2ec70349eaf6a6624312ad1d9db6b49011299ba573129908340fcf89e997",
+      "path": "BeAroundScan/App-Info.plist",
+      "unchanged": true
+    },
+    {
+      "after": "2bd56be4f7f7995a4a0ed7759d6a307801b529f3eb391275080cb504e7ae424e",
+      "before": "2bd56be4f7f7995a4a0ed7759d6a307801b529f3eb391275080cb504e7ae424e",
+      "path": "BeAroundScan/Base.lproj/LaunchScreen.storyboard",
+      "unchanged": true
+    },
+    {
+      "after": "fba0db854fc54657ceeaaebb86b43a26b0b9eb753269f6dc815ab8d307a27314",
+      "before": "fba0db854fc54657ceeaaebb86b43a26b0b9eb753269f6dc815ab8d307a27314",
+      "path": "BeAroundScan/BeAroundScan.xcodeproj/project.pbxproj",
+      "unchanged": true
+    },
+    {
+      "after": "7f3b00b5c3fdb45242d7b87e1e5c4e25d1fa8129a16c94295ecc4e8ea2235c5f",
+      "before": "7f3b00b5c3fdb45242d7b87e1e5c4e25d1fa8129a16c94295ecc4e8ea2235c5f",
+      "path": "BeAroundScan/BeAroundScan.xcodeproj/project.xcworkspace/contents.xcworkspacedata",
+      "unchanged": true
+    },
+    {
+      "after": "82bb14ae9387e64f51ac2350f66e100aa75ee23a00a0fe54d110ae3ebd15ef70",
+      "before": "82bb14ae9387e64f51ac2350f66e100aa75ee23a00a0fe54d110ae3ebd15ef70",
+      "path": "BeAroundScan/BeAroundScan.xcworkspace/contents.xcworkspacedata",
+      "unchanged": true
+    },
+    {
+      "after": "97704a8960b4facceef54397a08fb5d0a456247c3627359215aa2a27df22656c",
+      "before": "97704a8960b4facceef54397a08fb5d0a456247c3627359215aa2a27df22656c",
+      "path": "BeAroundScan/BeAroundScan.xcworkspace/xcshareddata/WorkspaceSettings.xcsettings",
+      "unchanged": true
+    },
+    {
+      "after": "0ac91a270289adb1e86510c7428ec4f2867314183dee6cde855796ff6f8171be",
+      "before": "0ac91a270289adb1e86510c7428ec4f2867314183dee6cde855796ff6f8171be",
+      "path": "BeAroundScan/BeAroundScan/BeAroundScan.entitlements",
+      "unchanged": true
+    },
+    {
+      "after": "bd8f5e98901343610c4b69345d89e2c6f6d9e222531f824f6535a525894eb10d",
+      "before": "bd8f5e98901343610c4b69345d89e2c6f6d9e222531f824f6535a525894eb10d",
+      "path": "BeAroundScan/BeAroundScan/BeAroundScanApp.swift",
+      "unchanged": true
+    },
+    {
+      "after": "5f81490ace643f9d1f174615478b36bf6052377bd69e91528c0f0cf8e0b9e943",
+      "before": "5f81490ace643f9d1f174615478b36bf6052377bd69e91528c0f0cf8e0b9e943",
+      "path": "BeAroundScan/BeAroundScan/BeaconViewModel.swift",
+      "unchanged": true
+    },
+    {
+      "after": "bce786d91138e012406efeff2a8a1b695a16ef550efc078e4e59349dfa8b412d",
+      "before": "bce786d91138e012406efeff2a8a1b695a16ef550efc078e4e59349dfa8b412d",
+      "path": "BeAroundScan/BeAroundScan/ContentView.swift",
+      "unchanged": true
+    },
+    {
+      "after": "29c9067fdebfd9d3d951d5ee12dc25eda30dbb24a8ce32f3d9f737a89797bf74",
+      "before": "29c9067fdebfd9d3d951d5ee12dc25eda30dbb24a8ce32f3d9f737a89797bf74",
+      "path": "BeAroundScan/BeAroundScan/DetectionLogEntry.swift",
+      "unchanged": true
+    },
+    {
+      "after": "7f5b02249099dfce27be86456fbb5ed3284f2f5dbe13a183389887bd934a9a19",
+      "before": "7f5b02249099dfce27be86456fbb5ed3284f2f5dbe13a183389887bd934a9a19",
+      "path": "BeAroundScan/BeAroundScan/DetectionLogStore.swift",
+      "unchanged": true
+    },
+    {
+      "after": "0ad9dee41cf89067ee4726e50386378a0674a36843584e364015dad9b809b2fe",
+      "before": "0ad9dee41cf89067ee4726e50386378a0674a36843584e364015dad9b809b2fe",
+      "path": "BeAroundScan/BeAroundScan/DetectionLogView.swift",
+      "unchanged": true
+    },
+    {
+      "after": "6994d03d0654bbc9061067755bbaba032267159cdda7e67dbb525092a795a93e",
+      "before": "6994d03d0654bbc9061067755bbaba032267159cdda7e67dbb525092a795a93e",
+      "path": "BeAroundScan/BeAroundScan/NotificationManager.swift",
+      "unchanged": true
+    },
+    {
+      "after": "9ef397d6a6a0e3446376cc53be209df27ce4a25514868f1b83f04028502a1caf",
+      "before": "9ef397d6a6a0e3446376cc53be209df27ce4a25514868f1b83f04028502a1caf",
+      "path": "BeAroundScan/BeAroundScan/RetryQueueView.swift",
+      "unchanged": true
+    },
+    {
+      "after": "75cc3962a8ad312c330ac77d9a0a89eb11fbed6c8ca51d437942a5e8ebbc6eed",
+      "before": "75cc3962a8ad312c330ac77d9a0a89eb11fbed6c8ca51d437942a5e8ebbc6eed",
+      "path": "BeAroundScan/BeAroundScan/SettingsView.swift",
+      "unchanged": true
+    },
+    {
+      "after": "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b",
+      "before": "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b",
+      "path": "BeAroundScan/Podfile",
+      "unchanged": true
+    },
+    {
+      "after": "84b3362aee67337ed2d68aa4162e5ecb46f055d286abfbb3f4770bb4a76de1a6",
+      "before": "84b3362aee67337ed2d68aa4162e5ecb46f055d286abfbb3f4770bb4a76de1a6",
+      "path": "BeAroundScan/README.md",
+      "unchanged": true
+    },
+    {
+      "after": "31a3f918582b33d6cfcef27169b3256351da80fe723cb00e599795ac959278da",
+      "before": "31a3f918582b33d6cfcef27169b3256351da80fe723cb00e599795ac959278da",
+      "path": "BeAroundScan/open_xcode.sh",
+      "unchanged": true
+    },
+    {
+      "after": "b584216bc8cb03130a8dca3fa9607933fdf07275a5b2c9661f6365688b3f6ee4",
+      "before": "b584216bc8cb03130a8dca3fa9607933fdf07275a5b2c9661f6365688b3f6ee4",
+      "path": "BearoundSDK.podspec",
+      "unchanged": true
+    },
+    {
+      "after": "b73b92dbbbc640f19bf80076576ab07b41884846799c0a7a8c7b4dc321f4d91f",
+      "before": "b73b92dbbbc640f19bf80076576ab07b41884846799c0a7a8c7b4dc321f4d91f",
+      "path": "BearoundSDK.xcodeproj/project.pbxproj",
+      "unchanged": true
+    },
+    {
+      "after": "7f3b00b5c3fdb45242d7b87e1e5c4e25d1fa8129a16c94295ecc4e8ea2235c5f",
+      "before": "7f3b00b5c3fdb45242d7b87e1e5c4e25d1fa8129a16c94295ecc4e8ea2235c5f",
+      "path": "BearoundSDK.xcodeproj/project.xcworkspace/contents.xcworkspacedata",
+      "unchanged": true
+    },
+    {
+      "after": "888bc1a803a475c6ea9484df711f4dc29cf6359aa7851fb9ddae5bb79c935e1d",
+      "before": "888bc1a803a475c6ea9484df711f4dc29cf6359aa7851fb9ddae5bb79c935e1d",
+      "path": "BearoundSDK.xcodeproj/xcshareddata/xcschemes/BearoundSDK.xcscheme",
+      "unchanged": true
+    },
+    {
+      "after": "43d1ce3a7370456fcd3ed506a67b2d2b0fbc11c94bcf572bb59082ec78b94e58",
+      "before": "43d1ce3a7370456fcd3ed506a67b2d2b0fbc11c94bcf572bb59082ec78b94e58",
+      "path": "BearoundSDK.xcodeproj/xcshareddata/xcschemes/BearoundSDKTests.xcscheme",
+      "unchanged": true
+    },
+    {
+      "after": "d8d37c144f63c9202ab05dce8e3a7ad211f03bb08c0f3d598bb20f38b6e4351c",
+      "before": "d8d37c144f63c9202ab05dce8e3a7ad211f03bb08c0f3d598bb20f38b6e4351c",
+      "path": "BearoundSDK.xcodeproj/xcuserdata/felipearaujo.xcuserdatad/xcschemes/xcschememanagement.plist",
+      "unchanged": true
+    },
+    {
+      "after": "070947c42985a490754568c10f4391b6e4e6e6ebb4908327841931248a53520d",
+      "before": "070947c42985a490754568c10f4391b6e4e6e6ebb4908327841931248a53520d",
+      "path": "BearoundSDK/AdvertisingIdCollector.swift",
+      "unchanged": true
+    },
+    {
+      "after": "0b828f739ca6bc4ff0a30eafd71df3e49b09a76bf332768fcdd25c66e3e967a4",
+      "before": "0b828f739ca6bc4ff0a30eafd71df3e49b09a76bf332768fcdd25c66e3e967a4",
+      "path": "BearoundSDK/ApIdentifier.swift",
+      "unchanged": true
+    },
+    {
+      "after": "1307ecb23e2b605812a2f76143a23d37e5f3483dc7d6a79923d6086e33c17394",
+      "before": "1307ecb23e2b605812a2f76143a23d37e5f3483dc7d6a79923d6086e33c17394",
+      "path": "BearoundSDK/BeaconManager.swift",
+      "unchanged": true
+    },
+    {
+      "after": "1539c23063cf2bc09369de40bf460fe56ba5524e89d72bd403f18f8edcbb4a35",
+      "before": "1539c23063cf2bc09369de40bf460fe56ba5524e89d72bd403f18f8edcbb4a35",
+      "path": "BearoundSDK/BearoundSDK.docc/BearoundSDK.md",
+      "unchanged": true
+    },
+    {
+      "after": "d9a11e1bc227b5a9464b65e24aeb4e240afe47bcd3252d9c4c05f1ce89a16f2c",
+      "before": "d9a11e1bc227b5a9464b65e24aeb4e240afe47bcd3252d9c4c05f1ce89a16f2c",
+      "path": "BearoundSDK/BearoundSDK.swift",
+      "unchanged": true
+    },
+    {
+      "after": "2038855dc21739c8015d4cfd19a2c5d853f34414ba6db2ec1748f454200dd192",
+      "before": "2038855dc21739c8015d4cfd19a2c5d853f34414ba6db2ec1748f454200dd192",
+      "path": "BearoundSDK/BluetoothManager.swift",
+      "unchanged": true
+    },
+    {
+      "after": "b3b74399ad6b9a46629626aa1dafd1558f92886f23fbc949302e77543ebbbb68",
+      "before": "b3b74399ad6b9a46629626aa1dafd1558f92886f23fbc949302e77543ebbbb68",
+      "path": "BearoundSDK/Constants.swift",
+      "unchanged": true
+    },
+    {
+      "after": "b2ee32dafa12407d15d0346832ed252091417c3d3e53118ecf9e9c737556e4d0",
+      "before": "b2ee32dafa12407d15d0346832ed252091417c3d3e53118ecf9e9c737556e4d0",
+      "path": "BearoundSDK/DeviceInfoCollector.swift",
+      "unchanged": true
+    },
+    {
+      "after": "1ea33c57aefb6e8d20144fdece12c828cd8e4a29ef889d5487fd3bfd6cd4e81a",
+      "before": "1ea33c57aefb6e8d20144fdece12c828cd8e4a29ef889d5487fd3bfd6cd4e81a",
+      "path": "BearoundSDK/EncounterMeshManager.swift",
+      "unchanged": true
+    },
+    {
+      "after": "82a20736c8fe794e45c2e2e6b6d926e6bde1fe281d21d503128e2336692f2cbc",
+      "before": "82a20736c8fe794e45c2e2e6b6d926e6bde1fe281d21d503128e2336692f2cbc",
+      "path": "BearoundSDK/Models/BeAroundDiagnostics.swift",
+      "unchanged": true
+    },
+    {
+      "after": "9298a5a2a1733551a5f185e7b88f3f5595ccee510042f9a2836508ac5caa0724",
+      "before": "9298a5a2a1733551a5f185e7b88f3f5595ccee510042f9a2836508ac5caa0724",
+      "path": "BearoundSDK/Models/Beacon.swift",
+      "unchanged": true
+    },
+    {
+      "after": "a4ea281ac43c965da01c25dec115d3edb9ca9b95223f7743d5f238641edbd9de",
+      "before": "a4ea281ac43c965da01c25dec115d3edb9ca9b95223f7743d5f238641edbd9de",
+      "path": "BearoundSDK/Models/BeaconMetadata.swift",
+      "unchanged": true
+    },
+    {
+      "after": "6e98fa092959a4220cca1a521ce1957365214b65edc5b0d3d43f3bfb6bae8083",
+      "before": "6e98fa092959a4220cca1a521ce1957365214b65edc5b0d3d43f3bfb6bae8083",
+      "path": "BearoundSDK/Models/BearoundErrorCode.swift",
+      "unchanged": true
+    },
+    {
+      "after": "f54ac606d89e4f72708cb41fcdc74e72ac6df1597bd4a21fc047dcb7a94186d9",
+      "before": "f54ac606d89e4f72708cb41fcdc74e72ac6df1597bd4a21fc047dcb7a94186d9",
+      "path": "BearoundSDK/Models/DataCollectionPolicy.swift",
+      "unchanged": true
+    },
+    {
+      "after": "4604b4b6c2334610049a4f1ca2dab2965b0eaca7468a9d18c664d088cece48a5",
+      "before": "4604b4b6c2334610049a4f1ca2dab2965b0eaca7468a9d18c664d088cece48a5",
+      "path": "BearoundSDK/Models/DetectionReadiness.swift",
+      "unchanged": true
+    },
+    {
+      "after": "2d338deebb97951a3815fc195b3acf3173a9416fbcc677259ea4881079793642",
+      "before": "2d338deebb97951a3815fc195b3acf3173a9416fbcc677259ea4881079793642",
+      "path": "BearoundSDK/Models/DeviceLocation.swift",
+      "unchanged": true
+    },
+    {
+      "after": "0f1e80f8c5305f313b96006b581ca9b5e4b16069bd71329a376c560ddeef98b6",
+      "before": "0f1e80f8c5305f313b96006b581ca9b5e4b16069bd71329a376c560ddeef98b6",
+      "path": "BearoundSDK/Models/EncounterObservation.swift",
+      "unchanged": true
+    },
+    {
+      "after": "70494364e7a27d4d6082a325ce1083d2eee3357e7a8b16c74666b36ff7b72d71",
+      "before": "ec459d98e3ae0fd2212aa41b52895ed527a3eeb7881d550db0bfec479a4c9110",
+      "path": "BearoundSDK/Models/SDKConfiguration.swift",
+      "unchanged": false
+    },
+    {
+      "after": "b029ed20923bff01da7a4028066d8543dba7f182d2af555b712519bd6e87fb77",
+      "before": "b029ed20923bff01da7a4028066d8543dba7f182d2af555b712519bd6e87fb77",
+      "path": "BearoundSDK/Models/SDKInfo.swift",
+      "unchanged": true
+    },
+    {
+      "after": "bd836140d924765c0719360e619500fc7b65d12053b6439a2e9c8ab5f370b8a8",
+      "before": "bd836140d924765c0719360e619500fc7b65d12053b6439a2e9c8ab5f370b8a8",
+      "path": "BearoundSDK/Models/ScanIntervalConfiguration.swift",
+      "unchanged": true
+    },
+    {
+      "after": "6cb67652d069c6dbdcf2d399605b64138980a2020c1d02083cf9c4d84ae54107",
+      "before": "6cb67652d069c6dbdcf2d399605b64138980a2020c1d02083cf9c4d84ae54107",
+      "path": "BearoundSDK/Models/UserDevice.swift",
+      "unchanged": true
+    },
+    {
+      "after": "3c08f9cfb6e040999be8508f7ca2131b16432a39a88d0830f092da38f85681c0",
+      "before": "3c08f9cfb6e040999be8508f7ca2131b16432a39a88d0830f092da38f85681c0",
+      "path": "BearoundSDK/Models/UserProperties.swift",
+      "unchanged": true
+    },
+    {
+      "after": "a37b8ea6f6575f1ff06aa8c653054ab3de1a4b2e310952fa85ef19cd640f1495",
+      "before": "a37b8ea6f6575f1ff06aa8c653054ab3de1a4b2e310952fa85ef19cd640f1495",
+      "path": "BearoundSDK/Models/WifiObservation.swift",
+      "unchanged": true
+    },
+    {
+      "after": "dc872bbe714f16c6db1b7d6a9bf2073e2955b3c43c80db2605840035377ec39d",
+      "before": "dc872bbe714f16c6db1b7d6a9bf2073e2955b3c43c80db2605840035377ec39d",
+      "path": "BearoundSDK/Network/APIClient.swift",
+      "unchanged": true
+    },
+    {
+      "after": "854bbc7df0c672194df0f41d693bc72cd363dd6a7001475ac3160636d084373b",
+      "before": "854bbc7df0c672194df0f41d693bc72cd363dd6a7001475ac3160636d084373b",
+      "path": "BearoundSDK/Notifications/AppStateMonitor.swift",
+      "unchanged": true
+    },
+    {
+      "after": "426a49f82acfce311151fb63e9bf209d950c8feb1213d809b6c7c108f62d4c10",
+      "before": "426a49f82acfce311151fb63e9bf209d950c8feb1213d809b6c7c108f62d4c10",
+      "path": "BearoundSDK/PrivacyInfo.xcprivacy",
+      "unchanged": true
+    },
+    {
+      "after": "c3c68df557a78c8ca2962b14c96fb03f81f28f385fe0d5cd47fa398bb3d275ad",
+      "before": "c3c68df557a78c8ca2962b14c96fb03f81f28f385fe0d5cd47fa398bb3d275ad",
+      "path": "BearoundSDK/Protocols/BeAroundSDKDelegate.swift",
+      "unchanged": true
+    },
+    {
+      "after": "866c968c62a82f1a6dd88fed7cf0d13ffad154a064cdd44a61b0817d781f5ef3",
+      "before": "866c968c62a82f1a6dd88fed7cf0d13ffad154a064cdd44a61b0817d781f5ef3",
+      "path": "BearoundSDK/Telemetry/ErrorReporter.swift",
+      "unchanged": true
+    },
+    {
+      "after": "caaead8fee578881e19e40219e13f4431f613e11cc4aeaae6c625f21bbdca87c",
+      "before": "caaead8fee578881e19e40219e13f4431f613e11cc4aeaae6c625f21bbdca87c",
+      "path": "BearoundSDK/Utilities/APNSEnvironment.swift",
+      "unchanged": true
+    },
+    {
+      "after": "2380c5b3972a6bfe6f915b59c21fcf4fca2636a630de00a99049b82973200a11",
+      "before": "2380c5b3972a6bfe6f915b59c21fcf4fca2636a630de00a99049b82973200a11",
+      "path": "BearoundSDK/Utilities/BackgroundTaskManager.swift",
+      "unchanged": true
+    },
+    {
+      "after": "e31d141ea529313d92aa7d6d85e9fc02371e9cc79aa19635ee50067504000560",
+      "before": "e31d141ea529313d92aa7d6d85e9fc02371e9cc79aa19635ee50067504000560",
+      "path": "BearoundSDK/Utilities/DeviceIdentifier.swift",
+      "unchanged": true
+    },
+    {
+      "after": "a49cc18c09cace8bb5f66a302772fbc1617e36d6a086eee0ff6633da1c0b055f",
+      "before": "a49cc18c09cace8bb5f66a302772fbc1617e36d6a086eee0ff6633da1c0b055f",
+      "path": "BearoundSDK/Utilities/DiagnosticsStore.swift",
+      "unchanged": true
+    },
+    {
+      "after": "e638a2424e61d84d343ecf63523ff73796280ad8232244fa19307e657024b8b7",
+      "before": "e638a2424e61d84d343ecf63523ff73796280ad8232244fa19307e657024b8b7",
+      "path": "BearoundSDK/Utilities/KeychainHelper.swift",
+      "unchanged": true
+    },
+    {
+      "after": "0c8cdb31efec3efd94bfb55413de7757582fbdbdc166dc0c44f3d821870acff8",
+      "before": "0c8cdb31efec3efd94bfb55413de7757582fbdbdc166dc0c44f3d821870acff8",
+      "path": "BearoundSDK/Utilities/NetworkSnapshotProvider.swift",
+      "unchanged": true
+    },
+    {
+      "after": "874f32433f1ea0130feea53d06bffd3684414fe7a14fca665ab892043239ccc9",
+      "before": "874f32433f1ea0130feea53d06bffd3684414fe7a14fca665ab892043239ccc9",
+      "path": "BearoundSDK/Utilities/OfflineBatchStorage.swift",
+      "unchanged": true
+    },
+    {
+      "after": "3724241d536a29d550e36c3bad1db186df84d1e134dbb6e363df3f008cee9bbf",
+      "before": "3724241d536a29d550e36c3bad1db186df84d1e134dbb6e363df3f008cee9bbf",
+      "path": "BearoundSDK/Utilities/PushTokenAutoCapture.swift",
+      "unchanged": true
+    },
+    {
+      "after": "4402210399af6ba8ed4464f718a3243187648ea9cad92eea4cabe6ba28377a17",
+      "before": "4402210399af6ba8ed4464f718a3243187648ea9cad92eea4cabe6ba28377a17",
+      "path": "BearoundSDK/Utilities/PushTokenStore.swift",
+      "unchanged": true
+    },
+    {
+      "after": "a45fbe2a32c79493c3506a39ad8da303eee1e0a2cbc597947c3298592dde8aaf",
+      "before": "a45fbe2a32c79493c3506a39ad8da303eee1e0a2cbc597947c3298592dde8aaf",
+      "path": "BearoundSDK/Utilities/RegisterStore.swift",
+      "unchanged": true
+    },
+    {
+      "after": "e64d52a7e8a42c620a3f76a0a4e428617073df6e2cfedff762f30fe20bbb98b0",
+      "before": "e64d52a7e8a42c620a3f76a0a4e428617073df6e2cfedff762f30fe20bbb98b0",
+      "path": "BearoundSDK/Utilities/SDKConfigStorage.swift",
+      "unchanged": true
+    },
+    {
+      "after": "85a52bc28042b3278b3b3d6384da4851084ab81af5a961d9d45dea28668f68ff",
+      "before": "85a52bc28042b3278b3b3d6384da4851084ab81af5a961d9d45dea28668f68ff",
+      "path": "BearoundSDK/WifiCollector.swift",
+      "unchanged": true
+    },
+    {
+      "after": "a03e615a9b3c5b3a38781f5b2a92aa7e3058a6d2e964481a220247bb0d6aaf7a",
+      "before": "a03e615a9b3c5b3a38781f5b2a92aa7e3058a6d2e964481a220247bb0d6aaf7a",
+      "path": "BearoundSDKTests/APIClientTests.swift",
+      "unchanged": true
+    },
+    {
+      "after": "32f31c484b5d93230fe9b131abcf193afd4c038ccfd8f8a9adcfea471c720daf",
+      "before": "32f31c484b5d93230fe9b131abcf193afd4c038ccfd8f8a9adcfea471c720daf",
+      "path": "BearoundSDKTests/ApIdentifierTests.swift",
+      "unchanged": true
+    },
+    {
+      "after": "b05b3d1975d1c95a767ddefcb70ac8aed5a92093c175a79ac00358814fd7afc5",
+      "before": "b05b3d1975d1c95a767ddefcb70ac8aed5a92093c175a79ac00358814fd7afc5",
+      "path": "BearoundSDKTests/BackgroundTaskManagerTests.swift",
+      "unchanged": true
+    },
+    {
+      "after": "14a586173d8714c9d8a5da0328c7aaaea022036178ffcab3e1d9b2809a03a74c",
+      "before": "14a586173d8714c9d8a5da0328c7aaaea022036178ffcab3e1d9b2809a03a74c",
+      "path": "BearoundSDKTests/DataCollectionPolicyTests.swift",
+      "unchanged": true
+    },
+    {
+      "after": "d009051d5f332dc55da10af7ddf37fadb0a6d1444f2b854ffc1c1639bb69fa11",
+      "before": "d009051d5f332dc55da10af7ddf37fadb0a6d1444f2b854ffc1c1639bb69fa11",
+      "path": "BearoundSDKTests/DetectionReadinessTests.swift",
+      "unchanged": true
+    },
+    {
+      "after": "8acf98aeeba006a20b1891e9089506dcf460348536439cffe7aa29acbb36b005",
+      "before": "8acf98aeeba006a20b1891e9089506dcf460348536439cffe7aa29acbb36b005",
+      "path": "BearoundSDKTests/DeviceIdentifierTests.swift",
+      "unchanged": true
+    },
+    {
+      "after": "933b285f680637828f7756eaf0e734ce6fa85caa051456ce960ef10a95fc3ead",
+      "before": "933b285f680637828f7756eaf0e734ce6fa85caa051456ce960ef10a95fc3ead",
+      "path": "BearoundSDKTests/EncounterMeshTests.swift",
+      "unchanged": true
+    },
+    {
+      "after": "4d2162347724a9b2269bc9223214ecae073e2cebfb704366b67c5b63856cd389",
+      "before": "4d2162347724a9b2269bc9223214ecae073e2cebfb704366b67c5b63856cd389",
+      "path": "BearoundSDKTests/KeychainHelperTests.swift",
+      "unchanged": true
+    },
+    {
+      "after": "ab7a3baf2c39bb5bcd683590189f6b5dd66e57f5d93658605b8647c900f231d9",
+      "before": "ab7a3baf2c39bb5bcd683590189f6b5dd66e57f5d93658605b8647c900f231d9",
+      "path": "BearoundSDKTests/OfflineBatchStorageTests.swift",
+      "unchanged": true
+    },
+    {
+      "after": "a58e601c048c29f5110eb1a6d74009f50e4d5c0eaaf12fd25fd9623055a0bd71",
+      "before": "a58e601c048c29f5110eb1a6d74009f50e4d5c0eaaf12fd25fd9623055a0bd71",
+      "path": "BearoundSDKTests/RegisterStoreTests.swift",
+      "unchanged": true
+    },
+    {
+      "after": "75c6dde7b927f2822fd0be3499f555d485eb595d0d47a97babdf5c966d538a8a",
+      "before": "75c6dde7b927f2822fd0be3499f555d485eb595d0d47a97babdf5c966d538a8a",
+      "path": "BearoundSDKTests/SDKConfigStorageTests.swift",
+      "unchanged": true
+    },
+    {
+      "after": "c95734fbe0ad6b08d72377054ea17779aa126bc0768ef96efcd6d19dc546308f",
+      "before": "c95734fbe0ad6b08d72377054ea17779aa126bc0768ef96efcd6d19dc546308f",
+      "path": "BearoundSDKTests/SDKConfigurationTests.swift",
+      "unchanged": true
+    },
+    {
+      "after": "0abae1a0578fe99bfa88544b94ecd8708f387b8899540b071b2d9fe6c39ed5b0",
+      "before": "0abae1a0578fe99bfa88544b94ecd8708f387b8899540b071b2d9fe6c39ed5b0",
+      "path": "CHANGELOG.md",
+      "unchanged": true
+    },
+    {
+      "after": "f26436b0950db0961ec8aeb210a1dae14c667a7ae1710eebd6cae124aee9d4ec",
+      "before": "f26436b0950db0961ec8aeb210a1dae14c667a7ae1710eebd6cae124aee9d4ec",
+      "path": "CHANGES.md",
+      "unchanged": true
+    },
+    {
+      "after": "78878d4fe13db6923cbe9f6d33672c03343f0ad20d140fcff3a1e82fa8e3c49a",
+      "before": "78878d4fe13db6923cbe9f6d33672c03343f0ad20d140fcff3a1e82fa8e3c49a",
+      "path": "CLAUDE.md",
+      "unchanged": true
+    },
+    {
+      "after": "75a38f49736dda8f553744297dda19828e40ece9ae56a57539e28a5b9a078988",
+      "before": "75a38f49736dda8f553744297dda19828e40ece9ae56a57539e28a5b9a078988",
+      "path": "EXPECTED_FUNCTIONALITY.md",
+      "unchanged": true
+    },
+    {
+      "after": "d3709879dd182c665649c0e1a9b7e2e3bbbc25489f4ceb7429c29f1925600993",
+      "before": "d3709879dd182c665649c0e1a9b7e2e3bbbc25489f4ceb7429c29f1925600993",
+      "path": "LICENSE",
+      "unchanged": true
+    },
+    {
+      "after": "7b60d8269fa5d527e54049d3887d1c7d083abe7d3d2951e076afe4730c724623",
+      "before": "7b60d8269fa5d527e54049d3887d1c7d083abe7d3d2951e076afe4730c724623",
+      "path": "PROMPT_Android.md",
+      "unchanged": true
+    },
+    {
+      "after": "8e626726741f8b4cc88c0b947e7e3aedc53a3bbbe932129f12a47995bf2b26c6",
+      "before": "8e626726741f8b4cc88c0b947e7e3aedc53a3bbbe932129f12a47995bf2b26c6",
+      "path": "PUBLISH.md",
+      "unchanged": true
+    },
+    {
+      "after": "c2b5cbc6ce67e69280326beff215919cbc7c392e0f62b6f7bd29701fb5d7092f",
+      "before": "c2b5cbc6ce67e69280326beff215919cbc7c392e0f62b6f7bd29701fb5d7092f",
+      "path": "README.md",
+      "unchanged": true
+    },
+    {
+      "after": "38a4c19a5d8975d1753e7cd23aa1e6d858e602db943c4c9295ade51a156338dc",
+      "before": "38a4c19a5d8975d1753e7cd23aa1e6d858e602db943c4c9295ade51a156338dc",
+      "path": "build_framework.sh",
+      "unchanged": true
+    },
+    {
+      "after": "247b9da6db255a6b1383f3c0631eac2c2da7cd7351ce271f7c506259da84e462",
+      "before": "247b9da6db255a6b1383f3c0631eac2c2da7cd7351ce271f7c506259da84e462",
+      "path": "docs/ADVERTISING_VALIDATION.md",
+      "unchanged": true
+    },
+    {
+      "after": "55a9ae133b4bb7339697926f6ac1c78e91c0acb2fb4a0c0a1585d02883373ed1",
+      "before": "55a9ae133b4bb7339697926f6ac1c78e91c0acb2fb4a0c0a1585d02883373ed1",
+      "path": "docs/LEGACY-IOS-DEVICES.md",
+      "unchanged": true
+    },
+    {
+      "after": "2da4c4daf34bcdaf375215536d35496ad972eedd43b7b30588b7cc69a2c17c9a",
+      "before": "2da4c4daf34bcdaf375215536d35496ad972eedd43b7b30588b7cc69a2c17c9a",
+      "path": "install_example.sh",
+      "unchanged": true
+    },
+    {
+      "after": "490477ad0eb1258292a8f250b4d5ac217bffed9eb21b0b4a614ec5b12dbbdf26",
+      "before": "490477ad0eb1258292a8f250b4d5ac217bffed9eb21b0b4a614ec5b12dbbdf26",
+      "path": "scripts/add-freshness-guard.rb",
+      "unchanged": true
+    },
+    {
+      "after": "57aece4914d0199ad6aedd3685845549bd9e98dc4349e0f2aea20f8234f6c0a7",
+      "before": "57aece4914d0199ad6aedd3685845549bd9e98dc4349e0f2aea20f8234f6c0a7",
+      "path": "scripts/add-freshness-guard.sh",
+      "unchanged": true
+    },
+    {
+      "after": "33a986411f639f20003877edf85c5a2f8f7cefb3623362be6a29074478f251d1",
+      "before": "33a986411f639f20003877edf85c5a2f8f7cefb3623362be6a29074478f251d1",
+      "path": "scripts/verify-xcframework-fresh.sh",
+      "unchanged": true
+    }
+  ],
+  "fingerprintSourceFiles": 42,
+  "noCollectorTimerVisitStorageChanges": true,
+  "onlyConfigurationURLBranchChanged": true,
+  "originalIndexSha256": "443d673eb3c8aead1625c30a0b4c1226f2ecf5f84c036f446c9c85e7fd272d02",
+  "originalSDKFiles": 40,
+  "originalSwiftFiles": 38,
+  "originalTrackedFiles": 97,
+  "patchSha256": "034f33802394388ebc9e3882ed9bc55f0747878d7442c8e3e31c14ec1749ea53",
+  "snapshot": "62109cfdfea9a3dc47fcdf522ec17e03939d8ad0",
+  "sourceFingerprint": "3850a50e48ad4025b0e141bb17594e89334b199852c4cdea36cc47ce5e3d86f2",
+  "unchangedOriginalSDKFiles": 39,
+  "unchangedOriginalSwiftFiles": 37,
+  "unchangedOriginalTrackedFiles": 96,
+  "writeSet": [
+    "BearoundSDK/Models/SDKConfiguration.swift",
+    "BearoundSDK/Testing/AdaptiveSamplingBench.swift"
+  ]
+}

@@ -29,6 +29,8 @@ public class SDKConfigStorage {
     private static let keyCollectAdvertisingId = "collect_advertising_id"
     private static let keyCollectLocation = "collect_location"
     private static let keyCollectWifi = "collect_wifi"
+    private static let keyCollectMotionSensors = "collect_motion_sensors"
+    private static let keyAdaptiveSamplingEnabled = "adaptive_sampling_enabled"
     private static let keyAppPresenceConfiguration = "app_presence_configuration"
 
     private static var defaults: UserDefaults? {
@@ -53,6 +55,12 @@ public class SDKConfigStorage {
         defaults.set(config.collectAdvertisingId, forKey: keyCollectAdvertisingId)
         defaults.set(config.collectLocation, forKey: keyCollectLocation)
         defaults.set(config.collectWifi, forKey: keyCollectWifi)
+        defaults.set(config.adaptiveSamplingEnabled, forKey: keyAdaptiveSamplingEnabled)
+        if let motionSensors = config.collectMotionSensors {
+            defaults.set(motionSensors, forKey: keyCollectMotionSensors)
+        } else {
+            defaults.removeObject(forKey: keyCollectMotionSensors)
+        }
         defaults.set(true, forKey: keyIsConfigured)
 
         defaults.synchronize()
@@ -114,7 +122,9 @@ public class SDKConfigStorage {
             periodicScanDuration: periodicScanDuration,
             collectAdvertisingId: collectAdvertisingId,
             collectLocation: collectLocation,
-            collectWifi: collectWifi
+            collectWifi: collectWifi,
+            adaptiveSamplingEnabled: defaults.object(forKey: keyAdaptiveSamplingEnabled) as? Bool ?? true,
+            collectMotionSensors: defaults.object(forKey: keyCollectMotionSensors) as? Bool
         )
     }
 
@@ -129,6 +139,8 @@ public class SDKConfigStorage {
         defaults.removeObject(forKey: keyCollectAdvertisingId)
         defaults.removeObject(forKey: keyCollectLocation)
         defaults.removeObject(forKey: keyCollectWifi)
+        defaults.removeObject(forKey: keyAdaptiveSamplingEnabled)
+        defaults.removeObject(forKey: keyCollectMotionSensors)
         defaults.removeObject(forKey: keyAppPresenceConfiguration)
         defaults.removeObject(forKey: keyIsConfigured)
         defaults.removeObject(forKey: keyIsScanning)

@@ -138,7 +138,7 @@ public class BeAroundSDK {
             bgTasksRegistered = BackgroundTaskManager.shared.tasksRegistered
         }
 
-        return BeAroundDiagnostics(
+        var snapshot = BeAroundDiagnostics(
             deviceId: DeviceIdentifier.getDeviceId(),
             deviceIdType: DeviceIdentifier.getDeviceIdType(),
             pushTokenMasked: PushTokenStore.maskedToken,
@@ -162,6 +162,8 @@ public class BeAroundSDK {
             backgroundModes: Self.declaredBackgroundModes,
             wifiStatus: store.lastWifiStatus ?? "notRun"
         )
+        snapshot.adaptiveSampling = store.samplingSnapshot
+        return snapshot
     }
 
     /// Human-readable CoreLocation authorization status for diagnostics.
@@ -208,13 +210,27 @@ public class BeAroundSDK {
     private var sdkInfo: SDKInfo?
     private var userProperties: UserProperties?
 
-    private let deviceInfoCollector = DeviceInfoCollector(isColdStart: true)
+    private lazy var deviceInfoCollector = DeviceInfoCollector(isColdStart: true)
     private let beaconManager = BeaconManager()
     /// GPS visit detection (CLVisit + environment geofences). Created on main next to the
     /// beacon eye; it gates itself on the kill switch, Always authorization and the policy.
     private var visitMonitor: VisitMonitor?
     private let bluetoothManager = BluetoothManager()
     private var apiClient: APIClient?
+    private var samplingRuntime: AdaptiveSamplingRuntime?
+    private var samplingGeneration: UInt64 = 0
+    private let samplingLifecycleLock = NSLock()
+    private var publishedSamplingGeneration: UInt64 = 0
+    private var samplingBluetoothAvailable = false
+    private var samplingPhysicalScanRegistered = false
+    private var samplingPhysicalCollectionRevision: UInt64 = 0
+    private var samplingPhysicalZoneEligibility: PhysicalZoneCollectionEligibility?
+    private let motionMonitor = MotionMonitor()
+    private let inertialMotionMonitor = InertialMotionMonitor()
+    private var motionCollectionRunning = false
+    private var inertialForegroundActive = false
+    private var unpersistedObservations: [StoredObservationEnvelope] = []
+
 
     /// Telemetry metadata by "major.minor" key. Written from bleQueue
     /// (didDiscoverBeacon) and read from main (CL enrichment callback) — every
@@ -232,6 +248,8 @@ public class BeAroundSDK {
         metadataCache[key] = metadata
     }
     private var syncTimer: DispatchSourceTimer?
+    private var syncTimerGeneration: UInt64 = 0
+    private let syncTimerLock = NSLock()
     private var collectedBeacons: [String: Beacon] = [:]
     /// Sampling model with volume containment: the SAME beacon re-syncs at most once
     /// per this interval (Android-parity 60 s). Keeps the per-sample ingest contract
@@ -252,7 +270,11 @@ public class BeAroundSDK {
     private let beaconQueue = DispatchQueue(label: "com.bearound.sdk.beaconQueue")
     private var isSyncing = false
 
-    private let offlineBatchStorage = OfflineBatchStorage.shared
+    private let offlineBatchStorage: OfflineBatchStorage
+    #if DEBUG
+    private var samplingFixture = false
+    private var samplingFixtureDevice: UserDevice?
+    #endif
 
     private var consecutiveFailures = 0
     private var lastFailureTime: Date?
@@ -274,13 +296,17 @@ public class BeAroundSDK {
 
     // MARK: - Initialization
 
-    private init() {
+    private init(preparePlatform: Bool = true, storage: OfflineBatchStorage = .shared) {
+        offlineBatchStorage = storage
+        guard preparePlatform else { return }
+        _ = deviceInfoCollector
         let appState = UIApplication.shared.applicationState
         // Only a REAL background launch counts. A normal foreground launch passes
         // through `.inactive` during didFinishLaunching — the old `!= .active`
         // check classified it as background, auto-configured from storage, opened
         // a relaunch assertion and started scanning before the host asked.
         wasLaunchedInBackground = appState == .background
+        inertialForegroundActive = appState == .active
 
         if wasLaunchedInBackground {
             isInBackground = true
@@ -370,6 +396,7 @@ public class BeAroundSDK {
             configuration = savedConfig
             apiClient = APIClient(configuration: savedConfig)
             setupSDKInfo(from: savedConfig)
+            configureSampling(savedConfig)
             // Re-instantiate the background session with the same identifier so any
             // pending background-upload delegate callbacks from before termination are delivered.
             apiClient?.ensureBackgroundSessionAlive()
@@ -385,6 +412,7 @@ public class BeAroundSDK {
         configuration = savedConfig
         apiClient = APIClient(configuration: savedConfig)
         setupSDKInfo(from: savedConfig)
+        configureSampling(savedConfig, startMotion: true)
 
         // Scanning was active: app presence resumes too, independent of BLE/Location below.
         appPresence.start()
@@ -469,6 +497,16 @@ public class BeAroundSDK {
     // MARK: - Callbacks Setup
 
     private func setupCallbacks() {
+        beaconManager.onPhysicalBeacons = { [weak self] beacons in self?.capturePhysical(beacons) }
+        bluetoothManager.onPhysicalBeacons = { [weak self] rows in
+            let beacons = rows.map { tracked in
+                Beacon(uuid: BeaconConstants.uuid, major: tracked.major, minor: tracked.minor,
+                    rssi: tracked.rssi, proximity: .bt, accuracy: -1, timestamp: tracked.lastSeen,
+                    metadata: tracked.metadata, txPower: tracked.txPower, discoverySources: [tracked.discoverySource])
+            }
+            self?.capturePhysical(beacons)
+        }
+
         beaconManager.onBeaconsUpdated = { [weak self] beacons in
             guard let self else { return }
 
@@ -500,6 +538,7 @@ public class BeAroundSDK {
             }
 
             beaconQueue.async {
+                self.recordCachedSamplingPublication()
                 var updatedBeacons: [Beacon] = []
                 for var beacon in enrichedBeacons {
                     let key = "\(beacon.major).\(beacon.minor)"
@@ -626,6 +665,7 @@ public class BeAroundSDK {
             guard let self else { return }
             // Wake the Bluetooth eye: region entry is the canonical "user is at a beacon"
             // signal, fires from kernel-level CL monitoring even when the app is suspended.
+            self.flushSamplingTransition()
             self.bluetoothManager.wakeToActive()
             // Record to the internal detection log (diagnostic only — no user-facing
             // notification). The host app reacts to didEnterBeaconRegion to show its own.
@@ -638,6 +678,7 @@ public class BeAroundSDK {
         beaconManager.onRegionExit = { [weak self] in
             guard let self else { return }
             // Put the Bluetooth eye back to sleep — user left the zone, stop burning battery.
+            self.flushSamplingTransition()
             self.bluetoothManager.sleepToIdle()
             // Record to the internal detection log (diagnostic only — no user-facing notification).
             DetectionLogStore.append(type: "Região", detail: "Saiu da zona do beacon")
@@ -728,7 +769,8 @@ public class BeAroundSDK {
 
         // Lifecycle: scanner stopped by host/SDK — surfaced for observability, never
         // translated into a presence exit.
-        bluetoothManager.onScanningStopped = {
+        bluetoothManager.onScanningStopped = { [weak self] in
+            self?.updatePhysicalZoneCollectionEligibility(scanRegistered: false)
             DetectionLogStore.append(type: "BLE_SCAN_STOPPED", detail: "scanner desligado (lifecycle, não presença)")
         }
 
@@ -736,6 +778,11 @@ public class BeAroundSDK {
         // notifyScanModeChanged already dispatches on main, but we re-route through
         // the same path the other delegate calls use for consistency.
         bluetoothManager.onScanModeChanged = { [weak self] mode, nextIdleScanAt in
+            // Idle keeps the native scan registered; explicit stop clears eligibility separately.
+            if let self, mode == .active {
+                self.updatePhysicalZoneCollectionEligibility(bluetoothAvailable: self.bluetoothManager.isPoweredOn,
+                    scanRegistered: true)
+            }
             NSLog("[SDK] BT scan mode → %@ (nextIdleScanAt=%@)",
                   mode.rawValue,
                   nextIdleScanAt.map { "\($0)" } ?? "nil")
@@ -754,6 +801,7 @@ public class BeAroundSDK {
             // governed by pendingStateForSample()'s report window instead.
 
             beaconQueue.async {
+                self.recordCachedSamplingPublication()
                 var beaconsForDelegate: [Beacon] = []
                 for tracked in trackedBeacons {
                     let key = "\(tracked.major).\(tracked.minor)"
@@ -773,6 +821,7 @@ public class BeAroundSDK {
                         rssi: tracked.rssi,
                         proximity: .bt,
                         accuracy: -1,
+                        timestamp: tracked.lastSeen,
                         metadata: tracked.metadata,
                         txPower: tracked.txPower,
                         discoverySources: [tracked.discoverySource]
@@ -823,6 +872,12 @@ public class BeAroundSDK {
             name: UIApplication.willEnterForegroundNotification,
             object: nil
         )
+        NotificationCenter.default.addObserver(self,
+            selector: #selector(appDidBecomeActiveForInertialSampling),
+            name: UIApplication.didBecomeActiveNotification, object: nil)
+        NotificationCenter.default.addObserver(self,
+            selector: #selector(appWillResignActiveForInertialSampling),
+            name: UIApplication.willResignActiveNotification, object: nil)
 
         // App presence foreground trigger (same notification AppStateMonitor tracks).
         NotificationCenter.default.addObserver(
@@ -844,11 +899,29 @@ public class BeAroundSDK {
         }
     }
 
+    @objc private func appDidBecomeActiveForInertialSampling() {
+        samplingLifecycleLock.lock()
+        inertialForegroundActive = true
+        samplingLifecycleLock.unlock()
+        beaconQueue.async { [weak self] in self?.requestInertialBurst() }
+    }
+
+    @objc private func appWillResignActiveForInertialSampling() {
+        samplingLifecycleLock.lock()
+        inertialForegroundActive = false
+        samplingLifecycleLock.unlock()
+        inertialMotionMonitor.stop()
+        beaconQueue.async { [weak self] in
+            self?.samplingRuntime?.invalidateInertial(at: SamplingClock.now())
+        }
+    }
+
     @objc private func appDidBecomeActive() {
         appPresence.tryRun()
     }
 
     @objc private func appDidEnterBackground() {
+        appWillResignActiveForInertialSampling()
         isInBackground = true
 
         // Restart duty cycle — precision-based, no FG/BG recalculation needed
@@ -859,6 +932,10 @@ public class BeAroundSDK {
 
     @objc private func appWillEnterForeground() {
         isInBackground = false
+        beaconQueue.async { [weak self] in
+            guard let self, self.isScanning, let runtime = self.samplingRuntime else { return }
+            self.startSamplingMotion(runtime)
+        }
 
         if isScanning {
             startSyncTimer()
@@ -894,6 +971,26 @@ public class BeAroundSDK {
     ///     Default: 12 seconds.
     public func configure(
         businessToken: String,
+        scanPrecision: ScanPrecision,
+        maxQueuedPayloads: MaxQueuedPayloads,
+        technology: String,
+        periodicReconciliationEnabled: Bool,
+        periodicReconciliationInterval: TimeInterval,
+        periodicScanDuration: TimeInterval,
+        presenceHeartbeatInterval: TimeInterval,
+        collectAdvertisingId: Bool,
+        collectLocation: Bool,
+        collectWifi: Bool
+    ) {
+        configure(businessToken: businessToken, scanPrecision: scanPrecision, maxQueuedPayloads: maxQueuedPayloads,
+            technology: technology, periodicReconciliationEnabled: periodicReconciliationEnabled,
+            periodicReconciliationInterval: periodicReconciliationInterval, periodicScanDuration: periodicScanDuration,
+            presenceHeartbeatInterval: presenceHeartbeatInterval, collectAdvertisingId: collectAdvertisingId,
+            collectLocation: collectLocation, collectWifi: collectWifi, adaptiveSamplingEnabled: true, collectMotionSensors: nil)
+    }
+
+    public func configure(
+        businessToken: String,
         scanPrecision: ScanPrecision = .high,
         maxQueuedPayloads: MaxQueuedPayloads = .medium,
         technology: String = "ios-native",
@@ -903,7 +1000,9 @@ public class BeAroundSDK {
         presenceHeartbeatInterval: TimeInterval = PresenceHeartbeatDefaults.interval,
         collectAdvertisingId: Bool = true,
         collectLocation: Bool = true,
-        collectWifi: Bool = true
+        collectWifi: Bool = true,
+        adaptiveSamplingEnabled: Bool = true,
+        collectMotionSensors: Bool? = nil
     ) {
         let config = SDKConfiguration(
             businessToken: businessToken,
@@ -916,7 +1015,9 @@ public class BeAroundSDK {
             presenceHeartbeatInterval: presenceHeartbeatInterval,
             collectAdvertisingId: collectAdvertisingId,
             collectLocation: collectLocation,
-            collectWifi: collectWifi
+            collectWifi: collectWifi,
+            adaptiveSamplingEnabled: adaptiveSamplingEnabled,
+            collectMotionSensors: collectMotionSensors
         )
 
         configuration = config
@@ -928,6 +1029,7 @@ public class BeAroundSDK {
         DataCollectionPolicyStore.apply(config.dataCollectionPolicy)
         apiClient = APIClient(configuration: config)
         setupSDKInfo(from: config)
+        configureSampling(config, startMotion: isScanning)
 
         offlineBatchStorage.maxBatchCount = config.maxQueuedPayloads.value
 
@@ -1058,11 +1160,13 @@ public class BeAroundSDK {
     public func setUserProperties(_ properties: UserProperties) {
         userProperties = (userProperties ?? UserProperties()).merging(properties)
         SDKConfigStorage.saveInternalId(userProperties?.internalId)
+        invalidateSamplingMetadata()
     }
 
     public func clearUserProperties() {
         userProperties = nil
         SDKConfigStorage.saveInternalId(nil)
+        invalidateSamplingMetadata()
     }
 
     /// Restores the persisted user id into memory after a background relaunch.
@@ -1070,6 +1174,7 @@ public class BeAroundSDK {
         guard userProperties?.internalId == nil,
               let internalId = SDKConfigStorage.loadInternalId() else { return }
         userProperties = (userProperties ?? UserProperties()).merging(UserProperties(internalId: internalId))
+        invalidateSamplingMetadata()
     }
 
     /// Registers the device's APNs push token so this device can receive push
@@ -1081,6 +1186,7 @@ public class BeAroundSDK {
     /// 7-day heartbeat window (self-healing), so a dropped sync never permanently loses the token.
     public func setPushToken(_ token: String) {
         PushTokenStore.setToken(token)
+        invalidateSamplingMetadata()
         NSLog("[BeAroundSDK] Push token registered")
         // Se já estamos escaneando e o token ainda não foi enviado (novo/mudou),
         // empurra agora via register (beacons:[]) — senão só iria no próximo
@@ -1186,6 +1292,7 @@ public class BeAroundSDK {
         startSyncTimer()
         DispatchQueue.main.async { self.delegate?.didChangeScanning(isScanning: true) }
         SDKConfigStorage.saveIsScanning(true)
+        renewSamplingLifecycle(startMotion: true)
 
         if #available(iOS 13.0, *) {
             BackgroundTaskManager.shared.scheduleSync()
@@ -1202,6 +1309,8 @@ public class BeAroundSDK {
     }
 
     public func stopScanning() {
+        updatePhysicalZoneCollectionEligibility(scanRegistered: false)
+        renewSamplingLifecycle(startMotion: false)
         appPresence.stop()
         bluetoothManager.setEncounterMesh(enabled: false)
         bluetoothManager.stopScanning()
@@ -1358,6 +1467,61 @@ public class BeAroundSDK {
         AdvertisingIdCollector.authorizationStatus()
     }
 
+    #if DEBUG
+    internal static func samplingTransportFixture(configuration: SDKConfiguration, client: APIClient,
+        storage: OfflineBatchStorage, withRuntime: Bool = true) -> BeAroundSDK {
+        let sdk = BeAroundSDK(preparePlatform: false, storage: storage)
+        sdk.samplingFixture = true
+        sdk.configuration = configuration
+        sdk.apiClient = client
+        sdk.sdkInfo = SDKInfo(appId: configuration.appId, build: 1)
+        if withRuntime { sdk.configureSampling(configuration, deviceID: "device-1") }
+        return sdk
+    }
+
+    internal func inspectSamplingFixture(_ completion: @escaping (AdaptiveSamplingRuntime?, Bool) -> Void) {
+        beaconQueue.async { completion(self.samplingRuntime, self.isSyncing) }
+    }
+
+    internal func submitSamplingFixture(_ envelope: StoredObservationEnvelope, storageID: String) {
+        beaconQueue.async { self.deliverObservation(envelope, storageId: storageID, manifest: nil) }
+    }
+
+    internal func syncSamplingFixture(beacons: [Beacon], device: UserDevice) {
+        beaconQueue.async {
+            self.samplingFixtureDevice = device
+            self.samplingRuntime?.recordLegacyPhysical(beacons, at: SamplingClock.now())
+            self.collectedBeacons = Dictionary(uniqueKeysWithValues: beacons.map { ("\($0.major).\($0.minor)", $0) })
+            self.syncBeacons()
+        }
+    }
+
+    internal func captureAtCapacitySamplingFixture(_ beacons: [Beacon], pending: StoredObservationEnvelope,
+        completion: @escaping (AdaptiveSamplingRuntime?) -> Void) {
+        beaconQueue.async {
+            self.unpersistedObservations = Array(repeating: pending, count: 32)
+            self.capturePhysical(beacons)
+            self.beaconQueue.async {
+                completion(self.samplingRuntime)
+                self.unpersistedObservations.removeAll()
+            }
+        }
+    }
+
+    internal func foregroundSamplingFixture() { appWillEnterForeground() }
+
+    internal func replaySamplingFixture() { drainRetryQueue() }
+
+    internal func endSamplingFixture() {
+        beaconQueue.async {
+            self.apiClient = nil
+            self.bgBatchWorkItem?.cancel()
+            self.syncPendingAfterCurrent = false
+            self.pendingSyncReasons.removeAll()
+        }
+    }
+    #endif
+
     // MARK: - Device Register
 
     /// Sends a POST /ingest with `beacons: []` and `syncTrigger: "register"` when needed.
@@ -1419,6 +1583,7 @@ public class BeAroundSDK {
                 NSLog("[BeAroundSDK] Device register succeeded — persisting lastSentAt + fingerprint")
                 RegisterStore.markRegistered(fingerprint: fingerprint)
                 PushTokenStore.markSent(userDevice.pushToken)
+                if userDevice.pushToken != nil { self?.invalidateSamplingMetadata() }
             case .failure(let error):
                 NSLog("[BeAroundSDK] Device register failed: %@ — will retry on next startScanning()", error.localizedDescription)
                 DiagnosticsStore.shared.recordError("register: \(error.localizedDescription)")
@@ -1571,6 +1736,7 @@ public class BeAroundSDK {
         guard let config = configuration else { return }
 
         stopSyncTimer()
+        let timerGeneration = currentSyncTimerGeneration()
 
         let actualAppState = UIApplication.shared.applicationState
         isInBackground = (actualAppState == .background)
@@ -1589,7 +1755,10 @@ public class BeAroundSDK {
             syncTimer = timer
             timer.schedule(deadline: .now() + config.syncInterval, repeating: config.syncInterval)
             timer.setEventHandler { [weak self] in
-                self?.requestSync(reason: "precision_high_timer")
+                self?.beaconQueue.async { [weak self] in
+                    guard let self, self.currentSyncTimerGeneration() == timerGeneration else { return }
+                    self.requestSync(reason: "precision_high_timer")
+                }
                 self?.appPresence.tryRun()
             }
             timer.resume()
@@ -1610,7 +1779,10 @@ public class BeAroundSDK {
         syncTimer = timer
         timer.schedule(deadline: .now() + cycleInterval, repeating: cycleInterval)
         timer.setEventHandler { [weak self] in
-            self?.requestSync(reason: "precision_\(precision.rawValue)_timer")
+            self?.beaconQueue.async { [weak self] in
+                guard let self, self.currentSyncTimerGeneration() == timerGeneration else { return }
+                self.requestSync(reason: "precision_\(precision.rawValue)_timer")
+            }
             self?.appPresence.tryRun()
         }
         timer.resume()
@@ -1618,7 +1790,15 @@ public class BeAroundSDK {
         NSLog("[BeAroundSDK] Precision %@: continuous scan, sync every %.0fs", precision.rawValue, cycleInterval)
     }
 
+    private func currentSyncTimerGeneration() -> UInt64 {
+        syncTimerLock.lock(); defer { syncTimerLock.unlock() }
+        return syncTimerGeneration
+    }
+
     private func stopSyncTimer() {
+        syncTimerLock.lock()
+        syncTimerGeneration &+= 1
+        syncTimerLock.unlock()
         syncTimer?.cancel()
         syncTimer = nil
     }
@@ -1768,6 +1948,7 @@ public class BeAroundSDK {
     func requestSync(reason: String) {
         beaconQueue.async { [weak self] in
             guard let self else { return }
+            self.requestInertialBurst()
             self.pendingSyncReasons.insert(reason)
 
             if self.isSyncing {
@@ -1961,6 +2142,20 @@ public class BeAroundSDK {
                 return
             }
 
+            let samplingNow = SamplingClock.now()
+            self.persistSamplingPending(at: samplingNow)
+            if let runtime = self.samplingRuntime, runtime.hasCapability(at: samplingNow) {
+                let ready = self.offlineBatchStorage.observationRecords().filter {
+                    $0.envelope.tenantFingerprint == runtime.tenantFingerprint && $0.envelope.deliveryProtocol == .adaptive
+                        && $0.envelope.replayManifest == nil
+                }
+                let prepared = ready.first { AdaptiveSamplingRuntime.isCurrentLive($0.envelope, at: samplingNow, maxAgeMs: runtime.liveEvidenceMaxAgeMs) }
+                    ?? ready.first { $0.envelope.sampling?.kind == .transition }
+                if let prepared {
+                    self.deliverObservation(prepared.envelope, storageId: prepared.storageId, manifest: nil)
+                    return
+                }
+            }
             var beaconsToSend: [Beacon] = []
 
             // Clean up stale beacons and merge BLE Service Data
@@ -1980,9 +2175,15 @@ public class BeAroundSDK {
                 }
 
                 // Only send beacons that haven't been synced yet, and filter invalid RSSI
-                beaconsToSend = Array(collectedBeacons.values).filter { !$0.alreadySynced && ($0.rssi != 0 || $0.discoverySources.contains(.coreLocation)) }
+                beaconsToSend = Array(collectedBeacons.values).filter {
+                    !$0.alreadySynced && ($0.rssi != 0 || $0.discoverySources.contains(.coreLocation))
+                        && (self.samplingRuntime?.legacyEvidenceIsSendable($0, at: samplingNow) ?? true)
+                }
+                beaconsToSend = Array(beaconsToSend.sorted { $0.timestamp < $1.timestamp }.prefix(100))
                 NSLog("[BeAroundSDK] Syncing %d of %d beacons (pending only)", beaconsToSend.count, collectedBeacons.count)
             }
+
+            if self.samplingRuntime?.hasCapability(at: samplingNow) == true { beaconsToSend = [] }
 
             if beaconsToSend.isEmpty {
                 // Encounter mesh: sightings must reach the backend even with no
@@ -2037,59 +2238,69 @@ public class BeAroundSDK {
                 self.syncDidFinishCoordination()
             }
 
-            // Capture the send context BEFORE persisting: the batch is stored with it, so a
-            // retry replays this exact device state, location and trigger.
-            let locationPermission = Self.authorizationStatus()
-            let bluetoothState = bluetoothManager.isPoweredOn ? "powered_on" : "powered_off"
-            let appInForeground = !isInBackground
-
-            var userDevice = deviceInfoCollector.collectDeviceInfo(
-                locationPermission: locationPermission,
-                bluetoothState: bluetoothState,
-                appInForeground: appInForeground
-            )
-            attachEncounterData(to: &userDevice)
-
-            let trigger = self.syncTrigger
-            self.syncTrigger = "unknown"
-
-            // Persist-before-send: durably store this batch BEFORE the upload so the
-            // detection survives app suspension/termination. On a SUCCESSFUL completion we
-            // remove exactly this batch; on failure we leave it for retry. This is the safety
-            // net that guarantees eventual delivery even if the completion arrives after the
-            // app has been relaunched. `persistedBatchId` is the on-disk filename of the batch.
-            // A beacon-less upload (encounters / presence heartbeat) is not persisted, as before.
-            let persistedBatchId = beaconsToSend.isEmpty
-                ? nil
-                : self.offlineBatchStorage.saveBatchReturningId(beaconsToSend, userDevice: userDevice, syncTrigger: trigger)
-            // Persist-before-send failed (disk full / data protection / no App
-            // Support dir): the upload still goes out — blocking it would guarantee
-            // the loss the persistence exists to prevent — but the durability gap is
-            // real (a crash mid-upload loses this batch), so make it VISIBLE.
-            if persistedBatchId == nil && !beaconsToSend.isEmpty {
-                NSLog("[BeAroundSDK] WARNING: persist-before-send failed — batch flies without a durable copy")
-                DiagnosticsStore.shared.recordError("persist-before-send failed (\(beaconCount) beacons unprotected)")
-                ErrorReporter.shared.report(
-                    NSError(domain: "BeAroundSDK", code: BearoundErrorCode.storageFailure.rawValue,
-                            userInfo: [NSLocalizedDescriptionKey: "persist-before-send returned nil"]),
-                    context: "syncBeacons.persist"
-                )
-            }
-
             // Notify delegate that sync is starting
             DispatchQueue.main.async {
                 self.delegate?.willStartSync(beaconCount: beaconCount)
             }
 
-            apiClient.sendBeacons(
-                beaconsToSend,
-                sdkInfo: sdkInfo,
-                userDevice: userDevice,
-                userProperties: userProperties,
-                syncTrigger: trigger,
-                delivery: .immediateFirst,
-                persistedBatchIds: persistedBatchId.map { [$0] } ?? []
-            ) { [weak self] result in
+            let locationPermission = Self.authorizationStatus()
+            let bluetoothState = bluetoothManager.isPoweredOn ? "powered_on" : "powered_off"
+            let appInForeground = !isInBackground
+
+            var userDevice: UserDevice
+            #if DEBUG
+            if let supplied = self.samplingFixtureDevice { userDevice = supplied }
+            else {
+                userDevice = deviceInfoCollector.collectDeviceInfo(
+                locationPermission: locationPermission,
+                bluetoothState: bluetoothState,
+                appInForeground: appInForeground
+            )
+            }
+            #else
+                userDevice = deviceInfoCollector.collectDeviceInfo(
+                locationPermission: locationPermission,
+                bluetoothState: bluetoothState,
+                appInForeground: appInForeground
+            )
+            #endif
+            attachEncounterData(to: &userDevice)
+
+            let trigger = self.syncTrigger
+            self.syncTrigger = "unknown"
+
+            let payload = APIClient.makeObservationPayload(beaconsToSend, sdkInfo: sdkInfo,
+                userDevice: userDevice, userProperties: userProperties, syncTrigger: trigger)
+            let envelope: StoredObservationEnvelope
+            do {
+                if let runtime = self.samplingRuntime {
+                    envelope = try runtime.legacyEnvelope(beacons: beaconsToSend, payload: payload, at: SamplingClock.now())
+                } else if let config = self.configuration {
+                    envelope = try StoredObservationEnvelope(batchId: UUID().uuidString,
+                        storedAtMs: SamplingClock.now().wallTimeMs,
+                        tenantFingerprint: SamplingTenantFingerprint.make(endpoint: config.apiBaseURL,
+                            appID: config.appId, deviceID: userDevice.deviceId, businessToken: config.businessToken),
+                        originalPayload: payload, sampling: nil, policy: config.dataCollectionPolicy, deliveryProtocol: .legacy)
+                } else { throw APIError.invalidResponse }
+            } catch {
+                self.isSyncing = false
+                self.endBackgroundTask()
+                self.notifySyncSettled(success: false)
+                self.syncDidFinishCoordination()
+                DispatchQueue.main.async { self.delegate?.didCompleteSync(beaconCount: beaconCount, success: false, error: error) }
+                return
+            }
+            let persistedBatchId = self.offlineBatchStorage.saveObservation(envelope, policy: DataCollectionPolicyStore.current)
+            if persistedBatchId == nil { DiagnosticsStore.shared.recordError("persist-before-send failed") }
+            let deliveryRuntime = self.samplingRuntime
+            apiClient.sendObservation(envelope, storageId: persistedBatchId, delivery: .immediateFirst,
+                attemptObserver: { [weak self, weak deliveryRuntime] in
+                    self?.beaconQueue.async { [weak self, weak deliveryRuntime] in
+                        guard let self, let deliveryRuntime, self.samplingRuntime === deliveryRuntime else { return }
+                        deliveryRuntime.recordAttempt(envelope, bytes: 0, failed: false, at: SamplingClock.now())
+                        DiagnosticsStore.shared.recordSampling(deliveryRuntime.diagnostics)
+                    }
+                }) { [weak self] result in
                 guard let self else { return }
 
                 switch result {
@@ -2110,6 +2321,7 @@ public class BeAroundSDK {
                     // Push token rode along in this payload and was accepted — record the
                     // heartbeat baseline for EXACTLY the token that was sent.
                     PushTokenStore.markSent(userDevice.pushToken)
+                    if userDevice.pushToken != nil { self.invalidateSamplingMetadata() }
                     DiagnosticsStore.shared.recordSync(success: true, beaconCount: beaconCount)
 
                     // Notify delegate of successful sync
@@ -2185,6 +2397,9 @@ public class BeAroundSDK {
                             NSLog("[BeAroundSDK] Stale sync failure completion (gen %d, current %d) — state untouched", watchdogGeneration, self.syncGeneration)
                             return
                         }
+                        deliveryRuntime?.recordDeliveryFailure()
+                        deliveryRuntime?.deliveryFailed(error)
+                        if let deliveryRuntime { DiagnosticsStore.shared.recordSampling(deliveryRuntime.diagnostics) }
                         self.endBackgroundTask()
                         self.isSyncing = false
                         self.notifySyncSettled(success: false)
@@ -2221,7 +2436,7 @@ public class BeAroundSDK {
         }
     }
 
-    // MARK: - Retry Queue Drain (chunked)
+    // MARK: - Immutable Observation Delivery
 
     /// Maximum number of batches loaded per drain step (merged only when their captured
     /// context is identical, see `retryGroup`).
@@ -2276,13 +2491,13 @@ public class BeAroundSDK {
     /// On failure, stops draining (will retry on next sync cycle).
     /// - Parameter singleBatchMode: send ONE batch per request. Entered after a chunk is
     ///   rejected with a permanent HTTP status: the chunk mixes several persisted batches,
-    ///   so the poison one can't be identified — single mode isolates it (delivered ones
+    ///   so the poison one can't be identified; single mode isolates it (delivered ones
     ///   drain, the rejected one is quarantined) and the queue keeps moving.
-    private func drainRetryQueue(singleBatchMode: Bool = false) {
+    private func drainCapturedRetryQueue(singleBatchMode: Bool = false) {
         beaconQueue.async { [weak self] in
             guard let self else { return }
             guard !self.isSyncing else {
-                NSLog("[BeAroundSDK] Retry drain skipped — sync in progress")
+                NSLog("[BeAroundSDK] Retry drain skipped; sync in progress")
                 return
             }
             guard let apiClient = self.apiClient, let sdkInfo = self.sdkInfo else {
@@ -2318,13 +2533,13 @@ public class BeAroundSDK {
             self.isSyncing = true
             let beaconCount = beaconsToSend.count
 
-            // Same stuck-sync watchdog as syncBeacons — without it, a drain upload
+            // Same stuck-sync watchdog as syncBeacons; without it, a drain upload
             // whose completion never arrives freezes the pipeline through this door.
             self.syncGeneration += 1
             let drainGeneration = self.syncGeneration
             self.beaconQueue.asyncAfter(deadline: .now() + self.syncWatchdogTimeout) { [weak self] in
                 guard let self, self.isSyncing, self.syncGeneration == drainGeneration else { return }
-                NSLog("[BeAroundSDK] Drain watchdog: releasing isSyncing after %.0fs (upload still pending — batches remain persisted)", self.syncWatchdogTimeout)
+                NSLog("[BeAroundSDK] Drain watchdog: releasing isSyncing after %.0fs (upload still pending; batches remain persisted)", self.syncWatchdogTimeout)
                 self.isSyncing = false
                 self.endBackgroundTask()
                 self.notifySyncSettled(success: false)
@@ -2370,7 +2585,7 @@ public class BeAroundSDK {
                     // exact batches were delivered, so remove exactly them (by id).
                     self.offlineBatchStorage.removeBatches(ids: chunkIds)
 
-                    // Record to the internal detection log (diagnostic only — no user-facing notification).
+                    // Record to the internal detection log (diagnostic only; no user-facing notification).
                     DetectionLogStore.append(type: "Sync OK", detail: "\(beaconCount) beacon(s) enviados ao ingester")
 
                     // Record the heartbeat baseline for EXACTLY the token that was sent.
@@ -2384,7 +2599,7 @@ public class BeAroundSDK {
                     self.beaconQueue.async {
                         // Stale-completion guard (drain generation).
                         guard self.syncGeneration == drainGeneration else {
-                            NSLog("[BeAroundSDK] Stale drain completion (gen %d, current %d) — state untouched", drainGeneration, self.syncGeneration)
+                            NSLog("[BeAroundSDK] Stale drain completion (gen %d, current %d); state untouched", drainGeneration, self.syncGeneration)
                             return
                         }
                         self.endBackgroundTask()
@@ -2405,9 +2620,9 @@ public class BeAroundSDK {
                     }
 
                 case .failure(let error):
-                    NSLog("[BeAroundSDK] Retry chunk FAILED: %@ — drain stopped", error.localizedDescription)
+                    NSLog("[BeAroundSDK] Retry chunk FAILED: %@; drain stopped", error.localizedDescription)
 
-                    // Record to the internal detection log (diagnostic only — no user-facing notification).
+                    // Record to the internal detection log (diagnostic only; no user-facing notification).
                     DetectionLogStore.append(type: "Sync falhou", detail: "\(beaconCount) beacon(s) · \(error.localizedDescription)")
 
                     DiagnosticsStore.shared.recordSync(success: false, beaconCount: beaconCount)
@@ -2420,7 +2635,7 @@ public class BeAroundSDK {
                     }
 
                     // Head-of-line guard: classify the failure. A permanent HTTP status
-                    // (payload/credential problem — an identical retry fails identically)
+                    // (payload/credential problem; an identical retry fails identically)
                     // must NOT park the whole queue behind the poison batch for 7 days.
                     var permanentStatus: Int?
                     if case APIError.httpError(let code, _) = error, Self.permanentHTTPCodes.contains(code) {
@@ -2430,27 +2645,27 @@ public class BeAroundSDK {
                     self.beaconQueue.async {
                         // Stale-completion guard (drain generation).
                         guard self.syncGeneration == drainGeneration else {
-                            NSLog("[BeAroundSDK] Stale drain failure completion (gen %d, current %d) — state untouched", drainGeneration, self.syncGeneration)
+                            NSLog("[BeAroundSDK] Stale drain failure completion (gen %d, current %d); state untouched", drainGeneration, self.syncGeneration)
                             return
                         }
                         self.endBackgroundTask()
                         self.isSyncing = false
 
                         if let status = permanentStatus {
-                            // Backend reachable — not a transport failure for the breaker.
+                            // Backend reachable; not a transport failure for the breaker.
                             if chunkCount == 1 {
                                 // This exact batch is the poison: quarantine it, keep draining.
                                 let poisonId = chunkIds[0]
-                                NSLog("[BeAroundSDK] Batch %@ permanently rejected (HTTP %d) — quarantining, drain continues", poisonId, status)
+                                NSLog("[BeAroundSDK] Batch %@ permanently rejected (HTTP %d); quarantining, drain continues", poisonId, status)
                                 DiagnosticsStore.shared.recordError("Batch quarantined (HTTP \(status)): \(poisonId)")
-                                DetectionLogStore.append(type: "Sync falhou", detail: "batch rejeitado pelo backend (HTTP \(status)) — quarentenado")
+                                DetectionLogStore.append(type: "Sync falhou", detail: "batch rejeitado pelo backend (HTTP \(status)); quarentenado")
                                 self.offlineBatchStorage.quarantineBatch(id: poisonId)
                                 self.syncDidFinishCoordination()
                                 self.drainRetryQueue()
                             } else {
-                                // Several batches in one request — can't tell WHICH one is
+                                // Several batches in one request; can't tell WHICH one is
                                 // poison. Re-drain one batch per request to isolate it.
-                                NSLog("[BeAroundSDK] Chunk of %d rejected permanently (HTTP %d) — switching to single-batch drain", chunkCount, status)
+                                NSLog("[BeAroundSDK] Chunk of %d rejected permanently (HTTP %d); switching to single-batch drain", chunkCount, status)
                                 self.syncDidFinishCoordination()
                                 self.drainRetryQueue(singleBatchMode: true)
                             }
@@ -2467,6 +2682,391 @@ public class BeAroundSDK {
                 }
             }
         }
+    }
+
+    private func drainRetryQueue(singleBatchMode: Bool = false) {
+        beaconQueue.async { [weak self] in
+            guard let self, !self.isSyncing, let runtime = self.samplingRuntime else { return }
+            if !self.offlineBatchStorage.loadOldestBatchesWithIds(1).isEmpty {
+                self.drainCapturedRetryQueue(singleBatchMode: singleBatchMode)
+                return
+            }
+            let now = SamplingClock.now()
+            let records = self.offlineBatchStorage.loadReplayGroup(tenantFingerprint: runtime.tenantFingerprint,
+                policy: DataCollectionPolicyStore.current, capabilityAvailable: runtime.hasCapability(at: now),
+                maximumJSONBytes: runtime.maximumJSONBytes)
+            guard let record = records.first else { self.notifySyncSettled(success: true); return }
+            guard AdaptiveSamplingRuntime.canDeliver(record.envelope, at: now,
+                    capabilityAvailable: runtime.hasCapability(at: now)) else {
+                DiagnosticsStore.shared.recordError("historical legacy observation retained: freshness unavailable")
+                self.notifySyncSettled(success: true)
+                return
+            }
+            self.deliverObservation(record.envelope, storageId: record.storageId, manifest: record.manifest)
+        }
+    }
+
+    private func deliverObservation(_ envelope: StoredObservationEnvelope, storageId: String?, manifest: SamplingReplayManifest?) {
+        guard !isSyncing, let apiClient else { return }
+        let dispatchClock = SamplingClock.now()
+        if envelope.deliveryProtocol == .adaptive {
+            guard samplingRuntime?.hasCapability(at: dispatchClock) == true else { return }
+            if manifest == nil, envelope.sampling?.kind == .live,
+               !AdaptiveSamplingRuntime.isCurrentLive(envelope, at: dispatchClock, maxAgeMs: samplingRuntime?.liveEvidenceMaxAgeMs ?? 30_000) {
+                drainRetryQueue()
+                return
+            }
+        }
+        let runtime = samplingRuntime
+        beginBackgroundTask()
+        isSyncing = true
+        syncGeneration += 1
+        let watchdogGeneration = syncGeneration
+        let beaconCount = envelope.originalPayload["beacons"]?.array?.count ?? 0
+        DispatchQueue.main.async { self.delegate?.willStartSync(beaconCount: beaconCount) }
+        beaconQueue.asyncAfter(deadline: .now() + syncWatchdogTimeout) { [weak self] in
+            guard let self, self.isSyncing, self.syncGeneration == watchdogGeneration else { return }
+            self.isSyncing = false
+            self.endBackgroundTask()
+            self.notifySyncSettled(success: false)
+            self.syncDidFinishCoordination()
+        }
+        apiClient.sendObservation(envelope, storageId: storageId, manifest: manifest,
+            attemptObserver: { [weak self, weak runtime] in
+                self?.beaconQueue.async { [weak self, weak runtime] in
+                    guard let self, let runtime, self.samplingRuntime === runtime else { return }
+                    runtime.recordAttempt(envelope, bytes: 0, failed: false, at: SamplingClock.now())
+                    DiagnosticsStore.shared.recordSampling(runtime.diagnostics)
+                }
+            }) { [weak self] result in
+            guard let self else { return }
+            let successful: Bool
+            var deliveryError: Error?
+            switch result {
+            case .success:
+                successful = true
+                if envelope.deliveryProtocol == .adaptive, let tenant = envelope.tenantFingerprint {
+                    _ = self.offlineBatchStorage.acknowledge(batchIds: [envelope.batchId], tenantFingerprint: tenant)
+                } else if let storageId { self.offlineBatchStorage.removeBatch(id: storageId) }
+            case .failure(let error):
+                successful = false
+                deliveryError = error
+                if case APIError.httpError(let status, _) = error, [400, 401, 413, 422].contains(status), let storageId {
+                    _ = self.offlineBatchStorage.quarantineBatch(id: storageId)
+                }
+            }
+            self.beaconQueue.async {
+                if case .failure(let error) = result {
+                    runtime?.recordDeliveryFailure()
+                    runtime?.deliveryFailed(error, at: SamplingClock.now())
+                    DiagnosticsStore.shared.recordError(error.localizedDescription)
+                }
+                if let runtime, self.samplingRuntime === runtime { DiagnosticsStore.shared.recordSampling(runtime.diagnostics) }
+                guard self.syncGeneration == watchdogGeneration else { return }
+                if successful {
+                    if PushTokenStore.markSent(envelope) {
+                        self.invalidateSamplingMetadata()
+                    }
+                    if let sampling = envelope.sampling, sampling.kind == .live {
+                        for key in self.collectedBeacons.keys {
+                            guard var beacon = self.collectedBeacons[key] else { continue }
+                            let timestamp = Int64(beacon.timestamp.timeIntervalSince1970 * 1_000)
+                            if timestamp >= sampling.observedFrom && timestamp <= sampling.observedTo {
+                                beacon.alreadySynced = true
+                                beacon.syncedAt = Date()
+                                self.collectedBeacons[key] = beacon
+                            }
+                        }
+                        let updated = Array(self.collectedBeacons.values)
+                        DispatchQueue.main.async { self.delegate?.didUpdateBeacons(updated) }
+                    }
+                }
+                self.isSyncing = false
+                self.endBackgroundTask()
+                self.consecutiveFailures = successful ? 0 : self.consecutiveFailures + 1
+                self.lastFailureTime = successful ? nil : Date()
+                DiagnosticsStore.shared.recordSync(success: successful, beaconCount: beaconCount)
+                self.notifySyncSettled(success: successful)
+                self.syncDidFinishCoordination()
+                DispatchQueue.main.async {
+                    self.delegate?.didCompleteSync(beaconCount: beaconCount, success: successful,
+                        error: deliveryError)
+                }
+                if successful, self.shouldRetryFailedBatches() { self.drainRetryQueue() }
+            }
+        }
+    }
+
+    private func configureSampling(_ config: SDKConfiguration, startMotion: Bool = false, deviceID: String? = nil) {
+        samplingLifecycleLock.lock()
+        motionCollectionRunning = false
+        samplingLifecycleLock.unlock()
+        inertialMotionMonitor.stop()
+        motionMonitor.stop()
+        beaconQueue.async { [weak self] in
+            guard let self else { return }
+            let now = SamplingClock.now()
+            self.samplingRuntime?.close(at: now)
+            self.persistSamplingPending(at: now)
+            self.motionMonitor.stop()
+            self.inertialMotionMonitor.stop()
+            self.syncGeneration += 1
+            if self.isSyncing {
+                self.isSyncing = false
+                self.endBackgroundTask()
+                self.notifySyncSettled(success: false)
+                self.syncDidFinishCoordination()
+            }
+            self.samplingGeneration &+= 1
+            self.samplingLifecycleLock.lock()
+            self.publishedSamplingGeneration = self.samplingGeneration
+            self.motionCollectionRunning = startMotion && config.adaptiveSamplingEnabled && config.dataCollectionPolicy.motionSensors
+            self.samplingLifecycleLock.unlock()
+            let generation = self.samplingGeneration
+            let runtime = AdaptiveSamplingRuntime(configuration: config, deviceID: deviceID ?? DeviceIdentifier.getDeviceId(),
+                generation: generation, physicalZoneCollectionEligibilityProvider: { [weak self] in
+                    self?.physicalZoneCollectionEligibility(generation: generation)
+                })
+            if let previous = self.samplingRuntime { runtime.inheritLegacyPhysical(from: previous) }
+            self.samplingRuntime = runtime
+            let client = self.apiClient
+            client?.submissionContextProvider = { [weak self, weak runtime, weak client] prepare in
+                guard let self else { prepare(nil); return }
+                self.beaconQueue.async { [weak self, weak runtime, weak client] in
+                    guard let self, let runtime, let client, self.apiClient === client,
+                          self.samplingRuntime === runtime, self.samplingGeneration == runtime.generation else {
+                        prepare(nil); return
+                    }
+                    let clock = SamplingClock.now()
+                    let currentPolicy = DataCollectionPolicyStore.current
+                    let adaptiveAllowed = runtime.hasCapability(at: clock)
+                    prepare(RequestSubmissionContext(policy: currentPolicy,
+                        gzipLease: runtime.requestEncodingLease(at: clock),
+                        maximumJSONBytes: runtime.maximumJSONBytes,
+                        adaptiveAllowed: adaptiveAllowed,
+                        liveEvidenceMaxAgeMs: runtime.liveEvidenceMaxAgeMs,
+                        isCurrent: { [weak self, weak runtime, weak client] in
+                            guard let self, let runtime, let client else { return false }
+                            return self.apiClient === client && self.samplingRuntime === runtime
+                                && self.samplingGeneration == runtime.generation
+                                && DataCollectionPolicyStore.current == currentPolicy
+                        }, adaptiveAllowedAtSubmission: { [weak runtime] in
+                            runtime?.hasCapability(at: SamplingClock.now()) == true
+                        }))
+                }
+            }
+            client?.gzipRejectionObserver = { [weak self, weak runtime, weak client] lease, retry in
+                guard let self else { retry(); return }
+                self.beaconQueue.async { [weak self, weak runtime, weak client] in
+                    if let self, let runtime, let client, self.apiClient === client,
+                       self.samplingRuntime === runtime, self.samplingGeneration == runtime.generation {
+                        runtime.rejectRequestEncoding(lease)
+                    }
+                    retry()
+                }
+            }
+            client?.bodyAttemptObserver = { [weak self, weak runtime, weak client] bytes in
+                self?.beaconQueue.async { [weak self, weak runtime, weak client] in
+                    guard let self, let runtime, let client, self.apiClient === client,
+                          self.samplingRuntime === runtime else { return }
+                    runtime.recordHTTPAttempt(bytes: bytes)
+                    DiagnosticsStore.shared.recordSampling(runtime.diagnostics)
+                }
+            }
+            client?.budgetRejectionObserver = { [weak self, weak runtime] bytes in
+                guard let self, let runtime, self.samplingRuntime === runtime else { return }
+                _ = runtime.payloadFitsCapability(bytes)
+                DiagnosticsStore.shared.recordSampling(runtime.diagnostics)
+            }
+            self.apiClient?.responseObserver = { [weak self, weak runtime] data, requested, received in
+                self?.beaconQueue.async { [weak self, weak runtime] in
+                    guard let self, let runtime, self.samplingGeneration == runtime.generation else { return }
+                    runtime.acceptResponse(data, requestedAt: requested, receivedAt: received, generation: runtime.generation)
+                    DiagnosticsStore.shared.recordSampling(runtime.diagnostics)
+                }
+            }
+            if startMotion { self.startSamplingMotion(runtime) }
+            self.requestInertialBurst()
+            DiagnosticsStore.shared.recordSampling(runtime.diagnostics)
+        }
+    }
+
+    private func startSamplingMotion(_ runtime: AdaptiveSamplingRuntime) {
+        guard let config = configuration, samplingRuntime === runtime else { return }
+            if isMotionCollectionEligible(generation: runtime.generation, foregroundOnly: false) && config.adaptiveSamplingEnabled && config.dataCollectionPolicy.motionSensors {
+                _ = motionMonitor.start(generation: runtime.generation, collectionAllowed: { [weak self] in
+                    self?.isMotionCollectionEligible(generation: runtime.generation, foregroundOnly: false) == true
+                }) { [weak self, weak runtime] activity, clock, generation in
+                    self?.beaconQueue.async { [weak self, weak runtime] in
+                        guard let self, let runtime, self.samplingGeneration == generation else { return }
+                        runtime.observeNative(activity, at: clock, generation: generation)
+                        self.persistSamplingPending(at: clock)
+                    }
+                }
+            }
+    }
+
+    private func isMotionCollectionEligible(generation: UInt64, foregroundOnly: Bool) -> Bool {
+        samplingLifecycleLock.lock()
+        let allowed = publishedSamplingGeneration == generation && motionCollectionRunning
+            && (!foregroundOnly || inertialForegroundActive)
+        samplingLifecycleLock.unlock()
+        return allowed && SDKConfigStorage.loadIsScanning() && DataCollectionPolicyStore.current.motionSensors
+    }
+
+    private func requestInertialBurst() {
+        guard let runtime = samplingRuntime else { return }
+        let generation = runtime.generation
+        inertialMotionMonitor.requestBurst(generation: generation, eligible: { [weak self] in
+            self?.isMotionCollectionEligible(generation: generation, foregroundOnly: true) == true
+        }) { [weak self, weak runtime] window, clock in
+            self?.beaconQueue.async { [weak self, weak runtime] in
+                guard let self, let runtime, self.samplingRuntime === runtime,
+                      self.isMotionCollectionEligible(generation: generation, foregroundOnly: true) else { return }
+                runtime.observeInertial(window, at: clock)
+                self.persistSamplingPending(at: clock)
+                DiagnosticsStore.shared.recordSampling(runtime.diagnostics)
+            }
+        }
+    }
+
+    private func renewSamplingLifecycle(startMotion: Bool) {
+        if let configuration { configureSampling(configuration, startMotion: startMotion) }
+    }
+
+    private func updatePhysicalZoneCollectionEligibility(bluetoothAvailable: Bool? = nil, scanRegistered: Bool? = nil) {
+        samplingLifecycleLock.lock()
+        defer { samplingLifecycleLock.unlock() }
+        let previousBluetooth = samplingBluetoothAvailable
+        let previousScan = samplingPhysicalScanRegistered
+        if let bluetoothAvailable {
+            samplingBluetoothAvailable = bluetoothAvailable
+            if !bluetoothAvailable { samplingPhysicalScanRegistered = false }
+        }
+        if let scanRegistered { samplingPhysicalScanRegistered = scanRegistered && samplingBluetoothAvailable }
+        guard previousBluetooth != samplingBluetoothAvailable || previousScan != samplingPhysicalScanRegistered else { return }
+        samplingPhysicalCollectionRevision &+= 1
+        samplingPhysicalZoneEligibility = samplingBluetoothAvailable && samplingPhysicalScanRegistered
+            ? PhysicalZoneCollectionEligibility(revision: samplingPhysicalCollectionRevision, enabledAt: .now()) : nil
+    }
+
+    private func physicalZoneCollectionEligibility(generation: UInt64) -> PhysicalZoneCollectionEligibility? {
+        guard SDKConfigStorage.loadIsScanning() else { return nil }
+        samplingLifecycleLock.lock()
+        defer { samplingLifecycleLock.unlock() }
+        guard publishedSamplingGeneration == generation else { return nil }
+        return samplingPhysicalZoneEligibility
+    }
+
+    private func invalidateSamplingMetadata() {
+        beaconQueue.async { [weak self] in
+            guard let self else { return }
+            let now = SamplingClock.now()
+            self.samplingRuntime?.invalidateContextMetadata(at: now)
+            self.persistSamplingPending(at: now)
+        }
+    }
+
+    private func flushSamplingTransition() {
+        beaconQueue.async { [weak self] in
+            guard let self else { return }
+            let now = SamplingClock.now()
+            self.samplingRuntime?.close(at: now, kind: .transition)
+            self.persistSamplingPending(at: now)
+            self.requestSync(reason: "sampling_transition")
+        }
+    }
+
+    private func capturePhysical(_ beacons: [Beacon]) {
+        let clock = SamplingClock.now()
+        let callbackID = UUID().uuidString
+        samplingLifecycleLock.lock()
+        let callbackGeneration = publishedSamplingGeneration
+        samplingLifecycleLock.unlock()
+        beaconQueue.async { [weak self] in
+            guard let self, let runtime = self.samplingRuntime, let sdkInfo = self.sdkInfo,
+                  runtime.generation == callbackGeneration else { return }
+            #if DEBUG
+            guard self.samplingFixture || SDKConfigStorage.loadIsScanning() else { return }
+            #else
+            guard SDKConfigStorage.loadIsScanning() else { return }
+            #endif
+            runtime.recordLegacyPhysical(beacons, at: clock)
+            guard self.unpersistedObservations.count < 32 else { return }
+            self.requestInertialBurst()
+            runtime.observePhysical(beacons, callbackID: callbackID, at: clock, existingEncounterFieldsProvider: {
+                guard let mesh = self.bluetoothManager.encounterMesh else { return ["encounters": [], "encounterIds": []] }
+                return ["encounters": mesh.drainEncounters().map { $0.toDictionary() },
+                    "encounterIds": mesh.currentEncounterIds()]
+            }) {
+                let device = self.deviceInfoCollector.collectDeviceInfo(locationPermission: Self.authorizationStatus(),
+                    bluetoothState: self.bluetoothManager.isPoweredOn ? "powered_on" : "powered_off",
+                    appInForeground: !self.isInBackground)
+                return APIClient.makeObservationPayload([], sdkInfo: sdkInfo, userDevice: device,
+                    userProperties: self.userProperties, syncTrigger: "adaptive_physical")
+            }
+            self.persistSamplingPending(at: clock)
+            if runtime.hasCapability(at: clock) { self.requestSync(reason: "adaptive_physical") }
+        }
+    }
+
+    private func recordCachedSamplingPublication() {
+        guard let runtime = samplingRuntime else { return }
+        runtime.observePhysical([], callbackID: "derived_snapshot", at: SamplingClock.now(), isPhysical: false, contextProvider: { [:] })
+        DiagnosticsStore.shared.recordSampling(runtime.diagnostics)
+    }
+
+    #if DEBUG
+    internal func captureAdaptiveBenchCounters(completion: @escaping (Data?) -> Void) {
+        AdaptiveSamplingBench.captureCounters(on: beaconQueue, enabled: AdaptiveSamplingBench.isEnabled,
+            runtime: { [weak self] in self?.samplingRuntime }, completion: completion)
+    }
+
+    internal func injectAdaptiveBenchBeacon(_ beacon: Beacon, physical: Bool) {
+        guard AdaptiveSamplingBench.isEnabled else { return }
+        if physical {
+            capturePhysical([beacon])
+            beaconQueue.async { [weak self] in
+                guard let self, SDKConfigStorage.loadIsScanning(),
+                      beacon.major < Int(EncounterMeshManager.virtualBeaconMajorFloor) else { return }
+                let key = "\(beacon.major).\(beacon.minor)"
+                let existing = self.collectedBeacons[key]
+                var captured = beacon
+                if self.sampleIsDirty(existing: existing, newRSSI: beacon.rssi, newMetadata: beacon.metadata) {
+                    captured.syncedAt = existing?.syncedAt
+                    captured.alreadySynced = false
+                } else {
+                    let pending = self.pendingStateForSample(existing: existing)
+                    captured.syncedAt = pending.syncedAt
+                    captured.alreadySynced = pending.alreadySynced
+                }
+                self.collectedBeacons[key] = captured
+                self.requestSync(reason: "adaptive_bench_physical")
+            }
+        } else {
+            beaconQueue.async { [weak self] in
+                self?.samplingRuntime?.observePhysical([beacon], callbackID: UUID().uuidString,
+                    at: SamplingClock.now(), isPhysical: false, contextProvider: { [:] })
+                if let runtime = self?.samplingRuntime { DiagnosticsStore.shared.recordSampling(runtime.diagnostics) }
+            }
+        }
+    }
+
+    internal func closeAdaptiveBenchWindow() {
+        guard AdaptiveSamplingBench.isEnabled else { return }
+        flushSamplingTransition()
+    }
+    #endif
+
+    private func persistSamplingPending(at clock: SamplingClock) {
+        if let runtime = samplingRuntime {
+            unpersistedObservations += runtime.takePending(at: clock)
+            DiagnosticsStore.shared.recordSampling(runtime.diagnostics)
+        }
+        unpersistedObservations.removeAll { envelope in
+            offlineBatchStorage.saveObservation(envelope, policy: DataCollectionPolicyStore.current) != nil
+        }
+        if !unpersistedObservations.isEmpty { DiagnosticsStore.shared.recordError("observation persistence pending") }
     }
 
     // MARK: - Background Execution Support
@@ -2788,6 +3388,9 @@ public class BeAroundSDK {
     }
 
     private func beginBackgroundTask() {
+        #if DEBUG
+        if samplingFixture { return }
+        #endif
         // Acquire the UIBackgroundTask assertion SYNCHRONOUSLY before returning, so the
         // caller (syncBeacons / drainRetryQueue, both on beaconQueue) does not reach
         // task.resume() before the assertion is held. The previous version hopped to
@@ -2910,6 +3513,7 @@ extension BeAroundSDK: BluetoothManagerDelegate {
     }
 
     func didUpdateBluetoothState(isPoweredOn: Bool) {
+        updatePhysicalZoneCollectionEligibility(bluetoothAvailable: isPoweredOn)
         if !isPoweredOn {
             NSLog("[BeAroundSDK] Bluetooth powered off")
         }

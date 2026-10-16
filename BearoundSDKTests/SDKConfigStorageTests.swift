@@ -14,6 +14,15 @@ import Testing
 // ("com.bearound.sdk.config") — parallel execution makes them clobber each other.
 @Suite("SDKConfigStorage Tests", .serialized)
 struct SDKConfigStorageTests {
+    @Test("Adaptive sampling option persists and old configuration restores the enabled default")
+    func adaptiveOptionPersistence() {
+        SDKConfigStorage.save(SDKConfiguration(businessToken: "t", adaptiveSamplingEnabled: false))
+        #expect(SDKConfigStorage.load()?.adaptiveSamplingEnabled == false)
+        UserDefaults(suiteName: "com.bearound.sdk.config")?.removeObject(forKey: "adaptive_sampling_enabled")
+        #expect(SDKConfigStorage.load()?.adaptiveSamplingEnabled == true)
+        SDKConfigStorage.clear()
+    }
+
 
     @Test("Save and load configuration")
     func saveAndLoadConfiguration() {
@@ -221,4 +230,28 @@ struct SDKConfigStorageTests {
         #expect(restored?.collectLocation == true)
         #expect(restored?.collectWifi == true)
     }
+    @Test("Motion policy persists explicit values and missing legacy fields resolve from the original host switches")
+    func motionPolicyPersistence() {
+        defer { SDKConfigStorage.clear() }
+        for explicit in [false, true] {
+            SDKConfigStorage.save(SDKConfiguration(businessToken: "test", collectLocation: false,
+                collectWifi: false, collectMotionSensors: explicit))
+            #expect(SDKConfigStorage.load()?.collectMotionSensors == explicit)
+        }
+        UserDefaults(suiteName: "com.bearound.sdk.config")?.removeObject(forKey: "collect_motion_sensors")
+        #expect(SDKConfigStorage.load()?.collectMotionSensors == nil)
+        #expect(SDKConfigStorage.load()?.dataCollectionPolicy.motionSensors == false)
+        SDKConfigStorage.save(SDKConfiguration(businessToken: "test", collectMotionSensors: false))
+        UserDefaults(suiteName: "com.bearound.sdk.config")?.removeObject(forKey: "collect_motion_sensors")
+        #expect(SDKConfigStorage.load()?.collectMotionSensors == nil)
+        #expect(SDKConfigStorage.load()?.dataCollectionPolicy.motionSensors == true)
+        SDKConfigStorage.save(SDKConfiguration(businessToken: "test"))
+        let restored = SDKConfigStorage.load()
+        #expect(restored?.collectMotionSensors == nil)
+        #expect(UserDefaults(suiteName: "com.bearound.sdk.config")?.object(forKey: "collect_motion_sensors") == nil)
+        let allOff = SDKConfiguration(businessToken: "test", collectLocation: false, collectWifi: false,
+            collectMotionSensors: restored?.collectMotionSensors)
+        #expect(!allOff.dataCollectionPolicy.motionSensors)
+    }
+
 }
