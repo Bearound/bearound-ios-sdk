@@ -224,7 +224,7 @@ final class AdaptiveSamplingPolicy {
 
     func plan(
         at now: SamplingClock, configuration: SamplingConfiguration,
-        policy: DataCollectionPolicy = .allEnabled
+        policy: DataCollectionPolicy = .allEnabled, hasFreshPhysicalZone: Bool = false
     ) -> SamplingPlan {
         let motion = evidence(at: now, policy: policy)
         let baseline = max(1, configuration.legacySyncIntervalMs)
@@ -234,7 +234,8 @@ final class AdaptiveSamplingPolicy {
             return SamplingPlan(mode: .legacy, contextIntervalMs: nil, summaryIntervalMs: baseline,
                                 liveIntervalMs: baseline, flushRelevantTransition: false)
         }
-        let live = min(baseline, capability.advertisedServicesCadenceMs, 60_000, capability.mapTTLms / 3)
+        let live = min(baseline, capability.advertisedServicesCadenceMs,
+                       hasFreshPhysicalZone ? 30_000 : 60_000, capability.mapTTLms / 3)
         let ceiling = capability.sessionTimeoutMs / 3
         let mode: SamplingPlan.Mode
         let context: Int64

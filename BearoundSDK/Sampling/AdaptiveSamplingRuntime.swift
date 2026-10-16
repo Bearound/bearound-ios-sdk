@@ -83,6 +83,7 @@ final class AdaptiveSamplingRuntime {
     private var lastSummaryAtMs: Int64?
     private var lastClock: SamplingClock?
     private var freshSourceTimes: [String: Int64] = [:]
+    private var physicalZoneEvidence: (beacon: Beacon, clock: SamplingClock)?
     private var sourceSet = Set<String>()
     private var venueRSSIs: [String: Int] = [:]
     private var previousState: MotionState?
@@ -201,7 +202,8 @@ final class AdaptiveSamplingRuntime {
             adaptiveSamplingEnabled: configuration.adaptiveSamplingEnabled,
             capability: lease.map { SamplingCapability(sessionTimeoutMs: $0.sessionTimeoutMs,
                 advertisedServicesCadenceMs: $0.servicesCadenceMs, mapTTLms: $0.mapTtlMs) }),
-            policy: configuration.dataCollectionPolicy)
+            policy: configuration.dataCollectionPolicy,
+            hasFreshPhysicalZone: physicalZoneIsFresh(at: now))
         let evidence = policy.evidence(at: now, policy: configuration.dataCollectionPolicy)
         diagnostics.state = evidence.state.rawValue
         diagnostics.source = evidence.source.rawValue
@@ -272,6 +274,7 @@ final class AdaptiveSamplingRuntime {
             policy.reset(generation: generation)
             invalidateCapability(reason: "clock_uncertain")
             freshSourceTimes.removeAll()
+            physicalZoneEvidence = nil
             venueRSSIs.removeAll()
             sourceSet.removeAll()
             contextPayload = nil
@@ -292,7 +295,15 @@ final class AdaptiveSamplingRuntime {
                 && timestamp > (freshSourceTimes[key($0)] ?? 0)
         }
         guard !fresh.isEmpty else { diagnostics.cachedCallbacks += 1; return }
-        for beacon in fresh { freshSourceTimes[key(beacon)] = Int64(beacon.timestamp.timeIntervalSince1970 * 1_000) }
+        for beacon in fresh {
+            freshSourceTimes[key(beacon)] = Int64(beacon.timestamp.timeIntervalSince1970 * 1_000)
+            if (0 ..< Int(EncounterMeshManager.virtualBeaconMajorFloor)).contains(beacon.major),
+               (0 ... 65535).contains(beacon.minor), (-127 ... 0).contains(beacon.rssi),
+               beacon.accuracy.isFinite, beacon.accuracy >= -1,
+               physicalZoneEvidence.map({ beacon.timestamp > $0.beacon.timestamp }) ?? true {
+                physicalZoneEvidence = (beacon, now)
+            }
+        }
         freshSourceTimes = freshSourceTimes.filter { now.wallTimeMs - $0.value <= 30_000 }
         if freshSourceTimes.count > 4096 { freshSourceTimes = Dictionary(uniqueKeysWithValues: freshSourceTimes.sorted { $0.value > $1.value }.prefix(4096).map { ($0.key, $0.value) }) }
         let plan = samplingPlan(at: now)
@@ -465,6 +476,18 @@ final class AdaptiveSamplingRuntime {
     func physicalEvidenceIsFresh(_ beacon: Beacon, at now: SamplingClock) -> Bool {
         let observed = Int64(beacon.timestamp.timeIntervalSince1970 * 1_000)
         return freshSourceTimes[key(beacon)] == observed && observed <= now.wallTimeMs && now.wallTimeMs - observed <= 30_000
+    }
+
+    private func physicalZoneIsFresh(at now: SamplingClock) -> Bool {
+        guard let physicalZoneEvidence, physicalEvidenceIsFresh(physicalZoneEvidence.beacon, at: now),
+              now.isReliable, physicalZoneEvidence.clock.bootIdentifier == now.bootIdentifier,
+              now.monotonicTimeMs >= physicalZoneEvidence.clock.monotonicTimeMs,
+              abs((now.wallTimeMs - physicalZoneEvidence.clock.wallTimeMs)
+                  - (now.monotonicTimeMs - physicalZoneEvidence.clock.monotonicTimeMs)) <= 5_000 else { return false }
+        let observed = Int64(physicalZoneEvidence.beacon.timestamp.timeIntervalSince1970 * 1_000)
+        let initialAge = physicalZoneEvidence.clock.wallTimeMs - observed
+        return initialAge >= 0 && physicalZoneEvidence.clock.monotonicTimeMs >= initialAge
+            && initialAge + now.monotonicTimeMs - physicalZoneEvidence.clock.monotonicTimeMs <= 30_000
     }
 
     func recordAttempt(_ envelope: StoredObservationEnvelope, bytes: Int, failed: Bool, at now: SamplingClock) {

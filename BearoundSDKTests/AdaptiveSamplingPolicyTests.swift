@@ -323,6 +323,46 @@ struct AdaptiveSamplingPolicyTests {
         #expect(novelty.contextIntervalMs == 30_000 && novelty.summaryIntervalMs == 15_000)
         #expect(fresh.plan(at: clock(90), configuration: configuration).mode == .conservative)
     }
+
+    @Test("Fresh physical zones cap live cadence while preserving stable context and summary budgets",
+          arguments: [Int64(5_000), 15_000, 60_000])
+    func freshPhysicalZoneCadences(baseline: Int64) {
+        let policy = stablePolicy()
+        let configuration = SamplingConfiguration(legacySyncIntervalMs: baseline, capability: self.configuration.capability)
+        let original = policy.plan(at: clock(120), configuration: configuration)
+        let eligible = policy.plan(at: clock(120), configuration: configuration, hasFreshPhysicalZone: true)
+        #expect(original.liveIntervalMs == baseline)
+        #expect(eligible.liveIntervalMs == min(baseline, 30_000))
+        #expect(eligible.mode == original.mode && eligible.contextIntervalMs == 300_000)
+        #expect(eligible.summaryIntervalMs == 300_000 && eligible.flushRelevantTransition == original.flushRelevantTransition)
+    }
+
+    @Test("Fresh physical zones preserve faster Services and map TTL contracts")
+    func freshPhysicalZoneFasterContracts() {
+        for capability in [
+            SamplingCapability(sessionTimeoutMs: 900_000, advertisedServicesCadenceMs: 5_000, mapTTLms: 180_000),
+            SamplingCapability(sessionTimeoutMs: 900_000, advertisedServicesCadenceMs: 60_000, mapTTLms: 15_000)
+        ] {
+            let policy = stablePolicy()
+            let configuration = SamplingConfiguration(legacySyncIntervalMs: 60_000, capability: capability)
+            let plan = policy.plan(at: clock(120), configuration: configuration, hasFreshPhysicalZone: true)
+            #expect(plan.liveIntervalMs == 5_000 && plan.summaryIntervalMs == 300_000)
+            #expect(plan.contextIntervalMs == 300_000)
+        }
+    }
+
+    @Test("Fresh physical evidence cannot enable a missing disabled or incompatible capability")
+    func freshPhysicalZoneFallback() {
+        var disabled = SamplingConfiguration(legacySyncIntervalMs: 60_000, capability: configuration.capability)
+        disabled.adaptiveSamplingEnabled = false
+        let invalid = SamplingConfiguration(legacySyncIntervalMs: 60_000, capability: SamplingCapability(
+            sessionTimeoutMs: 30_000, advertisedServicesCadenceMs: 60_000, mapTTLms: 180_000))
+        for configuration in [SamplingConfiguration(legacySyncIntervalMs: 60_000), disabled, invalid] {
+            let plan = AdaptiveSamplingPolicy().plan(at: clock(0), configuration: configuration, hasFreshPhysicalZone: true)
+            #expect(plan.mode == .legacy && plan.liveIntervalMs == 60_000)
+            #expect(plan.contextIntervalMs == nil && plan.summaryIntervalMs == 60_000)
+        }
+    }
     private func inertial(_ end: Int64, generation: UInt64 = 0,
                           classification: InertialWindow.Classification = .active) -> InertialWindow {
         InertialWindow(generation: generation, startedAtMonotonicMs: end * 1_000 - 3_000,
