@@ -130,6 +130,34 @@ sessão viva, descartada porque o iOS não acorda o app de forma confiável em b
 sem um evento de localização. Mexe no contrato de dois repos (SDKs e `beacon-ingest`):
 pede decisão do dono antes de qualquer código.
 
+**Área desenhada: o círculo que o aparelho arma não é a área que o ingest ancora.** Medido
+na viagem de 17/10 com f77791b: a chegada na entrada da zona 7 (env `2a83de24`, quadrado de
+300 x 300 m) saiu às 12:53:39 com fix a 199 m do centro e precisão de 8 m, e o ingest gravou
+`env=unknown`. Para um polígono a API manda `rings` mais o círculo circunscrito
+(`center`, `radiusMeters`); o SDK arma só o círculo (212 m), o ingest ancora pelo polígono
+(meia aresta de 150 m). Num quadrado a diferença chega a 41% do raio no meio das arestas.
+A partida herda a posição da chegada, então também não ancora.
+
+O ponto que decide: o fix da chegada é tirado no instante da entrada, ou seja, na borda da
+cerca. Com `GNSS_AREA_EDGE_FACTOR` 1.0 o ingest exige o círculo de precisão inteiro dentro
+da área, e um fix na borda nunca passa. Trocar o círculo do aparelho não resolve sozinho.
+
+- **E1. Armar o círculo inscrito no aparelho.** O fix da entrada cai na aresta do polígono
+  e ainda falha a guarda de borda; os cantos da área deixam de disparar. Só funcionaria
+  encolhendo mais o círculo pela precisão esperada, perdendo mais detecção.
+- **E2. O ingest aceita a pista do SDK para payload `visit`.** Com o bloco `visit` da opção
+  D, o ingest atribui ao `environmentId` que o aparelho reconheceu quando o fix está dentro
+  do círculo armado mais a precisão, gravando a origem como `fence` (separada de `gnss`),
+  para que a regra de faturamento continue decidindo o que conta.
+- **E3. Posição da chegada vinda de dentro.** Com a opção B, a chegada confirmada pelo
+  CLVisit usa a coordenada do CLVisit (o centro da estadia), que cai dentro da área. Sem
+  CLVisit, continua o fix da borda.
+
+Recomendação: E2, junto com D. Por quê: o aparelho já sabe qual cerca disparou e o fix da
+entrada está na borda por construção; nenhuma escolha de raio no aparelho faz a guarda de
+borda do polígono passar. Alternativa considerada: E1, descartada porque perde os cantos e
+mesmo assim falha a guarda. E3 vale como complemento se o dono escolher B.
+
 ## Protocolo de teste de campo
 
 Aparelho: o mesmo iPhone 17 Pro Max (iOS 27.2), localização **Sempre** e **Precisa**,
