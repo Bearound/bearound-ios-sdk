@@ -13,8 +13,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   entrada, uma vez por estadia: reaberturas do app não duplicam a chegada.
 - **Partida na saída da cerca.** As cercas de ambiente passam a avisar a saída, que fecha a
   parada aberta com a partida (posição da parada, hora da saída). O CLVisit continua de
-  reserva, sem partida duplicada. Cercas armadas por versão anterior são rearmadas uma vez.
-  Nenhuma permissão nova.
+  reserva, sem partida duplicada. A partida repete a precisão do fix da chegada (sem ela o
+  ingest assume 100 m e pode não ancorar). Cercas armadas por versão anterior são rearmadas
+  uma vez. Nenhuma permissão nova.
+
+### Added
+- **Bloco `visit` no payload de visita**: `kind` (`arrival`/`departure`), `environmentId`
+  (`null` numa parada de CLVisit), `source` (`fence`, `clvisit`, `wifi`) e `at` (epoch ms do
+  fix). Opcional, no topo do payload, gravado com o evento no lote offline. Sai junto com
+  `location` quando `collectLocation` está desligado.
 
 ## [3.16.0] - 2026-10-13
 

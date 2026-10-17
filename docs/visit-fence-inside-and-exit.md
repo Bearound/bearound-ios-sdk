@@ -48,7 +48,31 @@ Resíduo conhecido, sem mudança: uma parada aberta pela cerca que passa de minD
 sem nenhum CLVisit confirmar ainda é descartada localmente, e a saída posterior não tem o
 que fechar. O servidor fecha essa sessão pelo timeout.
 
-## O que chega ao ingest (contrato atual)
+## O que chega ao ingest
+
+### Bloco `visit` (a partir deste branch, decisão D)
+
+Todo evento de visita leva, no topo do payload, ao lado de `location`:
+
+```json
+"visit": { "kind": "arrival", "environmentId": "4450416f-...", "source": "fence", "at": 1792250828000 }
+```
+
+- `kind`: `arrival` ou `departure`;
+- `environmentId`: o ambiente que a cerca ou o Wi-Fi reconheceu; `null` explícito numa
+  parada de CLVisit, que não nomeia ambiente (a partida do CLVisit de uma parada aberta pela
+  cerca herda o ambiente dela);
+- `source`: o que produziu o evento: `fence` (entrada, estado `.inside` ou saída),
+  `clvisit` ou `wifi`;
+- `at`: epoch ms do fix ou da hora da parada que o evento representa, igual a
+  `location.timestamp` quando há localização.
+
+O bloco é gravado com o evento no lote offline (`UserDevice.visit`) e reenviado como foi
+capturado. Opcional e aditivo: um ingest que não o lê recebe o payload de antes. Com
+`collectLocation` desligado no envio, o bloco sai junto com `location`; com `collectWifi`
+desligado, sai o bloco de um evento `wifi`.
+
+### Antes deste branch
 
 Medido no payload que chegou à produção em 17/10 12:27:08 e no `beacon-ingest` origin/main
 `d5f1e0d`:
@@ -91,7 +115,9 @@ Medido no payload que chegou à produção em 17/10 12:27:08 e no `beacon-ingest
 Consequência: para a mesma passagem rápida em frente a uma loja com cerca, o iOS produz uma
 sessão GNSS curta (chegada e partida a poucos minutos) e o Android não produz nada.
 
-## Decisão aberta para o dono
+## Decisões para o dono
+
+Em aberto: A ou B. Decididas em 17/10: D (bloco `visit`) e E (resolvida no ingest).
 
 **O iOS deve continuar mandando a chegada na entrada da cerca, ou esperar minDwell como o
 Android?**
@@ -123,12 +149,12 @@ chega ao ingest").
   depois do timeout, em vez de abrir outra; e usa `environmentId` como pista quando a
   geometria fica ambígua.
 
-Recomendação: D. Por quê: a partida existe justamente para fechar a sessão, e sem `kind` o
-servidor não tem como usá-la para isso; o campo é aditivo e não quebra nenhum consumidor.
-Alternativa considerada: o SDK mandar fixes periódicos durante a estadia para manter a
-sessão viva, descartada porque o iOS não acorda o app de forma confiável em background
-sem um evento de localização. Mexe no contrato de dois repos (SDKs e `beacon-ingest`):
-pede decisão do dono antes de qualquer código.
+**Decidido em 17/10: D**, com o formato da seção "Bloco `visit`". Motivo registrado: a
+partida existe justamente para fechar a sessão, e sem `kind` o servidor não tem como usá-la
+para isso; o campo é aditivo e não quebra nenhum consumidor. Alternativa descartada: o SDK
+mandar fixes periódicos durante a estadia para manter a sessão viva, porque o iOS não acorda
+o app de forma confiável em background sem um evento de localização. O uso da partida para
+fechar a sessão é trabalho do `beacon-ingest`.
 
 **Área desenhada: o círculo que o aparelho arma não é a área que o ingest ancora.** Medido
 na viagem de 17/10 com f77791b: a chegada na entrada da zona 7 (env `2a83de24`, quadrado de
@@ -153,10 +179,12 @@ da área, e um fix na borda nunca passa. Trocar o círculo do aparelho não reso
   CLVisit usa a coordenada do CLVisit (o centro da estadia), que cai dentro da área. Sem
   CLVisit, continua o fix da borda.
 
-Recomendação: E2, junto com D. Por quê: o aparelho já sabe qual cerca disparou e o fix da
-entrada está na borda por construção; nenhuma escolha de raio no aparelho faz a guarda de
-borda do polígono passar. Alternativa considerada: E1, descartada porque perde os cantos e
-mesmo assim falha a guarda. E3 vale como complemento se o dono escolher B.
+**Decidido em 17/10: resolvido no ingest.** O `beacon-ingest` passa a ancorar payloads
+`visit` pelo mesmo círculo circunscrito que o SDK arma, então o SDK **não** muda a geometria
+armada (E1 descartada: perde os cantos e mesmo assim falha a guarda de borda). O bloco
+`visit` da decisão D dá ao ingest o `environmentId` que o aparelho reconheceu. Confirmado em
+campo antes da decisão: 3 das 4 entradas da Marginal e a da zona 7 chegaram sem âncora. E3
+continua valendo como complemento se o dono escolher B.
 
 ## Protocolo de teste de campo
 

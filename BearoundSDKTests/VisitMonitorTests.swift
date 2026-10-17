@@ -1174,3 +1174,55 @@ struct VisitMonitorFenceStateTests {
         #expect(defaults.object(forKey: "reported_fence_stays") == nil)
     }
 }
+
+@Suite("VisitMonitor event source")
+struct VisitMonitorEventSourceTests {
+
+    private func minute(_ m: Double) -> Date { t0.addingTimeInterval(m * 60) }
+
+    @Test("Fence events say fence and name the environment; CLVisit events say clvisit with no environment")
+    func fenceAndCLVisitSources() {
+        let h = Harness(fetchResult: .notModified, cached: config(enabled: true, places: [
+            place("env-1", lat: -23.562, lng: -46.657, distance: 150),
+            place("env-2", lat: farLat, lng: -46.657, distance: 900),
+        ]))
+        h.monitor.start()
+        h.fenceArrival("env-1", lat: -23.5621, lng: -46.6571, at: t0)
+        h.clock.now = minute(12)
+        h.monitor.visitLocationManager(didExitRegion: RegionBudget.environmentIdentifier("env-1"))
+
+        h.clock.now = minute(95)
+        h.monitor.visitLocationManager(didVisit: VisitObservation(
+            latitude: farLat + 0.01, longitude: -46.657, accuracy: 30, arrivalDate: minute(60), departureDate: minute(90)))
+
+        #expect(h.sender.events.map(\.kind) == [.arrival, .departure, .arrival, .departure])
+        #expect(h.sender.events.map(\.source) == [.fence, .fence, .clvisit, .clvisit])
+        #expect(h.sender.events.map(\.environmentId) == ["env-1", "env-1", nil, nil])
+    }
+
+    @Test("A CLVisit departure of a stop a fence opened keeps its environment")
+    func clvisitDepartureOfFenceStop() {
+        let h = Harness(fetchResult: .notModified, cached: config(enabled: true))
+        h.monitor.start()
+        h.fenceArrival("env-1", lat: -23.5621, lng: -46.6571, at: t0)
+        h.clock.now = minute(10)
+        h.monitor.visitLocationManager(didVisit: VisitObservation(
+            latitude: -23.562, longitude: -46.657, accuracy: 30, arrivalDate: minute(-1), departureDate: minute(9)))
+        #expect(h.sender.events.map(\.source) == [.fence, .clvisit])
+        #expect(h.sender.events.last?.environmentId == "env-1")
+    }
+
+    @Test("Wi-Fi matcher events say wifi")
+    func wifiSource() {
+        let known = "9f3a1c02b7d4e688"
+        let h = Harness(fetchResult: .notModified, cached: config(enabled: true, places: [
+            place("env-wifi", lat: -23.562, lng: -46.657, distance: 150, apIds: [known])]))
+        h.monitor.start()
+        h.wifiRound(known, at: minute(0))
+        h.wifiRound(known, at: minute(6))
+        h.wifiRound("ffffffffffffffff", at: minute(16))
+        #expect(h.sender.events.map(\.kind) == [.arrival, .departure])
+        #expect(h.sender.events.map(\.source) == [.wifi, .wifi])
+        #expect(h.sender.events.map(\.environmentId) == ["env-wifi", "env-wifi"])
+    }
+}

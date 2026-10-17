@@ -69,4 +69,7 @@ struct UserDevice: Codable, Equatable {
     /// below iOS 14. Reported alongside the id so a refusal is distinguishable from a prompt
     /// that was never shown.
     var trackingAuthorization: String? = nil
+    /// Set only on a visit event: what it is and which environment, sent as the top-level
+    /// `visit` block. Captured with the event, so a retry replays it as-is.
+    var visit: VisitPayload? = nil
 }
