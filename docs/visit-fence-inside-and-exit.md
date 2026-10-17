@@ -196,6 +196,23 @@ Roteiro:
    armadas, instalar este build sem apagar o app. Esperado: `RegionMonitoringSetupCompleted`
    de novo para as cercas de ambiente (rearmadas com saída), e o passo 3 funcionando.
 
+### Resultado do build f77791b em campo (17/10/2026, iOS 27.2, de carro)
+
+- Lacuna 1: às 12:27:02, na primeira abertura do f77791b com o dono dentro da Via Rovai, a
+  cerca foi rearmada, o estado `.inside` chegou duas vezes (o do iOS e o do `requestState`),
+  e saiu **uma** chegada às 12:27:08, ancorada ao env `4450416f`.
+- Lacuna 2: saída da cerca da Via Rovai às 12:51:36 com partida enviada; o app acordou em
+  background e o payload chegou ao ingest em segundos.
+- Toda zona cruzada que estava na lista em cache disparou entrada e saída em movimento:
+  zona 7 (12:53:39 e 15:26), zonas 2 a 5 na Marginal Pinheiros entre 15:49 e 15:57, com fix
+  da entrada a 259-272 m do centro em cercas de 283 m e a saída 27-47 s depois. As paradas
+  na Via Rovai e no escritório também dispararam.
+- Uma zona fora da lista em cache (rota 1) ficou em silêncio, como esperado. A nova busca
+  após 2,5 km funcionou em movimento: a rota 2 não estava na lista na saída e disparou.
+- Decisão E confirmada: 3 das 4 entradas da Marginal e a da zona 7 chegaram sem âncora no
+  servidor (fix dentro do círculo circunscrito, fora do quadrado).
+- As partidas chegaram sem `accuracy`, o defeito corrigido no commit seguinte ao f77791b.
+
 No servidor, para cada passo: payload `syncTrigger: "visit"` do aparelho, ancorado ao env
 `4450416f`, com `device.location.timestamp` igual à hora do fix (chegada) ou da saída
 (partida).
