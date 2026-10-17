@@ -53,9 +53,22 @@ struct SamplingClock: Equatable {
     static func now() -> SamplingClock {
         SamplingClock(
             wallTimeMs: Int64(Date().timeIntervalSince1970 * 1_000),
-            monotonicTimeMs: Int64(AppPresenceClock.continuousSeconds() * 1_000),
+            monotonicTimeMs: Int64(continuousSeconds() * 1_000),
             bootIdentifier: processIdentifier
         )
+    }
+
+    private static let timebase: mach_timebase_info_data_t = {
+        var info = mach_timebase_info_data_t()
+        mach_timebase_info(&info)
+        return info
+    }()
+
+    /// Seconds since boot, including time spent asleep (`mach_continuous_time`).
+    static func continuousSeconds() -> TimeInterval {
+        let ticks = mach_continuous_time()
+        let nanoseconds = Double(ticks) * Double(timebase.numer) / Double(timebase.denom)
+        return nanoseconds / 1_000_000_000
     }
 }
 

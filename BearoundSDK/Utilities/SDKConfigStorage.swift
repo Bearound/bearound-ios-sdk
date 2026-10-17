@@ -31,7 +31,6 @@ public class SDKConfigStorage {
     private static let keyCollectWifi = "collect_wifi"
     private static let keyCollectMotionSensors = "collect_motion_sensors"
     private static let keyAdaptiveSamplingEnabled = "adaptive_sampling_enabled"
-    private static let keyAppPresenceConfiguration = "app_presence_configuration"
 
     private static var defaults: UserDefaults? {
         UserDefaults(suiteName: suiteName)
@@ -141,45 +140,11 @@ public class SDKConfigStorage {
         defaults.removeObject(forKey: keyCollectWifi)
         defaults.removeObject(forKey: keyAdaptiveSamplingEnabled)
         defaults.removeObject(forKey: keyCollectMotionSensors)
-        defaults.removeObject(forKey: keyAppPresenceConfiguration)
         defaults.removeObject(forKey: keyIsConfigured)
         defaults.removeObject(forKey: keyIsScanning)
         defaults.removeObject(forKey: keyInternalId)
         defaults.synchronize()
         NSLog("[BeAroundSDK] Configuration cleared")
-    }
-
-    // MARK: - App Presence Configuration
-
-    /// Persists the app presence configuration separately from ``save(_:)``, so a later
-    /// `configure(...)` call that does not mention the feature never overwrites it.
-    /// `store` is injectable for tests; production uses the shared config suite.
-    static func saveAppPresenceConfiguration(
-        _ configuration: AppPresenceConfiguration,
-        store: UserDefaults? = nil
-    ) {
-        guard let defaults = store ?? defaults,
-              let data = try? JSONEncoder().encode(configuration) else { return }
-        defaults.set(data, forKey: keyAppPresenceConfiguration)
-        defaults.synchronize()
-    }
-
-    /// Restores the app presence configuration. Installs persisted before the feature existed,
-    /// unreadable data, or a stored configuration that no longer validates all restore the
-    /// opt-in default (`enabled = false`, `targets = []`).
-    static func loadAppPresenceConfiguration(store: UserDefaults? = nil) -> AppPresenceConfiguration {
-        guard let data = (store ?? defaults)?.data(forKey: keyAppPresenceConfiguration),
-              let configuration = try? JSONDecoder().decode(AppPresenceConfiguration.self, from: data),
-              (try? configuration.validate()) != nil else {
-            return AppPresenceConfiguration()
-        }
-        return configuration
-    }
-
-    static func clearAppPresenceConfiguration(store: UserDefaults? = nil) {
-        guard let defaults = store ?? defaults else { return }
-        defaults.removeObject(forKey: keyAppPresenceConfiguration)
-        defaults.synchronize()
     }
 
     // MARK: - Scanning State Persistence

@@ -61,12 +61,7 @@ public class BeAroundSDK {
 
     // MARK: - Public Properties
 
-    public weak var delegate: BeAroundSDKDelegate? {
-        didSet { appPresence.subscriberChanged() }
-    }
-
-    /// App presence (opt-in, local-only). See ``configureAppPresence(_:)``.
-    private let appPresence = AppPresenceCoordinator.live()
+    public weak var delegate: BeAroundSDKDelegate?
 
     public var isScanning: Bool {
         bluetoothManager.isScanning || beaconManager.isScanning
@@ -315,7 +310,8 @@ public class BeAroundSDK {
 
         setupCallbacks()
         setupAppStateObservers()
-        setupAppPresenceCallbacks()
+        // Deletes what the removed 3.16.x feature left on the device. Idempotent, off the main thread.
+        DispatchQueue.global(qos: .utility).async { LegacyAppPresenceCleanup.run() }
 
         // Auto-configure when app is relaunched
         if wasLaunchedInBackground {
@@ -362,8 +358,6 @@ public class BeAroundSDK {
         // a background relaunch: without this the SDK would come back with everything on and
         // start uploading a signal the host turned off, silently and only in background.
         DataCollectionPolicyStore.apply(savedConfig.dataCollectionPolicy)
-
-        appPresence.setBusinessToken(savedConfig.businessToken)
 
         restoreUserIdentityIfNeeded()
 
@@ -413,9 +407,6 @@ public class BeAroundSDK {
         apiClient = APIClient(configuration: savedConfig)
         setupSDKInfo(from: savedConfig)
         configureSampling(savedConfig, startMotion: true)
-
-        // Scanning was active: app presence resumes too, independent of BLE/Location below.
-        appPresence.start()
 
         // Re-instantiate the background session with the same identifier so any pending
         // background-upload delegate callbacks from before termination are delivered.
@@ -878,25 +869,6 @@ public class BeAroundSDK {
         NotificationCenter.default.addObserver(self,
             selector: #selector(appWillResignActiveForInertialSampling),
             name: UIApplication.willResignActiveNotification, object: nil)
-
-        // App presence foreground trigger (same notification AppStateMonitor tracks).
-        NotificationCenter.default.addObserver(
-            self,
-            selector: #selector(appDidBecomeActive),
-            name: UIApplication.didBecomeActiveNotification,
-            object: nil
-        )
-    }
-
-    /// App presence results and errors go only to the host delegate, on the main thread.
-    /// Deliberately not routed through ErrorReporter: nothing about this feature leaves the device.
-    private func setupAppPresenceCallbacks() {
-        appPresence.onSnapshot = { [weak self] snapshot in
-            self?.delegate?.didUpdateAppPresence(snapshot)
-        }
-        appPresence.onError = { [weak self] error in
-            self?.delegate?.didFailWithError(error)
-        }
     }
 
     @objc private func appDidBecomeActiveForInertialSampling() {
@@ -914,10 +886,6 @@ public class BeAroundSDK {
         beaconQueue.async { [weak self] in
             self?.samplingRuntime?.invalidateInertial(at: SamplingClock.now())
         }
-    }
-
-    @objc private func appDidBecomeActive() {
-        appPresence.tryRun()
     }
 
     @objc private func appDidEnterBackground() {
@@ -1021,8 +989,6 @@ public class BeAroundSDK {
         )
 
         configuration = config
-        // App presence namespace (bundle + token hash). Prepares only; never starts a query.
-        appPresence.setBusinessToken(config.businessToken)
         // Applied FIRST: everything below (telemetry install, an in-flight sync) can reach a
         // collector, and a collector that runs before the policy lands
         // would read a signal the host just turned off.
@@ -1117,36 +1083,6 @@ public class BeAroundSDK {
         )
     }
 
-    // MARK: - App Presence
-
-    /// Configures the opt-in app presence check. Independent of `configure(businessToken:)`, which never
-    /// overwrites it. Queries only start with ``startScanning()``.
-    ///
-    /// An invalid configuration disables only this feature, drops the cached snapshot and is
-    /// reported through ``BeAroundSDKDelegate/didFailWithError(_:)`` with
-    /// ``BearoundErrorCode/appPresenceInvalidConfiguration``. `enabled = false` or an empty
-    /// target list deletes the cached snapshot but keeps the hourly cooldown.
-    public func configureAppPresence(_ configuration: AppPresenceConfiguration) {
-        do {
-            try appPresence.configure(configuration)
-        } catch {
-            let message = (error as? AppPresenceConfigurationError)?.description
-                ?? AppPresenceConfigurationError.code
-            let nsError = AppPresenceCoordinator.makeError(
-                .appPresenceInvalidConfiguration,
-                code: AppPresenceConfigurationError.code,
-                message: message
-            )
-            DispatchQueue.main.async { self.delegate?.didFailWithError(nsError) }
-        }
-    }
-
-    /// The latest snapshot compatible with the current configuration and business token,
-    /// with `cached == true`, or nil. Never runs a query.
-    public func getLastAppPresenceSnapshot() -> AppPresenceSnapshot? {
-        appPresence.lastSnapshot()
-    }
-
     /// Enables or disables first-party SDK error telemetry (crash/error reports sent to
     /// Bearound's ingest endpoint to improve SDK reliability). Enabled by default.
     ///
@@ -1215,10 +1151,6 @@ public class BeAroundSDK {
         }
 
         isInBackground = (UIApplication.shared.applicationState == .background)
-
-        // App presence starts BEFORE the Bluetooth / Location guards: it needs neither, and a
-        // denied permission below must not block it.
-        appPresence.start()
 
         os_log("[SDK] ========== startScanning() ==========", log: sdkLog, type: .info)
 
@@ -1311,7 +1243,6 @@ public class BeAroundSDK {
     public func stopScanning() {
         updatePhysicalZoneCollectionEligibility(scanRegistered: false)
         renewSamplingLifecycle(startMotion: false)
-        appPresence.stop()
         bluetoothManager.setEncounterMesh(enabled: false)
         bluetoothManager.stopScanning()
 
@@ -1759,7 +1690,6 @@ public class BeAroundSDK {
                     guard let self, self.currentSyncTimerGeneration() == timerGeneration else { return }
                     self.requestSync(reason: "precision_high_timer")
                 }
-                self?.appPresence.tryRun()
             }
             timer.resume()
 
@@ -1783,7 +1713,6 @@ public class BeAroundSDK {
                 guard let self, self.currentSyncTimerGeneration() == timerGeneration else { return }
                 self.requestSync(reason: "precision_\(precision.rawValue)_timer")
             }
-            self?.appPresence.tryRun()
         }
         timer.resume()
 

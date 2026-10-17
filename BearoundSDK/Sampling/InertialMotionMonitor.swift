@@ -12,7 +12,7 @@ final class CoreMotionInertialProvider: InertialMotionProviding {
     var isAvailable: Bool { manager.isAccelerometerAvailable }
     func start(interval: TimeInterval, queue: OperationQueue, handler: @escaping (InertialSample?) -> Void) {
         let sourceUptimeMs = ProcessInfo.processInfo.systemUptime * 1_000
-        let continuousMs = AppPresenceClock.continuousSeconds() * 1_000
+        let continuousMs = SamplingClock.continuousSeconds() * 1_000
         manager.accelerometerUpdateInterval = interval
         manager.startAccelerometerUpdates(to: queue) { data, error in
             guard error == nil, let data, data.timestamp.isFinite,

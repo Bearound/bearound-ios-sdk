@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Removed
+- **App Presence.** A funcionalidade sai do SDK e não volta. Foram removidos
+  `configureAppPresence(_:)`, `getLastAppPresenceSnapshot()`, o callback
+  `BeAroundSDKDelegate.didUpdateAppPresence(_:)`, todos os tipos `AppPresence*`
+  (`AppPresenceConfiguration`, `AppPresenceTarget`, `AppPresenceSnapshot` e os demais), os
+  códigos de erro `BearoundErrorCode.appPresenceInvalidConfiguration` e
+  `BearoundErrorCode.appPresenceStorageUnavailable`, e o verificador de build
+  `scripts/verify_app_presence_build.py`.
+- **Migração.** Integrações que usavam essas APIs devem apagar as chamadas (inclusive a
+  implementação de `didUpdateAppPresence(_:)`, que deixa de compilar) e as entradas de
+  `LSApplicationQueriesSchemes` que adicionaram para essa funcionalidade.
+- **Dados no aparelho.** No primeiro start, o SDK apaga o que a 3.16.x gravou para a
+  funcionalidade: os registros em `Application Support/BeAroundSDK/AppPresence/` e a
+  configuração salva. A limpeza é idempotente e roda a cada start.
+
 ## [3.16.0] - 2026-10-13
 
 ### Added
