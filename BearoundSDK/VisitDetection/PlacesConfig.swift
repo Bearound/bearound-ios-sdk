@@ -245,6 +245,7 @@ final class VisitStateStore {
     private static let keyLastFailedFetchAt = "places_last_failed_fetch_at"
     private static let keyOpenStop = "open_stop"
     private static let keyLastDepartureAt = "last_departure_at"
+    private static let keyReportedFenceStays = "reported_fence_stays"
 
     private let defaults: UserDefaults
 
@@ -348,5 +349,21 @@ final class VisitStateStore {
     var lastDepartureAt: Date? {
         get { defaults.object(forKey: Self.keyLastDepartureAt) as? Date }
         set { defaults.set(newValue, forKey: Self.keyLastDepartureAt) }
+    }
+
+    /// Environments whose fence the device is inside and whose stay was already reported
+    /// (arrival sent, or covered by the open stop). iOS redelivers the inside state of every
+    /// monitored region on relaunch: this keeps that from opening the same stay again once
+    /// the stop was closed or dropped. Cleared on exit, on the outside state and when the
+    /// fence is disarmed.
+    var reportedFenceStays: Set<String> {
+        get { Set(defaults.stringArray(forKey: Self.keyReportedFenceStays) ?? []) }
+        set {
+            if newValue.isEmpty {
+                defaults.removeObject(forKey: Self.keyReportedFenceStays)
+            } else {
+                defaults.set(newValue.sorted(), forKey: Self.keyReportedFenceStays)
+            }
+        }
     }
 }

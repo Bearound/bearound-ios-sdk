@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **Visita por GPS com a cerca armada e o aparelho já dentro.** O iOS só informa o estado
+  `.inside` nesse caso, nunca uma entrada, e a chegada não saía. O estado agora vale como
+  entrada, uma vez por estadia: reaberturas do app não duplicam a chegada.
+- **Partida na saída da cerca.** As cercas de ambiente passam a avisar a saída, que fecha a
+  parada aberta com a partida (posição da parada, hora da saída). O CLVisit continua de
+  reserva, sem partida duplicada. Cercas armadas por versão anterior são rearmadas uma vez.
+  Nenhuma permissão nova.
+
 ## [3.16.0] - 2026-10-13
 
 ### Added

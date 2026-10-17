@@ -122,6 +122,9 @@ final class VisitBackgroundAssertion {
 protocol VisitLocationManagerDelegate: AnyObject {
     func visitLocationManager(didEnterRegion identifier: String)
     func visitLocationManager(didExitRegion identifier: String)
+    /// The state of a monitored region: after it is armed, on `requestState`, and again on
+    /// every app launch.
+    func visitLocationManager(didDetermineState state: CLRegionState, forRegion identifier: String)
     func visitLocationManager(didVisit visit: VisitObservation)
     func visitLocationManager(didUpdateFix fix: VisitFix)
     func visitLocationManagerDidFailToLocate()
@@ -168,8 +171,9 @@ final class VisitMonitor {
     static let sameStopRadiusMeters: Double = 500
     /// Dwell assumed for an environment whose `minDwellMinutes` is null.
     static let defaultMinDwellMinutes = 5
-    /// A stop opened by a geofence entry (no CLVisit yet) is dropped when no CLVisit confirms
-    /// it within its environment's minDwellMinutes plus this grace: it was a drive-by.
+    /// A stop opened by a geofence entry (no CLVisit yet) is dropped when neither a CLVisit
+    /// confirms it nor its fence exit closes it within its environment's minDwellMinutes plus
+    /// this grace.
     static let fenceStopGrace: TimeInterval = 30 * 60
 
     private let locationManager: VisitLocationManaging
@@ -288,6 +292,9 @@ final class VisitMonitor {
 
         let plan = budget.plan(monitored: locationManager.monitoredRegions, refreshFence: fence, targets: targets)
         plan.identifiersToStop.forEach { locationManager.stopMonitoring(identifier: $0) }
+        // A disarmed fence sends no exit: forget its stay, so arming it again reports one.
+        let disarmed = Set(plan.identifiersToStop.compactMap(RegionBudget.environmentId(fromIdentifier:)))
+        if !disarmed.isEmpty { store.reportedFenceStays.subtract(disarmed) }
         plan.regionsToStart.forEach { locationManager.startMonitoring($0) }
         if !plan.droppedEnvironmentIds.isEmpty {
             NSLog("[BeAroundSDK] Visit geofences: %d environment(s) left out by the region budget",
@@ -300,6 +307,7 @@ final class VisitMonitor {
         pendingArrivalEnvironmentId = nil
         pendingRefresh = false
         pendingRefreshForced = false
+        store.reportedFenceStays = []
         Self.tearDownVisitMonitoring(on: locationManager)
     }
 
@@ -383,7 +391,7 @@ final class VisitMonitor {
             return nil
         }
         if let expiresAt = open.fenceExpiresAt, clock.now > expiresAt {
-            // Drive-by: the fence fired but iOS never saw a dwell. No departure is sent.
+            // The fence fired, iOS never saw a dwell and no exit closed it. No departure is sent.
             store.openStop = nil
             NSLog("[BeAroundSDK] Visit stop opened by a geofence (%@) expired without a CLVisit, dropped",
                   open.environmentId ?? "?")
@@ -464,6 +472,39 @@ final class VisitMonitor {
 
     private var canReportVisits: Bool {
         isStarted && isEligible && cachedConfigEnabled
+    }
+
+    /// The device is inside an environment fence, by an entry or by the state of a fence
+    /// armed while already inside. The arrival goes out with the fix `requestLocation` brings.
+    private func fenceArrival(environmentId: String) {
+        guard canReportVisits else { return }
+        // Arrival already sent for this stop (CLVisit or an earlier fence).
+        if isFenceArrivalCovered(environmentId: environmentId) {
+            store.reportedFenceStays.insert(environmentId)
+            return
+        }
+        // An entry and its inside state both land here: one fix is enough.
+        guard pendingArrivalEnvironmentId != environmentId else { return }
+        pendingArrivalEnvironmentId = environmentId
+        locationManager.requestLocation()
+        // Independent of the fix: the Wi-Fi round does not wait for `requestLocation`.
+        if place(environmentId)?.knownApIds.isEmpty == false { runWifiRound() }
+    }
+
+    /// Exit of the fence of the open stop's environment closes it, at the exit time and at the
+    /// stop's position (where the stay was, as a CLVisit departure carries). A stop only the
+    /// Wi-Fi matcher reported is left to it; CLVisit stays the fallback for the others.
+    private func fenceDeparture(environmentId: String) {
+        guard let open = currentOpenStop(), open.environmentId == environmentId,
+              open.sources.contains(.gps) else { return }
+        let now = clock.now
+        if let lastDeparture = store.lastDepartureAt, now <= lastDeparture { return }
+        let anchor = anchor(of: open)
+        send(.departure, latitude: anchor?.lat, longitude: anchor?.lng, accuracy: nil, at: now,
+             environmentId: environmentId, wifis: carriedWifis(open, at: now))
+        store.openStop = nil
+        store.lastDepartureAt = now
+        NSLog("[BeAroundSDK] Visit fence %@ exit: departure sent", environmentId)
     }
 
     static func distanceMeters(_ lat1: Double, _ lng1: Double, _ lat2: Double, _ lng2: Double) -> Double {
@@ -581,22 +622,42 @@ extension VisitMonitor {
 extension VisitMonitor: VisitLocationManagerDelegate {
 
     func visitLocationManager(didEnterRegion identifier: String) {
-        guard let environmentId = RegionBudget.environmentId(fromIdentifier: identifier),
-              canReportVisits
-        else { return }
-        // Arrival already sent for this stop (CLVisit or an earlier fence).
-        guard !isFenceArrivalCovered(environmentId: environmentId) else { return }
-        pendingArrivalEnvironmentId = environmentId
-        locationManager.requestLocation()
-        // Independent of the fix: the Wi-Fi round does not wait for `requestLocation`.
-        if place(environmentId)?.knownApIds.isEmpty == false { runWifiRound() }
+        guard let environmentId = RegionBudget.environmentId(fromIdentifier: identifier) else { return }
+        fenceArrival(environmentId: environmentId)
     }
 
     func visitLocationManager(didExitRegion identifier: String) {
-        guard identifier == RegionBudget.refreshFenceIdentifier, isStarted, isEligible else { return }
-        pendingRefresh = true
-        pendingRefreshForced = true
-        locationManager.requestLocation()
+        if identifier == RegionBudget.refreshFenceIdentifier {
+            guard isStarted, isEligible else { return }
+            pendingRefresh = true
+            pendingRefreshForced = true
+            locationManager.requestLocation()
+            return
+        }
+        guard let environmentId = RegionBudget.environmentId(fromIdentifier: identifier) else { return }
+        store.reportedFenceStays.remove(environmentId)
+        // Left before the arrival fix came back: a drive-by that never opened a stop.
+        if pendingArrivalEnvironmentId == environmentId { pendingArrivalEnvironmentId = nil }
+        guard canReportVisits else { return }
+        fenceDeparture(environmentId: environmentId)
+    }
+
+    func visitLocationManager(didDetermineState state: CLRegionState, forRegion identifier: String) {
+        guard let environmentId = RegionBudget.environmentId(fromIdentifier: identifier) else { return }
+        switch state {
+        case .inside:
+            // Armed while already inside: iOS sends this state and never an entry. It is also
+            // redelivered on every launch, so a stay already reported is not reported again.
+            guard !store.reportedFenceStays.contains(environmentId) else { return }
+            NSLog("[BeAroundSDK] Visit fence %@ reports inside: handled as an entry", environmentId)
+            fenceArrival(environmentId: environmentId)
+        case .outside:
+            store.reportedFenceStays.remove(environmentId)
+        case .unknown:
+            break
+        @unknown default:
+            break
+        }
     }
 
     func visitLocationManager(didVisit visit: VisitObservation) {
@@ -610,6 +671,8 @@ extension VisitMonitor: VisitLocationManagerDelegate {
             let isSameStop = currentOpenStop().map { belongs(visit, to: $0) } ?? false
             if !isSameStop {
                 guard let arrival = visit.arrivalDate else { return }
+                // Began before the last departure: the stop a fence exit already closed.
+                if let lastDeparture, arrival <= lastDeparture { return }
                 sendArrival(latitude: visit.latitude, longitude: visit.longitude,
                             accuracy: visit.accuracy, at: arrival, environmentId: nil)
             }
@@ -646,10 +709,13 @@ extension VisitMonitor: VisitLocationManagerDelegate {
     func visitLocationManager(didUpdateFix fix: VisitFix) {
         if let environmentId = pendingArrivalEnvironmentId {
             pendingArrivalEnvironmentId = nil
-            if canReportVisits, !isFenceArrivalCovered(environmentId: environmentId) {
-                sendArrival(latitude: fix.latitude, longitude: fix.longitude, accuracy: fix.accuracy,
-                            at: fix.timestamp, environmentId: environmentId,
-                            fenceExpiresAt: fenceStopExpiry(environmentId: environmentId, arrivalAt: fix.timestamp))
+            if canReportVisits {
+                if !isFenceArrivalCovered(environmentId: environmentId) {
+                    sendArrival(latitude: fix.latitude, longitude: fix.longitude, accuracy: fix.accuracy,
+                                at: fix.timestamp, environmentId: environmentId,
+                                fenceExpiresAt: fenceStopExpiry(environmentId: environmentId, arrivalAt: fix.timestamp))
+                }
+                store.reportedFenceStays.insert(environmentId)
             }
         }
         let forced = pendingRefresh && pendingRefreshForced
@@ -715,7 +781,8 @@ final class CoreLocationVisitManager: NSObject, VisitLocationManaging, CLLocatio
                 return RegionBudget.MonitoredRegion(
                     identifier: circle.identifier,
                     center: RegionBudget.Coordinate(latitude: circle.center.latitude, longitude: circle.center.longitude),
-                    radiusMeters: circle.radius
+                    radiusMeters: circle.radius,
+                    notifiesOnExit: circle.notifyOnExit
                 )
             }
             return RegionBudget.MonitoredRegion(identifier: region.identifier)
@@ -739,7 +806,8 @@ final class CoreLocationVisitManager: NSObject, VisitLocationManaging, CLLocatio
         )
         let isFence = region.identifier == RegionBudget.refreshFenceIdentifier
         circle.notifyOnEntry = !isFence
-        circle.notifyOnExit = isFence
+        // Exit refreshes the list (refresh fence) or closes the stop (environment).
+        circle.notifyOnExit = true
         manager.startMonitoring(for: circle)
     }
 
@@ -773,6 +841,18 @@ final class CoreLocationVisitManager: NSObject, VisitLocationManaging, CLLocatio
     func locationManager(_: CLLocationManager, didExitRegion region: CLRegion) {
         guard RegionBudget.isSDKVisitIdentifier(region.identifier) else { return }
         delegate?.visitLocationManager(didExitRegion: region.identifier)
+    }
+
+    func locationManager(_: CLLocationManager, didDetermineState state: CLRegionState, for region: CLRegion) {
+        guard RegionBudget.isSDKVisitIdentifier(region.identifier) else { return }
+        delegate?.visitLocationManager(didDetermineState: state, forRegion: region.identifier)
+    }
+
+    /// iOS only documents the state of a region for a transition or a `requestState`: ask for
+    /// it, so a fence armed while the device is already inside reports that.
+    func locationManager(_: CLLocationManager, didStartMonitoringFor region: CLRegion) {
+        guard RegionBudget.environmentId(fromIdentifier: region.identifier) != nil else { return }
+        manager.requestState(for: region)
     }
 
     func locationManager(_: CLLocationManager, didVisit visit: CLVisit) {
