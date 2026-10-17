@@ -884,18 +884,17 @@ adds them to the beacon payload, the offline queue, the error telemetry or any o
 
 #### Store policy first
 
-The requested purpose of this feature is commercial. Read this before shipping it:
+Both app stores regulate how apps query and use information about other installed apps.
+Before enabling this feature in a published app:
 
-- **Apple App Review Guideline 5.1.2(iv)** forbids using installed-app information for
-  analytics, advertising or marketing. Asking for consent (or ATT authorization) is **not** an
-  exception, and neither is the fact that another product in the market advertises a similar
-  capability. A limited, declared list of schemes does not change the policy.
-- **Google Play** (Android SDK) requires a querying app's package visibility to be tied to
-  user-facing core functionality and forbids selling or sharing that data for analytics or
-  ads monetization. The same reasoning applies to wrappers that ship to both stores.
+- Review **Apple App Review Guideline 5.1.2** (Data Use and Sharing) and confirm that your
+  app's use of the result complies with it.
+- If your integration also ships on Android, review **Google Play**'s package visibility
+  policy (`<queries>` and `QUERY_ALL_PACKAGES`) and User Data policy, and declare the data in
+  the Data safety form as required.
 - The SDK makes the check technically possible; it **does not** grant or imply any store
-  approval. Publishing an app that uses it for a purpose the stores prohibit is the
-  integrator's responsibility and decision.
+  approval. Whether and how your app uses the result is the integrator's decision and
+  responsibility.
 - The absence of UI does not remove the transparency obligations that apply to your app.
 
 #### Declare the schemes in your build
