@@ -44,6 +44,12 @@ servidor via uma chegada que nunca fechava. Agora:
   parada já fechada (chegada dele <= `lastDepartureAt`) é descartado, antes ou depois da
   hora da saída.
 
+**Permanência mínima padrão: 2 min** (calibração do dono em 17/10/2026, a mesma do portão
+de permanência do ingest). Vale quando o lugar vem com `minDwellMinutes` nulo, como o
+places-nearby manda hoje; o valor do lugar continua prevalecendo. Ela define a expiração da
+parada aberta pela cerca (2 + 30 min) e a chegada e a partida do matcher de Wi-Fi (antes:
+5 min).
+
 Resíduo conhecido, sem mudança: uma parada aberta pela cerca que passa de minDwell + 30 min
 sem nenhum CLVisit confirmar ainda é descartada localmente, e a saída posterior não tem o
 que fechar. O servidor fecha essa sessão pelo timeout.
@@ -104,7 +110,7 @@ Medido no payload que chegou à produção em 17/10 12:27:08 e no `beacon-ingest
 
 | | iOS (este branch) | Android (cerca nativa) |
 |---|---|---|
-| Chegada | na entrada ou no `.inside` ao armar, após um fix | só no `GEOFENCE_TRANSITION_DWELL`, loitering delay = `minDwellMinutes` (padrão 5) |
+| Chegada | na entrada ou no `.inside` ao armar, após um fix | só no `GEOFENCE_TRANSITION_DWELL`, loitering delay = `minDwellMinutes` (padrão 5 em `b19b880`) |
 | Hora da chegada | fix logo após a entrada | fix do DWELL: entrada + minDwell |
 | Já dentro ao registrar | `.inside` via `requestState` | `INITIAL_TRIGGER_DWELL`: o dwell conta |
 | ENTER | é a chegada | só dispara rodada de Wi-Fi, nunca chegada |

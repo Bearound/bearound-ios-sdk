@@ -17,6 +17,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   ingest assume 100 m e pode não ancorar). Cercas armadas por versão anterior são rearmadas
   uma vez. Nenhuma permissão nova.
 
+### Changed
+- **Permanência mínima padrão de 5 para 2 min**, para lugares sem `minDwellMinutes` (o caso
+  de hoje). Define a expiração da parada aberta pela cerca e a chegada e a partida por Wi-Fi.
+  O valor do lugar, quando vier, continua prevalecendo.
+
 ### Added
 - **Bloco `visit` no payload de visita**: `kind` (`arrival`/`departure`), `environmentId`
   (`null` numa parada de CLVisit), `source` (`fence`, `clvisit`, `wifi`) e `at` (epoch ms do
