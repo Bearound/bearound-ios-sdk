@@ -203,8 +203,9 @@ final class VisitMonitor {
     static let openStopMaxAge: TimeInterval = 24 * 60 * 60
     /// A visit this close to the open stop (plus its accuracy) is the same stop.
     static let sameStopRadiusMeters: Double = 500
-    /// Dwell assumed for an environment whose `minDwellMinutes` is null.
-    static let defaultMinDwellMinutes = 5
+    /// Dwell assumed for an environment whose `minDwellMinutes` is null (the fence stop expiry
+    /// and the Wi-Fi matcher). A place's own value still wins.
+    static let defaultMinDwellMinutes = 2
     /// A stop opened by a geofence entry (no CLVisit yet) is dropped when neither a CLVisit
     /// confirms it nor its fence exit closes it within its environment's minDwellMinutes plus
     /// this grace.

@@ -13,6 +13,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   fix). Opcional, no topo do payload, gravado com o evento no lote offline. Sai junto com
   `location` quando `collectLocation` está desligado.
 
+### Changed
+- **Permanência mínima padrão de 5 para 2 min**, para lugares sem `minDwellMinutes`.
+  Define a expiração da parada aberta pela cerca e a chegada e a partida por Wi-Fi.
+  O valor do lugar, quando vier, continua prevalecendo.
+
 ### Removed
 - **App Presence.** A funcionalidade sai do SDK e não volta. Foram removidos
   `configureAppPresence(_:)`, `getLastAppPresenceSnapshot()`, o callback

@@ -469,21 +469,22 @@ struct VisitMonitorDriveByTests {
         #expect(h.store.openStop?.environmentId == "env-1")
     }
 
-    @Test("A stop opened by a fence expires after minDwellMinutes (default 5) + 30 min with no event")
+    @Test("A stop opened by a fence expires after minDwellMinutes (default 2) + 30 min with no event")
     func fenceStopExpiresWithoutDeparture() {
         let h = Harness(fetchResult: .notModified, cached: twoPlaces(secondLat: farLat, minDwell: nil))
         h.monitor.start()
 
         h.fenceArrival("env-1", lat: -23.562, lng: -46.657, at: t0)
-        #expect(h.store.openStop?.fenceExpiresAt == t0.addingTimeInterval(35 * 60))
+        #expect(VisitMonitor.defaultMinDwellMinutes == 2)
+        #expect(h.store.openStop?.fenceExpiresAt == t0.addingTimeInterval(32 * 60))
 
         // Still inside the window: a new entry is the same stop.
-        h.clock.now = t0.addingTimeInterval(34 * 60)
+        h.clock.now = t0.addingTimeInterval(31 * 60)
         h.monitor.visitLocationManager(didEnterRegion: RegionBudget.environmentIdentifier("env-1"))
         #expect(h.manager.locationRequests == 1)
 
         // Past the window: the stop is dropped, no departure is invented, a new entry opens a new stop.
-        h.clock.now = t0.addingTimeInterval(36 * 60)
+        h.clock.now = t0.addingTimeInterval(33 * 60)
         h.fenceArrival("env-1", lat: -23.562, lng: -46.657, at: h.clock.now)
         #expect(h.sender.events.map(\.kind) == [.arrival, .arrival])
         #expect(h.store.openStop?.arrivalAt == h.clock.now)
