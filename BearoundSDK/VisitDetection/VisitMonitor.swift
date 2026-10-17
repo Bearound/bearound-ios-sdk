@@ -446,7 +446,7 @@ final class VisitMonitor {
                              at timestamp: Date, environmentId: String?, fenceExpiresAt: Date? = nil,
                              sources: Set<VisitStateStore.StopSource> = [.gps], apIds: [String] = [],
                              wifis: [WifiObservation] = []) {
-        store.openStop = VisitStateStore.OpenStop(latitude: latitude, longitude: longitude,
+        store.openStop = VisitStateStore.OpenStop(latitude: latitude, longitude: longitude, accuracy: accuracy,
                                                   arrivalAt: timestamp, environmentId: environmentId,
                                                   fenceExpiresAt: fenceExpiresAt, sources: sources,
                                                   apIds: apIds)
@@ -492,15 +492,16 @@ final class VisitMonitor {
     }
 
     /// Exit of the fence of the open stop's environment closes it, at the exit time and at the
-    /// stop's position (where the stay was, as a CLVisit departure carries). A stop only the
-    /// Wi-Fi matcher reported is left to it; CLVisit stays the fallback for the others.
+    /// stop's position and accuracy (where the stay was, as a CLVisit departure carries). A
+    /// stop only the Wi-Fi matcher reported is left to it; CLVisit stays the fallback for the
+    /// others.
     private func fenceDeparture(environmentId: String) {
         guard let open = currentOpenStop(), open.environmentId == environmentId,
               open.sources.contains(.gps) else { return }
         let now = clock.now
         if let lastDeparture = store.lastDepartureAt, now <= lastDeparture { return }
         let anchor = anchor(of: open)
-        send(.departure, latitude: anchor?.lat, longitude: anchor?.lng, accuracy: nil, at: now,
+        send(.departure, latitude: anchor?.lat, longitude: anchor?.lng, accuracy: open.accuracy, at: now,
              environmentId: environmentId, wifis: carriedWifis(open, at: now))
         store.openStop = nil
         store.lastDepartureAt = now
@@ -697,6 +698,7 @@ extension VisitMonitor: VisitLocationManagerDelegate {
                     stop.sources.insert(.gps)
                     stop.latitude = visit.latitude
                     stop.longitude = visit.longitude
+                    stop.accuracy = visit.accuracy
                 }
             }
             return

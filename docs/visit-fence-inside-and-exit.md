@@ -34,9 +34,9 @@ servidor via uma chegada que nunca fechava. Agora:
   atualização do app: uma cerca armada por versão anterior (só entrada) é rearmada uma vez
   pelo `RegionBudget`;
 - a saída da cerca do ambiente da parada aberta envia a partida na hora da saída e na
-  posição da parada (onde a estadia foi, como faz a partida do CLVisit e a do Android), com
-  os access points que a parada acumulou, e fecha a parada (`lastDepartureAt` = hora da
-  saída);
+  posição e precisão do fix da chegada (onde a estadia foi, como faz a partida do CLVisit e a
+  do Android), com os access points que a parada acumulou, e fecha a parada
+  (`lastDepartureAt` = hora da saída). Não é um fix na borda da cerca;
 - saída de outro ambiente não fecha a parada; parada só de Wi-Fi continua com o matcher;
 - saída antes do fix da chegada cancela a chegada (passou sem parar);
 - o CLVisit continua de reserva: sem saída, a partida dele fecha a parada, e uma saída
@@ -47,6 +47,32 @@ servidor via uma chegada que nunca fechava. Agora:
 Resíduo conhecido, sem mudança: uma parada aberta pela cerca que passa de minDwell + 30 min
 sem nenhum CLVisit confirmar ainda é descartada localmente, e a saída posterior não tem o
 que fechar. O servidor fecha essa sessão pelo timeout.
+
+## O que chega ao ingest (contrato atual)
+
+Medido no payload que chegou à produção em 17/10 12:27:08 e no `beacon-ingest` origin/main
+`d5f1e0d`:
+
+- o payload de visita é um `/ingest` comum: `beacons` vazio, `device`, `location`, `sdk`,
+  `syncTrigger: "visit"`, `wifis`. **Não leva `kind` (chegada/partida) nem
+  `environmentId`**: `sendVisitEvent` grava só o `UserDevice` com a localização do evento.
+  Para o servidor, chegada e partida são o mesmo tipo de fato: "o aparelho estava neste
+  ponto nesta hora";
+- o ambiente sai só da geometria (`classifyEnvironmentByGnss`, log `[GnssAnchor]`). Um fix
+  sem `accuracy` vale 100 m (`GNSS_MISSING_ACCURACY_METERS`); numa área desenhada, o círculo
+  inteiro tem de caber dentro (`GNSS_AREA_EDGE_FACTOR` 1.0). Por isso a partida repete a
+  precisão da chegada. **O build f77791b, instalado no iPhone do dono em 17/10 12:25:33,
+  manda a partida sem `accuracy`**: nesse build ela só ancora num ambiente de ponto (150 m)
+  ou numa área com o fix a 100 m ou mais da borda. O commit seguinte corrige isso;
+- a sessão usa a hora de captura: `startedAt` no primeiro fix, `lastActivityAt` sobe com a
+  hora do fix (nunca volta). Quem fecha é o worker de inatividade, pela hora de
+  **recebimento**, com `sessionTimeoutMinutes` do business (padrão 30 min);
+- consequência: uma partida que chega dentro do timeout estende a sessão até a hora da
+  saída (duração certa). Numa estadia mais longa que o timeout sem nenhum payload no meio,
+  a sessão da chegada fecha com permanência perto de zero, e a partida abre uma segunda
+  sessão de um ponto só. Isso já valia para a partida do CLVisit; a saída da cerca só torna
+  a partida mais frequente. Não verifiquei se outro payload com fix (heartbeat) mantém a
+  sessão viva durante a estadia.
 
 ## Paridade com o Android (registro, sem mudança)
 
@@ -85,6 +111,25 @@ e o dado sai limpo da origem em vez de depender de um filtro no servidor que ter
 a plataforma. Alternativa considerada: A, descartada porque distorce a comparação entre
 plataformas a cada drive-by. A decisão é do dono; este branch não muda o momento da chegada.
 
+**Contrato SDK + ingest: o payload de visita deve dizer o que é?** Hoje o servidor não
+distingue chegada de partida e não recebe o ambiente que o aparelho reconheceu (seção "O que
+chega ao ingest").
+
+- **C. Manter o contrato.** Nada muda nos SDKs nem no ingest. Estadias mais longas que o
+  timeout continuam virando duas sessões de permanência quase zero.
+- **D. Bloco opcional `visit` no payload**: `kind` (`arrival`/`departure`), `environmentId`
+  e a fonte (`fence`, `clvisit`, `wifi`). O ingest antigo ignora o campo. O ingest novo
+  usa a partida para fechar a sessão daquele ambiente com `ended` = hora da partida, mesmo
+  depois do timeout, em vez de abrir outra; e usa `environmentId` como pista quando a
+  geometria fica ambígua.
+
+Recomendação: D. Por quê: a partida existe justamente para fechar a sessão, e sem `kind` o
+servidor não tem como usá-la para isso; o campo é aditivo e não quebra nenhum consumidor.
+Alternativa considerada: o SDK mandar fixes periódicos durante a estadia para manter a
+sessão viva, descartada porque o iOS não acorda o app de forma confiável em background
+sem um evento de localização. Mexe no contrato de dois repos (SDKs e `beacon-ingest`):
+pede decisão do dono antes de qualquer código.
+
 ## Protocolo de teste de campo
 
 Aparelho: o mesmo iPhone 17 Pro Max (iOS 27.2), localização **Sempre** e **Precisa**,
@@ -110,7 +155,10 @@ Roteiro:
 3. **Saída manda a partida (lacuna 2).** Sair andando ou de carro até uns 300 m além da borda
    e esperar até a saída chegar (o iOS pode levar alguns minutos). Esperado:
    `Visit fence ... exit: departure sent` e `Visit departure queued`, com a posição da
-   chegada e a hora da saída.
+   chegada e a hora da saída. No ingest a partida chega como mais um payload `visit`, sem
+   marca de partida: confira `location.timestamp` (hora da saída) e se houve
+   `[GnssAnchor] ... env=` para ela. No build f77791b ela vai sem `accuracy` (log
+   `acc=?m`) e pode não ancorar; isso é o defeito descrito acima, não falha do iOS.
 4. **Volta é nova chegada.** Voltar à zona depois de 10 min ou mais. Esperado: entrada e uma
    chegada nova.
 5. **CLVisit não duplica.** Ficar 20 min dentro (o CLVisit costuma confirmar), sair como no

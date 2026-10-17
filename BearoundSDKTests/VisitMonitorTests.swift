@@ -816,6 +816,7 @@ struct VisitMonitorWifiTests {
         #expect(stop.sources == [.gps])
         #expect(stop.apIds.isEmpty)
         #expect(stop.latitude == -23.5)
+        #expect(stop.accuracy == nil)
     }
 }
 
@@ -1037,6 +1038,9 @@ struct VisitMonitorFenceStateTests {
         #expect(departure.timestamp == exitTime)
         #expect(departure.environmentId == "env-1")
         #expect(departure.latitude == fenceLat && departure.longitude == fenceLng)
+        // The arrival fix accuracy: without one the ingest assumes 100 m and may not anchor.
+        #expect(departure.accuracy == 12)
+        #expect(departure.deviceLocation?.accuracy == 12)
         #expect(departure.deviceLocation?.timestamp == ms(exitTime))
         #expect(departure.deviceLocation?.source == "gnss")
         #expect(departure.syncTrigger == "visit")
