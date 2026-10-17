@@ -1702,6 +1702,7 @@ public class BeAroundSDK {
         var userDevice = collected
         // nil for a Wi-Fi-only stop: a cached fix could be old and far from the place.
         userDevice.location = event.deviceLocation
+        userDevice.visit = VisitPayload(event)
         if !event.wifis.isEmpty {
             // Matched access points first: they date an event that has no location.
             let matched = Set(event.wifis.map(\.apId))

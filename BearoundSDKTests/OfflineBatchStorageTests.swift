@@ -658,7 +658,7 @@ struct OfflineBatchCapturedContextTests {
 
     private func visitEvent(at date: Date) -> VisitEvent {
         VisitEvent(kind: .arrival, syncTrigger: VisitMonitor.syncTrigger, latitude: -23.5611,
-                   longitude: -46.6561, accuracy: 25, timestamp: date, environmentId: nil)
+                   longitude: -46.6561, accuracy: 25, timestamp: date, environmentId: nil, source: .clvisit)
     }
 
     private func storageDirectoryURL() -> URL {
@@ -1018,4 +1018,110 @@ struct OfflineBatchCapturedContextTests {
 
     #endif
 
+
+    // MARK: Visit block (kind, environmentId, source, at)
+
+    private func event(_ kind: VisitEventKind, at date: Date, environmentId: String?, source: VisitEventSource,
+                       accuracy: Double? = 12) -> VisitEvent {
+        VisitEvent(kind: kind, syncTrigger: VisitMonitor.syncTrigger, latitude: -23.5621, longitude: -46.6571,
+                   accuracy: accuracy, timestamp: date, environmentId: environmentId, source: source)
+    }
+
+    /// The body the ingest receives for one visit event, through the same envelope and policy
+    /// filter the send path uses.
+    private func wireBody(_ event: VisitEvent, policy: DataCollectionPolicy = .allEnabled) throws -> [String: Any] {
+        let device = BeAroundSDK.visitUserDevice(for: event, collected: makeDevice(latitude: 0, fixAt: Date()))
+        let payload = APIClient.makeObservationPayload([], sdkInfo: SDKInfo(appId: "fixture-app", build: 1),
+            userDevice: device, userProperties: nil, syncTrigger: VisitMonitor.syncTrigger)
+        let envelope = try StoredObservationEnvelope(batchId: UUID().uuidString, storedAtMs: 1_790_000_000_000,
+            tenantFingerprint: nil, originalPayload: payload, sampling: nil, deliveryProtocol: .legacy)
+        let data = try JSONSerialization.data(withJSONObject: APIClient.observationPayload(envelope, policy: policy))
+        return try #require(try JSONSerialization.jsonObject(with: data) as? [String: Any])
+    }
+
+    @Test("A fence arrival and its departure carry kind, environmentId, source and the fix time on the wire")
+    func fenceVisitBlockOnWire() throws {
+        let arrivalAt = Date(timeIntervalSince1970: 1_790_000_000)
+        let departureAt = arrivalAt.addingTimeInterval(12 * 60)
+
+        let arrival = try wireBody(event(.arrival, at: arrivalAt, environmentId: "env-1", source: .fence))
+        let arrivalVisit = try #require(arrival["visit"] as? [String: Any])
+        #expect(arrivalVisit["kind"] as? String == "arrival")
+        #expect(arrivalVisit["environmentId"] as? String == "env-1")
+        #expect(arrivalVisit["source"] as? String == "fence")
+        #expect((arrivalVisit["at"] as? NSNumber)?.int64Value == 1_790_000_000_000)
+        #expect(arrival["syncTrigger"] as? String == "visit")
+        // The block rides at the top, never inside `device`.
+        #expect((arrival["device"] as? [String: Any])?["visit"] == nil)
+
+        let departure = try wireBody(event(.departure, at: departureAt, environmentId: "env-1", source: .fence))
+        let departureVisit = try #require(departure["visit"] as? [String: Any])
+        #expect(departureVisit["kind"] as? String == "departure")
+        #expect(departureVisit["environmentId"] as? String == "env-1")
+        #expect(departureVisit["source"] as? String == "fence")
+        let location = try #require(departure["location"] as? [String: Any])
+        #expect((location["accuracy"] as? NSNumber)?.doubleValue == 12)
+        #expect((location["timestamp"] as? NSNumber)?.int64Value == (departureVisit["at"] as? NSNumber)?.int64Value)
+        #expect(Set(departure.keys) == ["beacons", "device", "location", "sdk", "syncTrigger", "visit"])
+    }
+
+    @Test("A CLVisit stop sends environmentId as an explicit null")
+    func clvisitVisitBlockHasNullEnvironment() throws {
+        let body = try wireBody(event(.arrival, at: Date(timeIntervalSince1970: 1_790_000_000),
+                                      environmentId: nil, source: .clvisit, accuracy: 25))
+        let visit = try #require(body["visit"] as? [String: Any])
+        #expect(visit["source"] as? String == "clvisit")
+        #expect(visit["kind"] as? String == "arrival")
+        #expect(visit.keys.contains("environmentId"))
+        #expect(visit["environmentId"] is NSNull)
+    }
+
+    @Test("The visit block survives the offline batch and is replayed as captured")
+    func visitBlockSurvivesPersistence() throws {
+        let storage = makeStorage()
+        defer { storage.clearAllBatches() }
+        let at = Date(timeIntervalSince1970: 1_790_000_000)
+        let arrival = event(.arrival, at: at, environmentId: "env-1", source: .fence)
+        let departure = event(.departure, at: at.addingTimeInterval(600), environmentId: "env-1", source: .fence)
+        let collected = makeDevice(latitude: 0, fixAt: Date())
+        for visitEvent in [arrival, departure] {
+            let device = BeAroundSDK.visitUserDevice(for: visitEvent, collected: collected)
+            #expect(storage.saveBatchReturningId([], userDevice: device, syncTrigger: VisitMonitor.syncTrigger) != nil)
+        }
+
+        let records = makeStorage().loadOldestBatchesWithIds(5)
+        #expect(records.compactMap { $0.userDevice?.visit } == [VisitPayload(arrival), VisitPayload(departure)])
+        // Two events never share a retry request, so each keeps its own block.
+        #expect(BeAroundSDK.retryGroup(from: records).count == 1)
+        let context = BeAroundSDK.retryContext(for: records[0]) {
+            Issue.record("a captured visit must not collect a retry-time context")
+            return collected
+        }
+        #expect(context.userDevice.visit == VisitPayload(arrival))
+    }
+
+    @Test("A batch persisted before the visit block decodes with none")
+    func legacyVisitBatchHasNoBlock() throws {
+        var device = makeDevice(latitude: -23.1, fixAt: Date())
+        let encoded = try JSONEncoder().encode(device)
+        var object = try #require(try JSONSerialization.jsonObject(with: encoded) as? [String: Any])
+        #expect(object["visit"] == nil)
+        object.removeValue(forKey: "visit")
+        device = try JSONDecoder().decode(UserDevice.self, from: JSONSerialization.data(withJSONObject: object))
+        #expect(device.visit == nil)
+    }
+
+    @Test("Location off strips the visit block; Wi-Fi off strips only a Wi-Fi visit")
+    func policyStripsVisitBlock() throws {
+        let at = Date(timeIntervalSince1970: 1_790_000_000)
+        let noLocation = DataCollectionPolicy(advertisingId: true, location: false, wifi: true)
+        let noWifi = DataCollectionPolicy(wifi: false)
+
+        #expect(try wireBody(event(.arrival, at: at, environmentId: "env-1", source: .fence), policy: noLocation)["visit"] == nil)
+        #expect(try wireBody(event(.arrival, at: at, environmentId: "env-1", source: .fence), policy: noWifi)["visit"] != nil)
+        let wifiEvent = VisitEvent(kind: .arrival, syncTrigger: VisitMonitor.syncTrigger, latitude: nil, longitude: nil,
+                                   accuracy: nil, timestamp: at, environmentId: "env-wifi", source: .wifi)
+        #expect(try wireBody(wifiEvent)["visit"] != nil)
+        #expect(try wireBody(wifiEvent, policy: noWifi)["visit"] == nil)
+    }
 }

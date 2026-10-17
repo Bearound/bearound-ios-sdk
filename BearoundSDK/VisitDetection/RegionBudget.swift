@@ -84,11 +84,17 @@ struct RegionBudget {
         let identifier: String
         let center: Coordinate?
         let radiusMeters: Double?
+        /// `CLRegion.notifyOnExit`. Earlier SDK versions armed environment regions with entry
+        /// only, and regions survive app updates: such a region is armed again so its exit
+        /// can close the stop.
+        let notifiesOnExit: Bool
 
-        init(identifier: String, center: Coordinate? = nil, radiusMeters: Double? = nil) {
+        init(identifier: String, center: Coordinate? = nil, radiusMeters: Double? = nil,
+             notifiesOnExit: Bool = true) {
             self.identifier = identifier
             self.center = center
             self.radiusMeters = radiusMeters
+            self.notifiesOnExit = notifiesOnExit
         }
     }
 
@@ -123,7 +129,8 @@ struct RegionBudget {
         /// nearest first.
         let regions: [PlannedRegion]
         /// Subset of `regions` that is not monitored yet, or is monitored with a
-        /// different geometry: call `startMonitoring(for:)` on these only.
+        /// different geometry or without exit notification: call `startMonitoring(for:)`
+        /// on these only.
         let regionsToStart: [PlannedRegion]
         /// SDK visit identifiers currently monitored that are no longer wanted.
         /// Never contains a host or beacon identifier.
@@ -205,7 +212,7 @@ struct RegionBudget {
         let monitoredById = Dictionary(monitored.map { ($0.identifier, $0) }, uniquingKeysWith: { first, _ in first })
         let regionsToStart = regions.filter { planned in
             guard let current = monitoredById[planned.identifier] else { return true }
-            return !Self.sameGeometry(current, planned)
+            return !current.notifiesOnExit || !Self.sameGeometry(current, planned)
         }
 
         let wanted = Set(regions.map(\.identifier))

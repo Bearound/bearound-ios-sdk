@@ -140,4 +140,17 @@ struct RegionBudgetTests {
         #expect(plan.regionsToStart.map(\.identifier) == ["bearound.visit.refresh", "bearound.visit.env.env-1"])
         #expect(plan.identifiersToStop.isEmpty)
     }
+
+    @Test("A region armed by an earlier version without exit notification is armed again")
+    func entryOnlyRegionRestarted() {
+        let first = targets(1)[0]
+        let monitored = [
+            RegionBudget.MonitoredRegion(identifier: "bearound.visit.env.env-0", center: first.center,
+                                         radiusMeters: 100, notifiesOnExit: false),
+            RegionBudget.MonitoredRegion(identifier: "bearound.visit.refresh", center: origin, radiusMeters: 2500),
+        ]
+        let plan = RegionBudget().plan(monitored: monitored, refreshFence: fence, targets: targets(1))
+        #expect(plan.regionsToStart.map(\.identifier) == ["bearound.visit.env.env-0"])
+        #expect(plan.identifiersToStop.isEmpty)
+    }
 }
