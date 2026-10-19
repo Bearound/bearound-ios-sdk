@@ -245,6 +245,7 @@ final class VisitStateStore {
     private static let keyLastFailedFetchAt = "places_last_failed_fetch_at"
     private static let keyOpenStop = "open_stop"
     private static let keyLastDepartureAt = "last_departure_at"
+    private static let keyReportedFenceStays = "reported_fence_stays"
 
     private let defaults: UserDefaults
 
@@ -298,6 +299,10 @@ final class VisitStateStore {
         /// nil for a stop opened by the Wi-Fi matcher with no GPS fix.
         var latitude: Double?
         var longitude: Double?
+        /// Accuracy of that fix. The fence exit departure repeats it: the ingest takes a fix
+        /// with no accuracy as 100 m, too coarse to anchor inside a drawn area. nil for a
+        /// stop persisted before it was kept.
+        var accuracy: Double?
         let arrivalAt: Date
         var environmentId: String?
         /// Set only for a stop a geofence entry opened: past this instant, with no CLVisit
@@ -307,10 +312,12 @@ final class VisitStateStore {
         /// Hashed ids of the known access points matched during the stop.
         var apIds: [String]
 
-        init(latitude: Double?, longitude: Double?, arrivalAt: Date, environmentId: String?,
-             fenceExpiresAt: Date? = nil, sources: Set<StopSource> = [.gps], apIds: [String] = []) {
+        init(latitude: Double?, longitude: Double?, accuracy: Double? = nil, arrivalAt: Date,
+             environmentId: String?, fenceExpiresAt: Date? = nil, sources: Set<StopSource> = [.gps],
+             apIds: [String] = []) {
             self.latitude = latitude
             self.longitude = longitude
+            self.accuracy = accuracy
             self.arrivalAt = arrivalAt
             self.environmentId = environmentId
             self.fenceExpiresAt = fenceExpiresAt
@@ -322,6 +329,7 @@ final class VisitStateStore {
             let container = try decoder.container(keyedBy: CodingKeys.self)
             latitude = try container.decodeIfPresent(Double.self, forKey: .latitude)
             longitude = try container.decodeIfPresent(Double.self, forKey: .longitude)
+            accuracy = try container.decodeIfPresent(Double.self, forKey: .accuracy)
             arrivalAt = try container.decode(Date.self, forKey: .arrivalAt)
             environmentId = try container.decodeIfPresent(String.self, forKey: .environmentId)
             fenceExpiresAt = try container.decodeIfPresent(Date.self, forKey: .fenceExpiresAt)
@@ -348,5 +356,21 @@ final class VisitStateStore {
     var lastDepartureAt: Date? {
         get { defaults.object(forKey: Self.keyLastDepartureAt) as? Date }
         set { defaults.set(newValue, forKey: Self.keyLastDepartureAt) }
+    }
+
+    /// Environments whose fence the device is inside and whose stay was already reported
+    /// (arrival sent, or covered by the open stop). iOS redelivers the inside state of every
+    /// monitored region on relaunch: this keeps that from opening the same stay again once
+    /// the stop was closed or dropped. Cleared on exit, on the outside state and when the
+    /// fence is disarmed.
+    var reportedFenceStays: Set<String> {
+        get { Set(defaults.stringArray(forKey: Self.keyReportedFenceStays) ?? []) }
+        set {
+            if newValue.isEmpty {
+                defaults.removeObject(forKey: Self.keyReportedFenceStays)
+            } else {
+                defaults.set(newValue.sorted(), forKey: Self.keyReportedFenceStays)
+            }
+        }
     }
 }

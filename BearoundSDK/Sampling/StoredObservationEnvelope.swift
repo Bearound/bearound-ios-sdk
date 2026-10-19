@@ -232,11 +232,16 @@ struct StoredObservationEnvelope: Codable, Equatable {
         var device = payload["device"]?.object
         if !policy.location {
             payload.removeValue(forKey: "location")
+            // A visit says where the device was, whatever produced it.
+            payload.removeValue(forKey: "visit")
             device?.removeValue(forKey: "deviceLocation")
             device?.removeValue(forKey: "location")
         }
         if !policy.wifi {
             payload.removeValue(forKey: "wifis")
+            if payload["visit"]?.object?["source"] == .string(VisitEventSource.wifi.rawValue) {
+                payload.removeValue(forKey: "visit")
+            }
             for key in ["apId", "wifiSSID"] { payload.removeValue(forKey: key); device?.removeValue(forKey: key) }
             if var network = device?["network"]?.object {
                 network.removeValue(forKey: "apId")

@@ -707,6 +707,10 @@ class APIClient {
         if let location = userDevice.location {
             payload["location"] = location.toDictionary()
         }
+        // Visit events only: what the event is and which environment (same additive contract).
+        if let visit = userDevice.visit {
+            payload["visit"] = visit.toDictionary()
+        }
         // Encounters (same additive contract as `wifis`): omitted entirely when empty.
         if !userDevice.encounters.isEmpty {
             payload["encounters"] = userDevice.encounters.map { $0.toDictionary() }

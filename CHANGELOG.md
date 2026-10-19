@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Bloco `visit` no payload de visita**: `kind` (`arrival`/`departure`), `environmentId`
+  (`null` numa parada de CLVisit), `source` (`fence`, `clvisit`, `wifi`) e `at` (epoch ms do
+  fix). Opcional, no topo do payload, gravado com o evento no lote offline. Sai junto com
+  `location` quando `collectLocation` está desligado.
+
 ### Removed
 - **App Presence.** A funcionalidade sai do SDK e não volta. Foram removidos
   `configureAppPresence(_:)`, `getLastAppPresenceSnapshot()`, o callback
@@ -21,6 +27,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Dados no aparelho.** No primeiro start, o SDK apaga o que a 3.16.x gravou para a
   funcionalidade: os registros em `Application Support/BeAroundSDK/AppPresence/` e a
   configuração salva. A limpeza é idempotente e roda a cada start.
+
+### Fixed
+- **Visita por GPS com a cerca armada e o aparelho já dentro.** O iOS só informa o estado
+  `.inside` nesse caso, nunca uma entrada, e a chegada não saía. O estado agora vale como
+  entrada, uma vez por estadia: reaberturas do app não duplicam a chegada.
+- **Partida na saída da cerca.** As cercas de ambiente passam a avisar a saída, que fecha a
+  parada aberta com a partida (posição da parada, hora da saída). O CLVisit continua de
+  reserva, sem partida duplicada. A partida repete a precisão do fix da chegada (sem ela o
+  ingest assume 100 m e pode não ancorar). Cercas armadas por versão anterior são rearmadas
+  uma vez. Nenhuma permissão nova.
 
 ## [3.16.0] - 2026-10-13
 
