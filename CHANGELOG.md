@@ -7,11 +7,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.17.0] - 2026-10-19
+
 ### Added
+- **Entrega adaptativa de observações.** O SDK ajusta o ritmo de envio aos sinais de atividade
+  e de proximidade disponíveis: perto de um beacon detectado, a presença é atualizada com mais
+  frequência, dentro dos limites de execução do iOS. Só entra em vigor quando o servidor
+  anuncia suporte; sem isso, a entrega segue como na 3.16.0. Ligada por padrão; desligue com
+  `adaptiveSamplingEnabled: false` em `configure(...)` ou `SDKConfiguration`, o que também
+  desliga a leitura de movimento. Regras de visita, encounters e preferências de coleta não
+  mudam. Nenhuma permissão nova e nenhum background mode novo; chamadas existentes de
+  `configure(...)` e `SDKConfiguration(...)` compilam sem mudança.
+- **Sinal de movimento sem pedir permissão.** Se o app hospedeiro já declara
+  `NSMotionUsageDescription` e o usuário já autorizou Movimento e Condicionamento, o SDK usa a
+  atividade do iOS; o SDK nunca pede essa permissão. Sem ela, usa o acelerômetro, que não exige
+  permissão: rajadas de até 3 s, no máximo uma a cada 30 s, só com o app em primeiro plano. As
+  amostras brutas são classificadas no aparelho e descartadas. Novo switch
+  `collectMotionSensors` (`DataCollectionPolicy.motionSensors`): `nil`, o padrão, acompanha
+  `collectLocation || collectWifi`; `false` desliga as duas fontes.
+- **Upload comprimido.** Os envios saem em gzip quando o servidor aceita; se ele recusar, o
+  mesmo envio é repetido sem compressão.
+- `diagnostics().adaptiveSampling` (`BeAroundSamplingDiagnostics`): modo em vigor (`legacy`
+  enquanto o servidor não anuncia suporte), intervalos de envio e contadores de entrega.
 - **Bloco `visit` no payload de visita**: `kind` (`arrival`/`departure`), `environmentId`
   (`null` numa parada de CLVisit), `source` (`fence`, `clvisit`, `wifi`) e `at` (epoch ms do
   fix). Opcional, no topo do payload, gravado com o evento no lote offline. Sai junto com
   `location` quando `collectLocation` está desligado.
+
+### Changed
+- **Fila offline.** Cada observação fica guardada com o payload original e é reenviada como
+  foi capturada, só sob o mesmo business token que a capturou. Um dado cuja coleta foi
+  desligada depois (`collectLocation`, `collectWifi`, `collectAdvertisingId`) sai do payload
+  antes do reenvio. Lotes de versões antigas sem o contexto da captura deixam de ser reenviados
+  com dados lidos na hora do reenvio.
 
 ### Removed
 - **App Presence.** A funcionalidade sai do SDK e não volta. Foram removidos
