@@ -290,10 +290,11 @@ class OfflineBatchStorage {
     }
 
     /// Loads the N oldest batches WITH their on-disk ids — the id-addressed pair
-    /// of `loadOldestBatches`/`removeOldestBatches` for exact removal.
-    func loadOldestBatchesWithIds(_ count: Int) -> [StoredBatchRecord] {
+    /// of `loadOldestBatches`/`removeOldestBatches` for exact removal. `excluding`: ids with
+    /// a delivery still pending, left out (and not counted) so they are not submitted twice.
+    func loadOldestBatchesWithIds(_ count: Int, excluding: Set<String> = []) -> [StoredBatchRecord] {
         storageQueue.sync {
-            return _loadOldestRecords(count, capturedOnly: true)
+            return _loadOldestRecords(count, capturedOnly: true, excluding: excluding)
         }
     }
 
@@ -318,14 +319,16 @@ class OfflineBatchStorage {
 
     func loadReplayGroup(
         tenantFingerprint: String, policy: DataCollectionPolicy = .allEnabled,
-        capabilityAvailable: Bool, limit: Int = 128, excludingBatchIds: Set<String> = [], maximumJSONBytes: Int = 524_288
+        capabilityAvailable: Bool, limit: Int = 128, excludingBatchIds: Set<String> = [],
+        excludingStorageIds: Set<String> = [], maximumJSONBytes: Int = 524_288
     ) -> [ReplayRecord] {
         storageQueue.sync {
             guard SamplingTenantFingerprint.isValid(tenantFingerprint) else { return [] }
             let pending = _observationRecords(includeQuarantined: false)
             var eligible: [ObservationRecord] = []
             for record in pending {
-                guard !excludingBatchIds.contains(record.envelope.batchId) else { continue }
+                guard !excludingBatchIds.contains(record.envelope.batchId),
+                      !excludingStorageIds.contains(record.storageId) else { continue }
                 guard record.envelope.tenantFingerprint != nil else {
                     _ = _quarantineBatch(id: record.storageId, reason: "tenant_unverifiable")
                     continue
@@ -486,7 +489,8 @@ class OfflineBatchStorage {
         }
     }
 
-    private func _loadOldestRecords(_ count: Int, capturedOnly: Bool = false) -> [StoredBatchRecord] {
+    private func _loadOldestRecords(_ count: Int, capturedOnly: Bool = false,
+                                    excluding: Set<String> = []) -> [StoredBatchRecord] {
         guard let directory = storageDirectory else { return [] }
 
         guard let files = try? fileManager.contentsOfDirectory(atPath: directory.path) else {
@@ -494,7 +498,7 @@ class OfflineBatchStorage {
         }
 
         guard count > 0 else { return [] }
-        let jsonFiles = _sortedFilenames(files.filter { $0.hasSuffix(".json") })
+        let jsonFiles = _sortedFilenames(files.filter { $0.hasSuffix(".json") && !excluding.contains($0) })
         var records: [StoredBatchRecord] = []
 
         for filename in jsonFiles {

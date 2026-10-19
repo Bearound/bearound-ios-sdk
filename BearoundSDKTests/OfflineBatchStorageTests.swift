@@ -1016,6 +1016,192 @@ struct OfflineBatchCapturedContextTests {
         #expect(delivered && restored.batchCount == 0)
     }
 
+    // MARK: Retry drain and an upload still in flight
+
+    /// What the fixture transport saw, plus the background uploads it is still holding (an
+    /// upload the OS deferred).
+    private final class Wire: @unchecked Sendable {
+        private let lock = NSLock()
+        private var calls: [(path: DeliveryPath, ids: [String])] = []
+        private var held: [(Result<Data, Error>) -> Void] = []
+
+        func record(_ path: DeliveryPath, _ ids: [String]) {
+            lock.lock(); calls.append((path, ids)); lock.unlock()
+        }
+        func hold(_ finish: @escaping (Result<Data, Error>) -> Void) {
+            lock.lock(); held.append(finish); lock.unlock()
+        }
+        func count(_ path: DeliveryPath, _ id: String) -> Int {
+            lock.lock(); defer { lock.unlock() }
+            return calls.filter { $0.path == path && $0.ids.contains(id) }.count
+        }
+        var heldCount: Int { lock.lock(); defer { lock.unlock() }; return held.count }
+        func releaseHeld(_ result: Result<Data, Error>) {
+            lock.lock(); let pending = held; held.removeAll(); lock.unlock()
+            pending.forEach { $0(result) }
+        }
+    }
+
+    private func eventually(_ condition: @escaping () async -> Bool) async -> Bool {
+        for _ in 0..<300 {
+            if await condition() { return true }
+            try? await Task.sleep(nanoseconds: 10_000_000)
+        }
+        return await condition()
+    }
+
+    private func isSyncing(_ sdk: BeAroundSDK) async -> Bool {
+        await withCheckedContinuation { continuation in
+            sdk.inspectSamplingFixture { _, syncing in continuation.resume(returning: syncing) }
+        }
+    }
+
+    private func drain(_ sdk: BeAroundSDK, timeout: TimeInterval = 2) async -> Bool {
+        await withCheckedContinuation { continuation in
+            sdk.drainSamplingFixture(timeout: timeout) { continuation.resume(returning: $0) }
+        }
+    }
+
+    /// A transport whose immediate attempt loses the response (the client then falls back to
+    /// the background session) and whose background upload the OS holds until released.
+    private func lossyTransport(_ wire: Wire) -> APIClient.Transport {
+        { _, _, path, descriptor, submit, finish in
+            guard submit() else { finish(.failure(APIError.invalidResponse)); return }
+            wire.record(path, descriptor.storageIds)
+            if path == .immediateFirst {
+                finish(.failure(URLError(.networkConnectionLost)))
+            } else {
+                wire.hold(finish)
+            }
+        }
+    }
+
+    private func queuedDeparture(in storage: OfflineBatchStorage) throws -> String {
+        let departure = BeAroundSDK.visitUserDevice(
+            for: event(.departure, at: Date().addingTimeInterval(-30), environmentId: "env-1", source: .fence),
+            collected: makeDevice(latitude: 0, fixAt: Date()))
+        return try #require(storage.saveBatchReturningId([], userDevice: departure, syncTrigger: VisitMonitor.syncTrigger))
+    }
+
+    @Test("A visit whose upload is still pending is not submitted again once the drain is released",
+          arguments: ["watchdog", "reconfigure"])
+    func pendingUploadIsNotResubmitted(release: String) async throws {
+        let storage = makeStorage(); defer { storage.clearAllBatches() }
+        let configuration = SDKConfiguration(businessToken: "fixture-pending-upload-\(release)")
+        let client = APIClient(configuration: configuration)
+        let sdk = BeAroundSDK.samplingTransportFixture(configuration: configuration, client: client, storage: storage)
+        defer { sdk.endSamplingFixture() }
+        let visitId = try queuedDeparture(in: storage)
+        let wire = Wire()
+        client.transport = lossyTransport(wire)
+        if release == "watchdog" { sdk.syncWatchdogTimeoutFixture(0.2) }
+
+        sdk.replaySamplingFixture()
+        #expect(await eventually { wire.heldCount == 1 })
+        if release == "reconfigure" { sdk.reconfigureSamplingFixture() }
+        #expect(await eventually { await !self.isSyncing(sdk) })
+
+        // The next drain (any later sync tick) must leave the pending upload alone.
+        #expect(await drain(sdk))
+        #expect(wire.count(.immediateFirst, visitId) == 1)
+        #expect(wire.count(.background, visitId) == 1)
+        #expect(storage.batchCount == 1)
+
+        // The deferred upload completes once the network is back: the batch is removed and
+        // no later drain sends it.
+        wire.releaseHeld(.success(Data("{}".utf8)))
+        #expect(await eventually { storage.batchCount == 0 })
+        #expect(await drain(sdk))
+        #expect(wire.count(.immediateFirst, visitId) == 1)
+        #expect(wire.count(.background, visitId) == 1)
+    }
+
+    @Test("An upload a previous process left in the background session holds its batch, not the ones behind it")
+    func orphanedUploadHoldsOnlyItsBatch() async throws {
+        let storage = makeStorage(); defer { storage.clearAllBatches() }
+        let configuration = SDKConfiguration(businessToken: "fixture-orphaned-upload")
+        let client = APIClient(configuration: configuration)
+        let sdk = BeAroundSDK.samplingTransportFixture(configuration: configuration, client: client, storage: storage)
+        defer { sdk.endSamplingFixture() }
+        let orphanedId = try queuedDeparture(in: storage)
+        let behindId = try queuedDeparture(in: storage)
+        let wire = Wire()
+        client.transport = { _, _, path, descriptor, submit, finish in
+            #expect(submit())
+            wire.record(path, descriptor.storageIds)
+            finish(.success(Data("{}".utf8)))
+        }
+        client.outstandingUploads = { $0([orphanedId]) }
+
+        #expect(await eventually { await self.drain(sdk) && storage.batchCount == 1 })
+        #expect(wire.count(.immediateFirst, behindId) == 1)
+        #expect(wire.count(.immediateFirst, orphanedId) == 0)
+        #expect(await drain(sdk))
+        #expect(wire.count(.immediateFirst, orphanedId) == 0)
+
+        // The session no longer holds it (its upload failed): the batch drains again.
+        client.outstandingUploads = { $0([]) }
+        #expect(await eventually { await self.drain(sdk) && storage.batchCount == 0 })
+        #expect(wire.count(.immediateFirst, orphanedId) == 1)
+        #expect(wire.count(.immediateFirst, behindId) == 1)
+    }
+
+    // MARK: In-flight marks
+
+    @Test("A submission marks its batch in flight until its final result, and a refused one releases it")
+    func submissionMarksBatchInFlight() async throws {
+        let device = BeAroundSDK.visitUserDevice(
+            for: event(.departure, at: Date(), environmentId: "env-1", source: .fence),
+            collected: makeDevice(latitude: 0, fixAt: Date()))
+        let client = APIClient(configuration: SDKConfiguration(businessToken: "fixture-in-flight"))
+        let send: (String) async -> Result<Void, Error> = { id in
+            await withCheckedContinuation { continuation in
+                client.sendBeacons([], sdkInfo: SDKInfo(appId: "fixture-app", build: 1), userDevice: device,
+                    userProperties: nil, syncTrigger: VisitMonitor.syncTrigger, delivery: .immediateFirst,
+                    persistedBatchIds: [id]) { continuation.resume(returning: $0) }
+            }
+        }
+
+        let refusedId = UUID().uuidString
+        client.submissionContextProvider = { $0(nil) }
+        await #expect(throws: (any Error).self) { try await send(refusedId).get() }
+        #expect(!InFlightDeliveries.shared.ids.contains(refusedId))
+
+        let heldId = UUID().uuidString
+        client.submissionContextProvider = { $0(RequestSubmissionContext(policy: .allEnabled)) }
+        let wire = Wire()
+        client.transport = lossyTransport(wire)
+        let delivered = Task { await send(heldId) }
+        #expect(await eventually { wire.heldCount == 1 })
+        #expect(InFlightDeliveries.shared.ids.contains(heldId))
+        wire.releaseHeld(.success(Data("{}".utf8)))
+        _ = try await delivered.value.get()
+        #expect(!InFlightDeliveries.shared.ids.contains(heldId))
+    }
+
+    @Test("Upload task descriptions name their persisted batches in both formats")
+    func taskDescriptionStorageIds() throws {
+        let descriptor = ObservationDeliveryReconciliation(storageIds: ["a.visit.json", "b.json"],
+            tenantFingerprint: nil, adaptiveBatchId: nil)
+        let json = try #require(String(data: JSONEncoder().encode(descriptor), encoding: .utf8))
+        #expect(BackgroundSessionManager.storageIds(taskDescription: json) == ["a.visit.json", "b.json"])
+        #expect(BackgroundSessionManager.storageIds(taskDescription: "a.json,b.json") == ["a.json", "b.json"])
+        #expect(BackgroundSessionManager.storageIds(taskDescription: "{not json").isEmpty)
+        #expect(BackgroundSessionManager.storageIds(taskDescription: nil).isEmpty)
+    }
+
+    @Test("A background session that never answers does not stall the drain")
+    func pendingDeliveryIdsTimesOut() async {
+        let client = APIClient(configuration: SDKConfiguration(businessToken: "fixture-silent-session"))
+        client.outstandingUploads = { _ in }
+        let id = UUID().uuidString
+        InFlightDeliveries.shared.begin([id]); defer { InFlightDeliveries.shared.end([id]) }
+        let pending: Set<String> = await withCheckedContinuation { continuation in
+            client.pendingDeliveryIds(timeout: 0.1) { continuation.resume(returning: $0) }
+        }
+        #expect(pending.contains(id))
+    }
+
     #endif
 
 

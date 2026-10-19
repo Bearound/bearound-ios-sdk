@@ -1443,6 +1443,24 @@ public class BeAroundSDK {
 
     internal func replaySamplingFixture() { drainRetryQueue() }
 
+    internal func syncWatchdogTimeoutFixture(_ seconds: TimeInterval) {
+        beaconQueue.async { self.syncWatchdogTimeout = seconds }
+    }
+
+    internal func reconfigureSamplingFixture() {
+        guard let configuration else { return }
+        configureSampling(configuration, deviceID: "device-1")
+    }
+
+    /// Runs one retry drain; `settled` gets the outcome of the drain's terminal (or `true`
+    /// after `timeout`, like any parked waiter).
+    internal func drainSamplingFixture(timeout: TimeInterval = 5, settled: @escaping (Bool) -> Void) {
+        beaconQueue.async {
+            self.onSyncSettled(timeout: timeout, settled)
+            self.drainRetryQueue()
+        }
+    }
+
     internal func endSamplingFixture() {
         beaconQueue.async {
             self.apiClient = nil
@@ -1829,7 +1847,7 @@ public class BeAroundSDK {
     /// (background-session upload deferred by the system). Without a watchdog,
     /// `isSyncing` stays true forever and freezes every future sync of this
     /// process — the whole ingest pipeline hangs on one upload.
-    private let syncWatchdogTimeout: TimeInterval = 45.0
+    private var syncWatchdogTimeout: TimeInterval = 45.0
     /// Callers holding a system execution window (BGTask / silent push) park a
     /// waiter here to give the window back only after the upload settles.
     private var syncSettledWaiters: [(id: UUID, callback: (Bool) -> Void)] = []
@@ -2075,9 +2093,10 @@ public class BeAroundSDK {
             let samplingNow = SamplingClock.now()
             self.persistSamplingPending(at: samplingNow)
             if let runtime = self.samplingRuntime, runtime.hasCapability(at: samplingNow) {
+                let inFlight = InFlightDeliveries.shared.ids
                 let ready = self.offlineBatchStorage.observationRecords().filter {
                     $0.envelope.tenantFingerprint == runtime.tenantFingerprint && $0.envelope.deliveryProtocol == .adaptive
-                        && $0.envelope.replayManifest == nil
+                        && $0.envelope.replayManifest == nil && !inFlight.contains($0.storageId)
                 }
                 let prepared = ready.first { AdaptiveSamplingRuntime.isCurrentLive($0.envelope, at: samplingNow, maxAgeMs: runtime.liveEvidenceMaxAgeMs) }
                     ?? ready.first { $0.envelope.sampling?.kind == .transition }
@@ -2423,7 +2442,9 @@ public class BeAroundSDK {
     ///   rejected with a permanent HTTP status: the chunk mixes several persisted batches,
     ///   so the poison one can't be identified; single mode isolates it (delivered ones
     ///   drain, the rejected one is quarantined) and the queue keeps moving.
-    private func drainCapturedRetryQueue(singleBatchMode: Bool = false) {
+    /// - Parameter outstanding: ids the background session still holds an upload for; with
+    ///   this process's in-flight submissions they are left out of the chunk.
+    private func drainCapturedRetryQueue(singleBatchMode: Bool = false, outstanding: Set<String> = []) {
         beaconQueue.async { [weak self] in
             guard let self else { return }
             guard !self.isSyncing else {
@@ -2446,7 +2467,13 @@ public class BeAroundSDK {
             // Id-addressed drain: remove EXACTLY the batches this chunk sent,
             // not "the N oldest at removal time" (a save/expiry between load and
             // remove used to shift the window onto unsent batches).
-            let loadedRecords = self.offlineBatchStorage.loadOldestBatchesWithIds(singleBatchMode ? 1 : Self.retryChunkSize)
+            let loadedRecords = self.offlineBatchStorage.loadOldestBatchesWithIds(singleBatchMode ? 1 : Self.retryChunkSize,
+                excluding: outstanding.union(InFlightDeliveries.shared.ids))
+            guard !loadedRecords.isEmpty else {
+                // Every queued batch has a delivery pending; its result removes or releases it.
+                self.drainRetryQueue()
+                return
+            }
             let chunkRecords = Self.retryGroup(from: loadedRecords)
             let chunkIds = chunkRecords.map { $0.id }
             let chunkCount = chunkRecords.count
@@ -2614,26 +2641,43 @@ public class BeAroundSDK {
         }
     }
 
+    /// Batches with a delivery still pending (a submission of this process, or an upload the
+    /// background session holds) are left out: their result removes them or puts them back.
     private func drainRetryQueue(singleBatchMode: Bool = false) {
         beaconQueue.async { [weak self] in
-            guard let self, !self.isSyncing, let runtime = self.samplingRuntime else { return }
-            if !self.offlineBatchStorage.loadOldestBatchesWithIds(1).isEmpty {
-                self.drainCapturedRetryQueue(singleBatchMode: singleBatchMode)
+            guard let self, !self.isSyncing, self.samplingRuntime != nil else { return }
+            guard let apiClient = self.apiClient else {
+                self.drainUndeliveredBatches(singleBatchMode: singleBatchMode, outstanding: [])
                 return
             }
-            let now = SamplingClock.now()
-            let records = self.offlineBatchStorage.loadReplayGroup(tenantFingerprint: runtime.tenantFingerprint,
-                policy: DataCollectionPolicyStore.current, capabilityAvailable: runtime.hasCapability(at: now),
-                maximumJSONBytes: runtime.maximumJSONBytes)
-            guard let record = records.first else { self.notifySyncSettled(success: true); return }
-            guard AdaptiveSamplingRuntime.canDeliver(record.envelope, at: now,
-                    capabilityAvailable: runtime.hasCapability(at: now)) else {
-                DiagnosticsStore.shared.recordError("historical legacy observation retained: freshness unavailable")
-                self.notifySyncSettled(success: true)
-                return
+            apiClient.pendingDeliveryIds { [weak self] outstanding in
+                self?.beaconQueue.async { [weak self] in
+                    self?.drainUndeliveredBatches(singleBatchMode: singleBatchMode, outstanding: outstanding)
+                }
             }
-            self.deliverObservation(record.envelope, storageId: record.storageId, manifest: record.manifest)
         }
+    }
+
+    /// beaconQueue only.
+    private func drainUndeliveredBatches(singleBatchMode: Bool, outstanding: Set<String>) {
+        guard !isSyncing, let runtime = samplingRuntime else { return }
+        let pending = outstanding.union(InFlightDeliveries.shared.ids)
+        if !offlineBatchStorage.loadOldestBatchesWithIds(1, excluding: pending).isEmpty {
+            drainCapturedRetryQueue(singleBatchMode: singleBatchMode, outstanding: outstanding)
+            return
+        }
+        let now = SamplingClock.now()
+        let records = offlineBatchStorage.loadReplayGroup(tenantFingerprint: runtime.tenantFingerprint,
+            policy: DataCollectionPolicyStore.current, capabilityAvailable: runtime.hasCapability(at: now),
+            excludingStorageIds: pending, maximumJSONBytes: runtime.maximumJSONBytes)
+        guard let record = records.first else { notifySyncSettled(success: true); return }
+        guard AdaptiveSamplingRuntime.canDeliver(record.envelope, at: now,
+                capabilityAvailable: runtime.hasCapability(at: now)) else {
+            DiagnosticsStore.shared.recordError("historical legacy observation retained: freshness unavailable")
+            notifySyncSettled(success: true)
+            return
+        }
+        deliverObservation(record.envelope, storageId: record.storageId, manifest: record.manifest)
     }
 
     private func deliverObservation(_ envelope: StoredObservationEnvelope, storageId: String?, manifest: SamplingReplayManifest?) {
