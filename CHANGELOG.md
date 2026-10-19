@@ -67,9 +67,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   entrada, uma vez por estadia: reaberturas do app não duplicam a chegada.
 - **Partida na saída da cerca.** As cercas de ambiente passam a avisar a saída, que fecha a
   parada aberta com a partida (posição da parada, hora da saída). O CLVisit continua de
-  reserva, sem partida duplicada. A partida repete a precisão do fix da chegada (sem ela o
-  ingest assume 100 m e pode não ancorar). Cercas armadas por versão anterior são rearmadas
-  uma vez. Nenhuma permissão nova.
+  reserva, sem partida duplicada. A partida repete a precisão do fix da chegada. Cercas
+  armadas por versão anterior são rearmadas uma vez. Nenhuma permissão nova.
 
 ## [3.16.0] - 2026-10-13
 
@@ -408,7 +407,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   new `configure(presenceHeartbeatInterval:)` — **5 minutes** by default, accepted range
   1 minute to 1 hour, `0` to turn the report off. Only the upload is throttled; scanning is
   unchanged. Nothing is sent when there is neither a location fix nor an access point to
-  report. Requires an ingest that accepts this payload shape (beacon-ingest ≥ #24).
+  report. Requires a backend that accepts this payload shape.
 - **Advertising identifier (IDFA).** Reported as `device.permissions.advertisingId` while
   tracking is authorised, with `trackingAuthorization` always present so a refusal is
   distinguishable from a prompt that was never shown.
@@ -588,7 +587,7 @@ Field-validated on an iPhone 17 Pro Max in the strictest profile (Location-only,
 
 ### Added
 
-- **Device register on `startScanning()`.** The SDK now reports the device to the backend on init even before any beacon is detected, so it shows up in the Control Hub on first launch. Sends `POST /ingest` with `beacons: []` + `syncTrigger: "register"`, throttled by a 24h TTL + fingerprint (deviceId, appId, businessToken, sdkVersion, osVersion, appBuild) via a new `RegisterStore`. Reuses the existing device-payload builder; the normal beacon sync still skips empty payloads, so there are no spurious requests.
+- **Device register on `startScanning()`.** The SDK now reports the device to the backend on init even before any beacon is detected, so the device is known from its first launch. Sends `POST /ingest` with `beacons: []` + `syncTrigger: "register"`, throttled by a 24h TTL + fingerprint (deviceId, appId, businessToken, sdkVersion, osVersion, appBuild) via a new `RegisterStore`. Reuses the existing device-payload builder; the normal beacon sync still skips empty payloads, so there are no spurious requests.
 
 ## [3.3.1] - 2026-06-11
 
