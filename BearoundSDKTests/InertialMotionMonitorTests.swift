@@ -128,7 +128,7 @@ struct InertialMotionMonitorTests {
         #expect(CoreMotionInertialProvider.continuousTimestamp(sourceSeconds: 100.10,
             sourceUptimeMs: 100_000, continuousMs: 400_000) == 400_100)
         let clock = SamplingClock.now()
-        let continuous = Int64(AppPresenceClock.continuousSeconds() * 1_000)
+        let continuous = Int64(SamplingClock.continuousSeconds() * 1_000)
         #expect(abs(clock.monotonicTimeMs - continuous) < 100)
     }
 

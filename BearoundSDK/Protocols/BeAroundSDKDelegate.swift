@@ -99,14 +99,6 @@ public protocol BeAroundSDKDelegate: AnyObject {
     /// Called after the SDK automatically handled a Bearound silent push (woke, scanned, maybe
     /// ingested) — so the host app can surface it (e.g. a local notification) if it wants.
     func didCompletePushScan(beaconsFound: Int, ingestStarted: Bool, pendingBatches: Int)
-
-    // MARK: - App Presence
-
-    /// Called with each completed app presence round, and once with the cached snapshot
-    /// (`cached == true`, original `snapshotId` / `checkedAt`) right after a delegate is
-    /// assigned. A given `snapshotId` is delivered at most once per delegate assignment.
-    /// Delivered only locally: results are never uploaded by the SDK.
-    func didUpdateAppPresence(_ snapshot: AppPresenceSnapshot)
 }
 
 // Default implementations (all optional except didUpdateBeacons)
@@ -123,5 +115,4 @@ extension BeAroundSDKDelegate {
     public func didExitBluetoothZone() {}
     public func didChangeBluetoothScanMode(_: BluetoothScanMode, nextIdleScanAt _: Date?) {}
     public func didCompletePushScan(beaconsFound _: Int, ingestStarted _: Bool, pendingBatches _: Int) {}
-    public func didUpdateAppPresence(_: AppPresenceSnapshot) {}
 }
