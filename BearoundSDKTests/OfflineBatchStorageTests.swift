@@ -821,7 +821,7 @@ struct OfflineBatchCapturedContextTests {
                 #expect(wifi["apId"] as? String == "fixture-ap")
                 #expect((wifi["timestamp"] as? NSNumber)?.intValue == Int(fix.timeIntervalSince1970 * 1_000))
             } catch { Issue.record(error) }
-            submit()
+            #expect(submit())
             finish(.success(Data("{}".utf8)))
         }
         let delivered: Result<Void, Error> = await withCheckedContinuation { continuation in
