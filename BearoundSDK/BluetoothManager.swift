@@ -148,6 +148,13 @@ class BluetoothManager: NSObject {
         }
     }
 
+    #if DEBUG
+    /// Runs `body` on the BLE queue after the work already queued there (tests).
+    internal func afterQueuedBLEWorkFixture(_ body: @escaping () -> Void) {
+        bleQueue.async(execute: body)
+    }
+    #endif
+
     private var lastSeenBeacons: [String: Date] = [:]
     private let deduplicationInterval: TimeInterval = 1.0
 
