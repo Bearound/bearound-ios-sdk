@@ -111,4 +111,29 @@ struct WifiVisitMatcherTests {
         #expect(matcher.onRound(round(0, seeing: known), places: [bare]).isEmpty)
         #expect(matcher.onRound(round(10, seeing: known), places: [bare]).isEmpty)
     }
+
+    @Test("A place with no minDwellMinutes uses the 2 min default to arrive and to depart")
+    func defaultDwellIsTwoMinutes() {
+        let noDwell = [PlacesConfig.Place(
+            environmentId: "env-wifi", businessId: "biz", name: "env-wifi", gpsVisitClass: "mall_gallery",
+            geometry: PlacesConfig.Geometry(type: "point", lat: -23.5625, lng: -46.6575, center: nil,
+                                            radiusMeters: 80, rings: nil),
+            distanceMeters: 200, minDwellMinutes: nil, knownApIds: [known])]
+        let matcher = WifiVisitMatcher()
+        #expect(matcher.onRound(round(0, seeing: known), places: noDwell).isEmpty)
+        #expect(matcher.onRound(round(1.5, seeing: known), places: noDwell).isEmpty)
+        guard case .arrive(_, let at, _)? = matcher.onRound(round(2, seeing: known), places: noDwell).first else {
+            Issue.record("expected an arrival at 2 min")
+            return
+        }
+        #expect(at == minute(0))
+
+        #expect(matcher.onRound(round(3, seeing: known), places: noDwell).isEmpty)
+        #expect(matcher.onRound(round(4.5, seeing: other), places: noDwell).isEmpty)
+        guard case .depart(_, let departedAt, _)? = matcher.onRound(round(5, seeing: other), places: noDwell).first else {
+            Issue.record("expected a departure 2 min after the last sighting")
+            return
+        }
+        #expect(departedAt == minute(3))
+    }
 }

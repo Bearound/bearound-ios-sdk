@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- **Permanência mínima padrão de 5 para 2 min**, para lugares sem `minDwellMinutes`.
+  Define a expiração da parada aberta pela cerca e a chegada e a partida por Wi-Fi.
+  O valor do lugar, quando vier, continua prevalecendo.
+
 ## [3.17.0] - 2026-10-19
 
 ### Added
