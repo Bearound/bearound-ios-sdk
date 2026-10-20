@@ -16,29 +16,27 @@ import Testing
 @Suite("Encounter mesh on relaunch")
 struct EncounterMeshRelaunchTests {
 
-    /// `setEncounterMesh` hops to the BLE queue; poll instead of guessing a delay.
-    private func waitForMesh(_ manager: BluetoothManager, expected: Bool) async -> Bool {
-        for _ in 0..<100 {
-            if (manager.encounterMesh != nil) == expected { return true }
-            try? await Task.sleep(nanoseconds: 20_000_000)
+    /// Whether the mesh exists once the BLE queue has run what `startScanSurfaces` queued.
+    /// `setEncounterMesh` hops to that serial queue, so the answer comes from the work itself
+    /// and not from a time window: a fixed 2 s poll failed on slow CI runners.
+    private func meshAfterQueuedWork(_ manager: BluetoothManager) async -> Bool {
+        await withCheckedContinuation { continuation in
+            manager.afterQueuedBLEWorkFixture { continuation.resume(returning: manager.encounterMesh != nil) }
         }
-        return (manager.encounterMesh != nil) == expected
     }
 
     @Test("Bringing the scan surfaces up joins the encounter mesh")
     func scanSurfacesJoinMesh() async {
         let manager = BluetoothManager()
         manager.startScanSurfaces(bluetoothAuthorized: true)
-        #expect(await waitForMesh(manager, expected: true))
+        #expect(await meshAfterQueuedWork(manager))
     }
 
     @Test("Bluetooth not authorized: no mesh")
     func deniedBluetoothKeepsMeshOff() async {
         let manager = BluetoothManager()
         manager.startScanSurfaces(bluetoothAuthorized: false)
-        // Give the queue the same window the positive case gets before concluding.
-        _ = await waitForMesh(manager, expected: true)
-        #expect(manager.encounterMesh == nil)
+        #expect(await !meshAfterQueuedWork(manager))
     }
 
     @Test("Background filter carries the mesh UUID only while the mesh is on")
