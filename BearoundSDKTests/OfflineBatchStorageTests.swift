@@ -1146,6 +1146,78 @@ struct OfflineBatchCapturedContextTests {
         #expect(wire.count(.immediateFirst, behindId) == 1)
     }
 
+    @Test("A failed deferred upload releases its batch for retry without losing or duplicating other visits",
+          arguments: [429, 503, -1005])
+    func deferredFailureCanRetry(status: Int) async throws {
+        let storage = makeStorage(); defer { storage.clearAllBatches() }
+        let configuration = SDKConfiguration(businessToken: "fixture-recovery-\(status)")
+        let client = APIClient(configuration: configuration)
+        let sdk = BeAroundSDK.samplingTransportFixture(configuration: configuration, client: client, storage: storage)
+        defer { sdk.endSamplingFixture() }
+        sdk.syncWatchdogTimeoutFixture(0.1)
+        let first = try queuedDeparture(in: storage)
+        let wire = Wire()
+        client.transport = lossyTransport(wire)
+        sdk.replaySamplingFixture()
+        #expect(await eventually { wire.heldCount == 1 })
+        #expect(await eventually { await !self.isSyncing(sdk) })
+
+        // Repeated sync triggers while the OS holds the upload must not add copies.
+        for _ in 0..<25 { sdk.replaySamplingFixture() }
+        #expect(await drain(sdk))
+        #expect(wire.count(.immediateFirst, first) == 1)
+        #expect(wire.count(.background, first) == 1)
+
+        let behind = try queuedDeparture(in: storage)
+        client.transport = { _, _, path, descriptor, submit, finish in
+            #expect(submit())
+            wire.record(path, descriptor.storageIds)
+            finish(.success(Data("{}".utf8)))
+        }
+        #expect(await eventually { await self.drain(sdk) && storage.batchCount == 1 })
+        #expect(wire.count(.immediateFirst, behind) == 1)
+        #expect(storage.loadOldestBatchesWithIds(10).map { $0.id } == [first])
+
+        let failure: Error = status < 0 ? URLError(.networkConnectionLost)
+            : APIError.httpError(statusCode: status)
+        wire.releaseHeld(.failure(failure))
+        #expect(await eventually { !InFlightDeliveries.shared.ids.contains(first) })
+        #expect(storage.batchCount == 1)
+        #expect(await eventually { await self.drain(sdk) && storage.batchCount == 0 })
+        #expect(wire.count(.immediateFirst, first) == 2)
+        #expect(wire.count(.background, first) == 1)
+        #expect(wire.count(.immediateFirst, behind) == 1)
+        #expect(await drain(sdk))
+        #expect(wire.count(.immediateFirst, first) == 2)
+    }
+
+    @Test("Concurrent retry triggers deliver a backlog once and leave no in-flight batches")
+    func concurrentDrainTriggersPreserveBacklog() async throws {
+        let storage = makeStorage(); defer { storage.clearAllBatches() }
+        let configuration = SDKConfiguration(businessToken: "fixture-concurrent-drains")
+        let client = APIClient(configuration: configuration)
+        let sdk = BeAroundSDK.samplingTransportFixture(configuration: configuration, client: client, storage: storage)
+        defer { sdk.endSamplingFixture() }
+        let ids = try (0..<20).map { _ in try queuedDeparture(in: storage) }
+        let wire = Wire()
+        client.transport = { _, _, path, descriptor, submit, finish in
+            #expect(submit())
+            wire.record(path, descriptor.storageIds)
+            DispatchQueue.global().asyncAfter(deadline: .now() + 0.01) {
+                finish(.success(Data("{}".utf8)))
+            }
+        }
+        await withTaskGroup(of: Void.self) { group in
+            for _ in 0..<50 { group.addTask { sdk.replaySamplingFixture() } }
+        }
+        #expect(await eventually { storage.batchCount == 0 && !InFlightDeliveries.shared.ids.contains(where: ids.contains) })
+        #expect(await drain(sdk))
+        for id in ids {
+            #expect(wire.count(.immediateFirst, id) == 1)
+            #expect(wire.count(.background, id) == 0)
+        }
+    }
+
     // MARK: In-flight marks
 
     @Test("A submission marks its batch in flight until its final result, and a refused one releases it")
@@ -1174,9 +1246,39 @@ struct OfflineBatchCapturedContextTests {
         let delivered = Task { await send(heldId) }
         #expect(await eventually { wire.heldCount == 1 })
         #expect(InFlightDeliveries.shared.ids.contains(heldId))
+        let replacement = APIClient(configuration: SDKConfiguration(businessToken: "fixture-replacement"))
+        replacement.outstandingUploads = { $0([]) }
+        let replacementPending: Set<String> = await withCheckedContinuation { continuation in
+            replacement.pendingDeliveryIds { continuation.resume(returning: $0) }
+        }
+        #expect(replacementPending.contains(heldId))
         wire.releaseHeld(.success(Data("{}".utf8)))
         _ = try await delivered.value.get()
         #expect(!InFlightDeliveries.shared.ids.contains(heldId))
+    }
+
+    @Test("Pending-upload lookup completes once when a session response races its timeout",
+          arguments: [false, true])
+    func pendingLookupCompletesOnce(late: Bool) async {
+        let client = APIClient(configuration: SDKConfiguration(businessToken: "fixture-lookup-race"))
+        let wire = Wire()
+        let id = UUID().uuidString
+        let reply = UUID().uuidString
+        var heldAnswer: ((Set<String>) -> Void)?
+        client.outstandingUploads = { answer in
+            if late { heldAnswer = answer }
+            else {
+                answer([id])
+                answer([id])
+            }
+        }
+        client.pendingDeliveryIds(timeout: 0.01) { ids in wire.record(.background, Array(ids) + [reply]) }
+        #expect(await eventually { wire.count(.background, reply) == 1 })
+        // Release the late response only after observing the timeout, independent of load.
+        heldAnswer?([id])
+        try? await Task.sleep(nanoseconds: 150_000_000)
+        #expect(wire.count(.background, reply) == 1)
+        #expect(wire.count(.background, id) == (late ? 0 : 1))
     }
 
     @Test("Upload task descriptions name their persisted batches in both formats")

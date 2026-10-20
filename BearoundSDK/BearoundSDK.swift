@@ -2192,14 +2192,13 @@ public class BeAroundSDK {
                 self.delegate?.willStartSync(beaconCount: beaconCount)
             }
 
-            let locationPermission = Self.authorizationStatus()
-            let bluetoothState = bluetoothManager.isPoweredOn ? "powered_on" : "powered_off"
-            let appInForeground = !isInBackground
-
             var userDevice: UserDevice
             #if DEBUG
             if let supplied = self.samplingFixtureDevice { userDevice = supplied }
             else {
+                let locationPermission = Self.authorizationStatus()
+                let bluetoothState = bluetoothManager.isPoweredOn ? "powered_on" : "powered_off"
+                let appInForeground = !isInBackground
                 userDevice = deviceInfoCollector.collectDeviceInfo(
                 locationPermission: locationPermission,
                 bluetoothState: bluetoothState,
@@ -2207,7 +2206,10 @@ public class BeAroundSDK {
             )
             }
             #else
-                userDevice = deviceInfoCollector.collectDeviceInfo(
+            let locationPermission = Self.authorizationStatus()
+            let bluetoothState = bluetoothManager.isPoweredOn ? "powered_on" : "powered_off"
+            let appInForeground = !isInBackground
+            userDevice = deviceInfoCollector.collectDeviceInfo(
                 locationPermission: locationPermission,
                 bluetoothState: bluetoothState,
                 appInForeground: appInForeground
@@ -2584,7 +2586,12 @@ public class BeAroundSDK {
 
                     DiagnosticsStore.shared.recordSync(success: false, beaconCount: beaconCount)
                     DiagnosticsStore.shared.recordError(error.localizedDescription)
+                    #if DEBUG
+                    // Hostless transport fixtures cannot query notification permissions.
+                    if !self.samplingFixture { ErrorReporter.shared.report(error, context: "drainRetryQueue") }
+                    #else
                     ErrorReporter.shared.report(error, context: "drainRetryQueue")
+                    #endif
 
                     DispatchQueue.main.async {
                         self.delegate?.didCompleteSync(beaconCount: beaconCount, success: false, error: error)
