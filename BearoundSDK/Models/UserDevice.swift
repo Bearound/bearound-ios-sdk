@@ -54,8 +54,8 @@ struct UserDevice: Codable, Equatable {
     /// point the device is joined to — and empty when the host app lacks the Access WiFi
     /// Information capability or location authorisation.
     var wifis: [WifiObservation] = []
-    /// Cached fix, as context for `wifis` and for the beacons in the same payload. The SDK
-    /// never starts a location request of its own.
+    /// Usually cached context for observations in the payload. Explicit foreground acquisition
+    /// and visit events can supply a fresh fix with its original platform timestamp.
     var location: DeviceLocation? = nil
     /// Nearby SDK-carrying devices aggregated by the encounter layer. Empty until it
     /// spins up (requires Bluetooth authorization).

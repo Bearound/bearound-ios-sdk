@@ -59,6 +59,166 @@ public class BeAroundSDK {
     /// CLLocationManager lives inside `BeaconManager`.
     private static let authQueryManager = CLLocationManager()
 
+    private let freshLocationLock = NSLock()
+    private var freshLocationOptIn = false
+    private var freshLocationGeneration = 0
+    private var freshLocationConfigurationsInProgress = 0
+    #if DEBUG
+    private var foregroundLocationConfigurationFixtureHook: (() -> Void)?
+    #endif
+    struct ForegroundLocationContext {
+        let generation: Int
+        let configuration: SDKConfiguration
+        let sdkInfo: SDKInfo
+        let userProperties: UserProperties?
+    }
+    private var freshLocationBurst: FreshLocationBurst<ForegroundLocationContext>?
+    private var foregroundLocationRequest: ForegroundLocationRequest?
+
+    /// Disabled by default. Call after configure on each launch to opt in for this process.
+    /// Configure resets the opt-in. Acquires at most three accurate fixes per
+    /// foreground burst, with a fifteen-minute cooldown and no background guarantee.
+    /// Uses existing grants, never prompts. Separately authorizes durable location-only
+    /// events even if the empty-scan heartbeat is disabled.
+    public func setForegroundLocationBurstsEnabled(_ enabled: Bool) {
+        freshLocationLock.lock()
+        let accepted = enabled && freshLocationConfigurationsInProgress == 0
+        if freshLocationOptIn != accepted || !accepted { freshLocationGeneration += 1 }
+        freshLocationOptIn = accepted
+        freshLocationLock.unlock()
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            if accepted { self.startForegroundLocationBurst() } else { self.freshLocationBurst?.stop() }
+        }
+    }
+
+    private func startForegroundLocationBurst() {
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.freshLocationLock.lock(); let enabled = self.freshLocationOptIn && self.freshLocationConfigurationsInProgress == 0; self.freshLocationLock.unlock()
+            guard enabled, self.configuration != nil else { return }
+            #if DEBUG
+            guard !self.samplingFixture else { return }
+            #endif
+            let platform = self.foregroundLocationRequest ?? ForegroundLocationRequest()
+            self.foregroundLocationRequest = platform
+            platform.onEligibilityLost = { [weak self] in self?.stopForegroundLocationBurst() }
+            if self.freshLocationBurst == nil {
+                self.freshLocationBurst = FreshLocationBurst<ForegroundLocationContext>(
+                    elapsed: { ProcessInfo.processInfo.systemUptime },
+                    wallTime: { Date().timeIntervalSince1970 },
+                    eligible: { [weak self] in
+                        guard let self else { return false }
+                        self.freshLocationLock.lock(); let enabled = self.freshLocationOptIn && self.freshLocationConfigurationsInProgress == 0; self.freshLocationLock.unlock()
+                        return enabled && self.configuration != nil && SDKConfigStorage.loadIsScanning() &&
+                            DataCollectionPolicyStore.current.location && platform.eligible()
+                    },
+                    captureContext: { [weak self] in self?.captureForegroundLocationContext() },
+                    contextIsCurrent: { [weak self] in self?.isForegroundLocationContextCurrent($0) == true },
+                    schedule: { delay, action in
+                        let work = DispatchWorkItem(block: action)
+                        DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
+                        return { work.cancel() }
+                    }, request: platform.request,
+                    enqueue: { [weak self] fix, context, done in
+                        guard let self else { done(false); return }
+                        self.enqueueForegroundLocation(fix, context: context, completion: done)
+                    })
+            }
+            self.freshLocationBurst?.start()
+        }
+    }
+
+    private func stopForegroundLocationBurst() {
+        freshLocationLock.lock(); freshLocationGeneration += 1; freshLocationLock.unlock()
+        if Thread.isMainThread { freshLocationBurst?.stop() }
+        else { DispatchQueue.main.async { [weak self] in self?.freshLocationBurst?.stop() } }
+    }
+
+    private func beginForegroundLocationConfiguration() {
+        freshLocationLock.lock()
+        freshLocationConfigurationsInProgress += 1
+        freshLocationGeneration += 1
+        freshLocationLock.unlock()
+    }
+
+    private func finishForegroundLocationConfiguration() {
+        freshLocationLock.lock()
+        freshLocationConfigurationsInProgress -= 1
+        freshLocationGeneration += 1
+        freshLocationLock.unlock()
+    }
+
+    func captureForegroundLocationContext() -> ForegroundLocationContext? {
+        freshLocationLock.lock(); defer { freshLocationLock.unlock() }
+        guard freshLocationConfigurationsInProgress == 0, freshLocationOptIn,
+              let config = configuration, let info = sdkInfo,
+              info.appId == config.appId, info.technology == config.technology else { return nil }
+        return ForegroundLocationContext(generation: freshLocationGeneration, configuration: config,
+            sdkInfo: info, userProperties: userProperties)
+    }
+
+    private func isForegroundLocationContextCurrent(_ context: ForegroundLocationContext) -> Bool {
+        freshLocationLock.lock(); defer { freshLocationLock.unlock() }
+        guard freshLocationConfigurationsInProgress == 0, freshLocationOptIn, let info = sdkInfo else { return false }
+        return freshLocationGeneration == context.generation &&
+            configuration?.businessToken == context.configuration.businessToken &&
+            configuration?.apiBaseURL == context.configuration.apiBaseURL &&
+            configuration?.appId == context.configuration.appId &&
+            info.version == context.sdkInfo.version && info.platform == context.sdkInfo.platform &&
+            info.appId == context.sdkInfo.appId && info.build == context.sdkInfo.build &&
+            info.technology == context.sdkInfo.technology
+    }
+
+    private func canPersistForegroundLocation(_ context: ForegroundLocationContext) -> Bool {
+        isForegroundLocationContextCurrent(context) && DataCollectionPolicyStore.current.location &&
+            SDKConfigStorage.loadIsScanning()
+    }
+
+    func enqueueForegroundLocation(_ fix: DeviceLocation, context: ForegroundLocationContext,
+        completion: @escaping (Bool) -> Void) {
+        // Context is pinned before the native request, never reconstructed when its fix arrives.
+        guard isForegroundLocationContextCurrent(context) else { completion(false); return }
+        beaconQueue.async { [weak self] in
+            guard let self, self.canPersistForegroundLocation(context) else {
+                DispatchQueue.main.async { completion(false) }; return
+            }
+            let device = self.deviceInfoCollector.collectDeviceInfo(
+                locationPermission: Self.authorizationStatus(),
+                bluetoothState: self.bluetoothManager.isPoweredOn ? "powered_on" : "powered_off",
+                appInForeground: true)
+            do {
+                let envelope = try Self.foregroundLocationEnvelope(fix, collected: device,
+                    configuration: context.configuration, sdkInfo: context.sdkInfo, userProperties: context.userProperties)
+                guard self.canPersistForegroundLocation(context),
+                      let id = self.offlineBatchStorage.saveObservation(envelope, policy: DataCollectionPolicyStore.current) else {
+                    DispatchQueue.main.async { completion(false) }; return
+                }
+                guard self.canPersistForegroundLocation(context) else {
+                    self.offlineBatchStorage.removeBatch(id: id)
+                    DispatchQueue.main.async { completion(false) }; return
+                }
+                self.drainRetryQueue()
+                DispatchQueue.main.async { completion(true) }
+            } catch {
+                DispatchQueue.main.async { completion(false) }
+            }
+        }
+    }
+
+    static func foregroundLocationEnvelope(_ fix: DeviceLocation, collected: UserDevice,
+        configuration: SDKConfiguration, sdkInfo: SDKInfo, userProperties: UserProperties? = nil) throws -> StoredObservationEnvelope {
+        var device = collected
+        device.location = fix
+        device.visit = nil
+        let payload = APIClient.makeObservationPayload([], sdkInfo: sdkInfo, userDevice: device,
+            userProperties: userProperties, syncTrigger: "location_burst")
+        return try StoredObservationEnvelope(batchId: UUID().uuidString, storedAtMs: SamplingClock.now().wallTimeMs,
+            tenantFingerprint: SamplingTenantFingerprint.make(endpoint: configuration.apiBaseURL,
+                appID: configuration.appId, deviceID: device.deviceId, businessToken: configuration.businessToken),
+            originalPayload: payload, sampling: nil, policy: configuration.dataCollectionPolicy, deliveryProtocol: .legacy)
+    }
+
     // MARK: - Public Properties
 
     public weak var delegate: BeAroundSDKDelegate?
@@ -477,6 +637,8 @@ public class BeAroundSDK {
         let buildNumber = Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "1"
         let build = Int(buildNumber) ?? 1
         // Wire the *real* SDK version (not SDKInfo's stale default) and the configured technology.
+        freshLocationLock.lock()
+        defer { freshLocationLock.unlock() }
         sdkInfo = SDKInfo(
             version: BeAroundSDK.version,
             appId: config.appId,
@@ -872,6 +1034,7 @@ public class BeAroundSDK {
     }
 
     @objc private func appDidBecomeActiveForInertialSampling() {
+        startForegroundLocationBurst()
         samplingLifecycleLock.lock()
         inertialForegroundActive = true
         samplingLifecycleLock.unlock()
@@ -879,6 +1042,7 @@ public class BeAroundSDK {
     }
 
     @objc private func appWillResignActiveForInertialSampling() {
+        stopForegroundLocationBurst()
         samplingLifecycleLock.lock()
         inertialForegroundActive = false
         samplingLifecycleLock.unlock()
@@ -972,6 +1136,9 @@ public class BeAroundSDK {
         adaptiveSamplingEnabled: Bool = true,
         collectMotionSensors: Bool? = nil
     ) {
+        beginForegroundLocationConfiguration()
+        defer { finishForegroundLocationConfiguration() }
+        setForegroundLocationBurstsEnabled(false)
         let config = SDKConfiguration(
             businessToken: businessToken,
             scanPrecision: scanPrecision,
@@ -988,7 +1155,19 @@ public class BeAroundSDK {
             collectMotionSensors: collectMotionSensors
         )
 
+        freshLocationLock.lock()
         configuration = config
+        freshLocationGeneration += 1
+        freshLocationLock.unlock()
+        #if DEBUG
+        if let hook = foregroundLocationConfigurationFixtureHook {
+            // Exercise the real partial-configuration boundary without host-only platform side effects.
+            hook()
+            apiClient = APIClient(configuration: config)
+            setupSDKInfo(from: config)
+            return
+        }
+        #endif
         // Applied FIRST: everything below (telemetry install, an in-flight sync) can reach a
         // collector, and a collector that runs before the policy lands
         // would read a signal the host just turned off.
@@ -1238,9 +1417,11 @@ public class BeAroundSDK {
         //    Sends POST /ingest with beacons:[] + syncTrigger:"register" so every device
         //    appears in the Control Hub even if it never detects a beacon nearby.
         registerDeviceIfNeeded()
+        startForegroundLocationBurst()
     }
 
     public func stopScanning() {
+        stopForegroundLocationBurst()
         updatePhysicalZoneCollectionEligibility(scanRegistered: false)
         renewSamplingLifecycle(startMotion: false)
         bluetoothManager.setEncounterMesh(enabled: false)
@@ -1408,6 +1589,23 @@ public class BeAroundSDK {
         sdk.sdkInfo = SDKInfo(appId: configuration.appId, build: 1)
         if withRuntime { sdk.configureSampling(configuration, deviceID: "device-1") }
         return sdk
+    }
+
+    internal func setForegroundLocationConfigurationFixtureHook(_ hook: @escaping () -> Void) {
+        precondition(samplingFixture)
+        foregroundLocationConfigurationFixtureHook = hook
+    }
+
+    internal func replaceForegroundLocationFixtureConfiguration(_ config: SDKConfiguration) {
+        precondition(samplingFixture)
+        beginForegroundLocationConfiguration()
+        defer { finishForegroundLocationConfiguration() }
+        setForegroundLocationBurstsEnabled(false)
+        freshLocationLock.lock()
+        configuration = config
+        sdkInfo = SDKInfo(appId: config.appId, build: 1, technology: config.technology)
+        freshLocationGeneration += 1
+        freshLocationLock.unlock()
     }
 
     internal func inspectSamplingFixture(_ completion: @escaping (AdaptiveSamplingRuntime?, Bool) -> Void) {
