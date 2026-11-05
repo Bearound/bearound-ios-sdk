@@ -3,8 +3,8 @@ import Foundation
 
 /// Where the device was, as context for the observations in the same payload.
 ///
-/// Always the **cached** fix that CoreLocation already holds — the SDK never starts a
-/// location request of its own, so this costs no extra battery and no GPS wake-up.
+/// Usually cached context. Explicit foreground acquisition and visits can attach fresh fixes.
+/// The timestamp always belongs to the original platform fix.
 struct DeviceLocation: Codable, Equatable {
     let latitude: Double
     let longitude: Double
@@ -14,8 +14,8 @@ struct DeviceLocation: Codable, Equatable {
     /// the backend needs to know that to weigh it.
     let timestamp: Int
     /// Which subsystem produced it. iOS does not break this down the way Android does, so
-    /// it is `"ios"` for the cached fix, kept for shape parity between platforms. Visit
-    /// events (VisitMonitor) report `"gnss"`.
+    /// it is `"ios"` for cached context. Explicit foreground acquisition and visit
+    /// events report `"gnss"`.
     let source: String
 
     init?(_ location: CLLocation?, source: String = "ios") {

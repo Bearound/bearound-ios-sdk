@@ -213,6 +213,33 @@ says why (`missingEntitlement`, `locationNotAuthorized`, `notConnected` or `read
 On iOS only the network the device is joined to is visible. `configure(collectWifi: false)`,
 `collectLocation: false` or disabling visit detection switch it off.
 
+#### Coleta opcional de posições em primeiro plano (ainda não publicada)
+
+O publisher pode habilitar explicitamente a aquisição limitada de posições novas com o app ativo:
+
+```swift
+BeAroundSDK.shared.configure(businessToken: "YOUR_TOKEN")
+BeAroundSDK.shared.setForegroundLocationBurstsEnabled(true)
+BeAroundSDK.shared.startScanning()
+```
+
+A opção começa desligada e é reiniciada a cada chamada de `configure`. Ela usa a permissão de
+localização já concedida pelo usuário e não abre pedidos de permissão. `collectLocation: false`,
+precisão reduzida, modo de pouca energia e pressão térmica séria impedem a aquisição.
+
+Uma ativação elegível solicita até três posições precisas, separadas por 35 segundos. Cada
+solicitação tem prazo de 10 segundos, o conjunto tem limite de 110 segundos e há intervalo
+mínimo de 15 minutos entre conjuntos. Cada posição aceita mantém o timestamp original e entra
+separadamente na fila persistente existente com `syncTrigger: "location_burst"`. As posições
+precisam ser novas, distintas e ter precisão de até 50 metros. Completar a sequência exige
+pelo menos 60 segundos tanto nos timestamps quanto no relógio monotônico. Colocar o app em
+segundo plano, parar, reconfigurar ou revogar a permissão cancela a aquisição.
+
+Essa ativação autoriza separadamente eventos contendo somente localização, inclusive com
+`presenceHeartbeatInterval` em zero. O publisher deve validar consumo de energia e entrega
+real das posições nos aparelhos antes da distribuição. A funcionalidade não garante coleta
+em segundo plano nem uma quantidade específica de visitas na audiência.
+
 #### Advertising identifier (IDFA — optional)
 
 The SDK can report the **IDFA**, the identifier iOS provides for advertising.

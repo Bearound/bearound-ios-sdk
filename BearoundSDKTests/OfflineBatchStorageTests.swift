@@ -631,6 +631,114 @@ struct OfflineBatchCapturedContextTests {
         OfflineBatchStorage(directoryName: testDirectory)
     }
 
+    @Test("Enable and capture during public configure cannot observe partially replaced SDK metadata",
+          arguments: ["ios-native", "fixture-framework-b"])
+    func foregroundBurstWaitsForEntireConfigure(technology: String) throws {
+        let storage = makeStorage()
+        defer { storage.clearAllBatches() }
+        let a = SDKConfiguration(businessToken: "fixture-tenant-a")
+        let sdk = BeAroundSDK.samplingTransportFixture(configuration: a, client: APIClient(configuration: a),
+            storage: storage, withRuntime: false)
+        sdk.setForegroundLocationBurstsEnabled(true)
+        let old = try #require(sdk.captureForegroundLocationContext())
+        var blockedDuringUpdate = false
+        sdk.setForegroundLocationConfigurationFixtureHook { [weak sdk] in
+            guard let sdk else { return }
+            sdk.setForegroundLocationBurstsEnabled(true)
+            blockedDuringUpdate = sdk.captureForegroundLocationContext() == nil
+        }
+        // The hook runs after configuration B replaces A but before SDKInfo B replaces A.
+        sdk.configure(businessToken: "fixture-tenant-b", technology: technology)
+        #expect(blockedDuringUpdate)
+        #expect(sdk.captureForegroundLocationContext() == nil) // A mid-config opt-in is ignored.
+        sdk.setForegroundLocationBurstsEnabled(true)
+        let current = try #require(sdk.captureForegroundLocationContext())
+        #expect(current.configuration.businessToken == "fixture-tenant-b")
+        #expect(current.configuration.technology == technology)
+        #expect(current.sdkInfo.technology == technology)
+        #expect(current.generation != old.generation)
+    }
+
+    @Test("An old acquired fix cannot enter the SDK queue after another tenant is configured and enabled")
+    func staleBurstCannotPersistUnderReconfiguredTenant() async throws {
+        let storage = makeStorage()
+        defer { storage.clearAllBatches() }
+        let a = SDKConfiguration(businessToken: "fixture-tenant-a")
+        let b = SDKConfiguration(businessToken: "fixture-tenant-b")
+        let sdk = BeAroundSDK.samplingTransportFixture(configuration: a, client: APIClient(configuration: a),
+            storage: storage, withRuntime: false)
+        sdk.setForegroundLocationBurstsEnabled(true)
+        let requestContext = try #require(sdk.captureForegroundLocationContext())
+        sdk.replaceForegroundLocationFixtureConfiguration(b)
+        sdk.setForegroundLocationBurstsEnabled(true)
+        let newContext = try #require(sdk.captureForegroundLocationContext())
+        #expect(requestContext.configuration.businessToken == "fixture-tenant-a")
+        #expect(newContext.configuration.businessToken == "fixture-tenant-b")
+        #expect(requestContext.generation != newContext.generation)
+        let fix = DeviceLocation(latitude: -23.46, longitude: -46.87, accuracy: 10,
+            timestamp: Date(), source: "gnss")
+        let accepted = await withCheckedContinuation { continuation in
+            sdk.enqueueForegroundLocation(fix, context: requestContext) { continuation.resume(returning: $0) }
+        }
+        #expect(!accepted)
+        #expect(storage.observationRecords(includeQuarantined: true).isEmpty)
+    }
+
+    @Test("Location-only burst fixes survive restart with tenant fences and three distinct retry payloads")
+    func locationBurstRetainsEveryOriginalFix() async throws {
+        let storage = makeStorage()
+        defer { storage.clearAllBatches() }
+        let start = Date().addingTimeInterval(-120)
+        let config = SDKConfiguration(businessToken: "fixture-location-burst")
+        let info = SDKInfo(appId: config.appId, build: 1)
+        var expectedTimes: [Int] = []
+        for offset in [0.0, 35.0, 70.0] {
+            var device = makeDevice(latitude: 0, fixAt: Date()) // Unrelated cached context.
+            device.visit = VisitPayload(visitEvent(at: Date()))
+            let fix = DeviceLocation(latitude: -23.46, longitude: -46.87, accuracy: 10,
+                timestamp: start.addingTimeInterval(offset), source: "gnss")
+            expectedTimes.append(fix.timestamp)
+            let envelope = try BeAroundSDK.foregroundLocationEnvelope(fix, collected: device,
+                configuration: config, sdkInfo: info)
+            #expect(storage.saveObservation(envelope) != nil)
+        }
+        let restored = makeStorage()
+        let records = restored.observationRecords()
+        #expect(records.count == 3)
+        let tenant = SamplingTenantFingerprint.make(endpoint: config.apiBaseURL, appID: config.appId,
+            deviceID: "device-1", businessToken: config.businessToken)
+        #expect(records.allSatisfy { $0.envelope.tenantFingerprint == tenant && $0.envelope.deliveryProtocol == .legacy })
+        #expect(restored.loadReplayGroup(tenantFingerprint: String(repeating: "b", count: 64),
+            capabilityAvailable: false).isEmpty)
+        let replay = restored.loadReplayGroup(tenantFingerprint: tenant, capabilityAvailable: false)
+        #expect(!replay.isEmpty)
+        let client = APIClient(configuration: config)
+        client.submissionContextProvider = { $0(RequestSubmissionContext(policy: .allEnabled)) }
+        var sentTimestamps: [Int] = []
+        client.transport = { _, data, _, _, submit, finish in
+            do {
+                let body = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
+                #expect(body["syncTrigger"] as? String == "location_burst")
+                #expect((body["beacons"] as? [Any])?.isEmpty == true)
+                #expect(body["visit"] == nil)
+                let location = try #require(body["location"] as? [String: Any])
+                #expect(location["latitude"] as? Double == -23.46)
+                sentTimestamps.append(try #require((location["timestamp"] as? NSNumber)?.intValue))
+            } catch { Issue.record(error) }
+            submit()
+            finish(.success(Data("{}".utf8)))
+        }
+        for record in records {
+            let result: Result<Data, Error> = await withCheckedContinuation { continuation in
+                client.sendObservation(record.envelope, storageId: record.storageId) {
+                    continuation.resume(returning: $0)
+                }
+            }
+            _ = try result.get()
+        }
+        #expect(sentTimestamps == expectedTimes)
+    }
+
     /// Built by hand: `DeviceInfoCollector` touches `UNUserNotificationCenter`, which aborts
     /// in this host-less test bundle.
     private func makeDevice(latitude: Double, fixAt: Date) -> UserDevice {
