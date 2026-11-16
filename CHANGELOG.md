@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Amostragem de permanência.** Ao entrar na cerca de um lugar configurado para isso, o SDK
+  coleta uma série curta de posições novas enquanto a permanência dura, uma por envio, no ritmo
+  definido para o lugar (`dwellSampling` na lista de lugares próximos ou na resposta do envio).
+  Termina na saída da cerca, ao se afastar do lugar ou no fim do tempo definido. Limites no
+  aparelho: intervalo mínimo de 30 s, no máximo 60 min por permanência, 8 por dia, nada com o
+  Modo de Pouca Energia ligado ou com bateria em 20% ou menos fora da tomada. Usa os mesmos
+  requisitos da detecção de visita (autorização **Sempre**, localização precisa, coleta de
+  localização permitida) e o modo `location` em `UIBackgroundModes`, que o SDK já usa para
+  beacons em segundo plano. Os envios usam `syncTrigger: "dwell"`. Nenhuma permissão nova e
+  nenhuma mudança de API pública.
+
 ## [3.18.0] - 2026-10-19
 
 ### Changed

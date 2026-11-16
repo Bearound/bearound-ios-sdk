@@ -219,6 +219,7 @@ final class VisitMonitor {
     private let policy: () -> DataCollectionPolicy
     private let budget: RegionBudget
     private let wifi: WifiRoundProviding?
+    private let dwell: DwellSampler?
 
     private var matcher = WifiVisitMatcher()
     private var wifiRoundInFlight = false
@@ -240,7 +241,8 @@ final class VisitMonitor {
         clock: VisitClock = SystemVisitClock(),
         policy: @escaping () -> DataCollectionPolicy = { DataCollectionPolicyStore.current },
         budget: RegionBudget = RegionBudget(),
-        wifi: WifiRoundProviding? = nil
+        wifi: WifiRoundProviding? = nil,
+        dwell: DwellSampler? = nil
     ) {
         self.locationManager = locationManager
         self.fetcher = fetcher
@@ -250,6 +252,7 @@ final class VisitMonitor {
         self.policy = policy
         self.budget = budget
         self.wifi = wifi
+        self.dwell = dwell
         locationManager.delegate = self
     }
 
@@ -339,6 +342,7 @@ final class VisitMonitor {
 
     private func tearDown() {
         discardWifiState()
+        dwell?.stopAll()
         pendingArrivalEnvironmentId = nil
         pendingRefresh = false
         pendingRefreshForced = false
@@ -515,6 +519,8 @@ final class VisitMonitor {
     /// armed while already inside. The arrival goes out with the fix `requestLocation` brings.
     private func fenceArrival(environmentId: String) {
         guard canReportVisits else { return }
+        startDwellSampling(environmentId: environmentId, trigger: "fence")
+        startDwellSampling(environmentId: environmentId, trigger: "fence")
         // Arrival already sent for this stop (CLVisit or an earlier fence).
         if isFenceArrivalCovered(environmentId: environmentId) {
             store.reportedFenceStays.insert(environmentId)
@@ -543,6 +549,30 @@ final class VisitMonitor {
         store.openStop = nil
         store.lastDepartureAt = now
         NSLog("[BeAroundSDK] Visit fence %@ exit: departure sent", environmentId)
+    }
+
+    // MARK: Dwell sampling
+
+    /// Inside the fence of a place whose policy asks for dwell sampling: starts a burst (the
+    /// sampler applies its own limits: one per stay, cooldown, daily cap, power).
+    private func startDwellSampling(environmentId: String, trigger: String) {
+        guard let dwell, let place = place(environmentId), let policy = place.dwellSampling,
+              let center = place.geometry.circleCenter else { return }
+        dwell.start(environmentId: environmentId, center: center,
+                    radiusMeters: max(place.geometry.radiusMeters, Self.minimumEnvironmentRadiusMeters),
+                    policy: policy, trigger: trigger)
+    }
+
+    /// The `/ingest` answer says the last batch was inside a place that asks for dwell
+    /// sampling. Covers a place outside the armed fences or missing from an older list.
+    func handle(_ directive: DwellDirective) {
+        guard let dwell, canReportVisits else { return }
+        let place = place(directive.environmentId)
+        guard let center = directive.center ?? place?.geometry.circleCenter else { return }
+        let radius = directive.radiusMeters ?? place?.geometry.radiusMeters ?? Self.minimumEnvironmentRadiusMeters
+        dwell.start(environmentId: directive.environmentId, center: center,
+                    radiusMeters: max(radius, Self.minimumEnvironmentRadiusMeters),
+                    policy: directive.policy, trigger: "ingest")
     }
 
     static func distanceMeters(_ lat1: Double, _ lng1: Double, _ lat2: Double, _ lng2: Double) -> Double {
@@ -675,6 +705,7 @@ extension VisitMonitor: VisitLocationManagerDelegate {
         }
         guard let environmentId = RegionBudget.environmentId(fromIdentifier: identifier) else { return }
         store.reportedFenceStays.remove(environmentId)
+        dwell?.endStay(environmentId: environmentId)
         // Left before the arrival fix came back: a drive-by that never opened a stop.
         if pendingArrivalEnvironmentId == environmentId { pendingArrivalEnvironmentId = nil }
         guard canReportVisits else { return }

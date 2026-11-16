@@ -322,6 +322,12 @@ class APIClient {
         get { observerLock.lock(); defer { observerLock.unlock() }; return _responseObserver }
         set { observerLock.lock(); defer { observerLock.unlock() }; _responseObserver = newValue }
     }
+    private var _ingestAnswerObserver: ((Data) -> Void)?
+    /// Sees the body of every successful `/ingest` answer (any delivery path, this process only).
+    var ingestAnswerObserver: ((Data) -> Void)? {
+        get { observerLock.lock(); defer { observerLock.unlock() }; return _ingestAnswerObserver }
+        set { observerLock.lock(); defer { observerLock.unlock() }; _ingestAnswerObserver = newValue }
+    }
     private var _submissionContextProvider: ((@escaping (RequestSubmissionContext?) -> Void) -> Void)?
     var submissionContextProvider: ((@escaping (RequestSubmissionContext?) -> Void) -> Void)? {
         get { observerLock.lock(); defer { observerLock.unlock() }; return _submissionContextProvider }
@@ -503,6 +509,7 @@ class APIClient {
                     }
                     if case .success(let data) = result {
                         self.responseObserver?(data, requestedAt, self.clockProvider())
+                        self.ingestAnswerObserver?(data)
                     }
                     completion(result)
                 }

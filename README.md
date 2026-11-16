@@ -213,6 +213,19 @@ says why (`missingEntitlement`, `locationNotAuthorized`, `notConnected` or `read
 On iOS only the network the device is joined to is visible. `configure(collectWifi: false)`,
 `collectLocation: false` or disabling visit detection switch it off.
 
+#### Dwell sampling
+
+On places configured for it, the SDK confirms a stay with a short series of fresh location fixes
+after the device enters the place's geofence, one `/ingest` request per fix
+(`syncTrigger: "dwell"`). The pace comes with the place configuration; the SDK caps it at one
+fix every 30 s, 60 min per stay and 8 stays per day, and ends early on geofence exit, when the
+device moves away from the place, in Low Power Mode or at 20% battery or less while not charging.
+
+It needs what visit detection already needs (location authorisation **Always**, Precise
+Location, `collectLocation` on) plus `location` in `UIBackgroundModes`, which background beacon
+detection already requires. While it runs, iOS shows the location arrow in the status bar.
+`configure(collectLocation: false)` or disabling visit detection switch it off.
+
 #### Advertising identifier (IDFA — optional)
 
 The SDK can report the **IDFA**, the identifier iOS provides for advertising.
