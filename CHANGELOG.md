@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **Evento reenviado várias vezes depois de quedas de rede.** Quando a resposta de um envio se
+  perdia, o SDK passava o envio para o upload em segundo plano do iOS, que pode esperar a rede
+  voltar. Enquanto esse upload esperava, a fila de reenvio submetia o mesmo lote de novo a cada
+  tentativa, e todas as cópias chegavam juntas quando a conectividade voltava. Agora um lote com
+  envio pendente fica fora da fila de reenvio até esse envio terminar: sai da fila quando a
+  entrega é confirmada e volta a ela se o envio falhar. Vale também para o upload deixado por uma
+  execução anterior do app. Uma conexão que cai depois de o servidor receber o envio, mas antes
+  da resposta, ainda pode gerar uma segunda cópia, porque o SDK não tem como saber que a
+  primeira chegou.
+
 ## [3.18.0] - 2026-10-19
 
 ### Changed

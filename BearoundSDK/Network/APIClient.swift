@@ -25,6 +25,38 @@ struct RequestSubmissionContext {
     var adaptiveAllowedAtSubmission: (() -> Bool)? = nil
 }
 
+/// Persisted batches whose submission has not reported its final result yet, process-wide:
+/// the client is replaced on configure, the uploads it started are not.
+///
+/// The retry drain skips these ids. A submission can outlive the drain that started it (the
+/// immediate attempt fell back to a background upload the OS deferred, then the drain's
+/// watchdog or a sampling reconfiguration released the lock); submitting the same batch again
+/// put one more copy on the wire for every later drain.
+final class InFlightDeliveries {
+    static let shared = InFlightDeliveries()
+
+    private let lock = NSLock()
+    private var counts: [String: Int] = [:]
+
+    func begin(_ ids: [String]) {
+        lock.lock(); defer { lock.unlock() }
+        for id in ids { counts[id, default: 0] += 1 }
+    }
+
+    func end(_ ids: [String]) {
+        lock.lock(); defer { lock.unlock() }
+        for id in ids {
+            guard let count = counts[id] else { continue }
+            counts[id] = count > 1 ? count - 1 : nil
+        }
+    }
+
+    var ids: Set<String> {
+        lock.lock(); defer { lock.unlock() }
+        return Set(counts.keys)
+    }
+}
+
 /// Owns the single background `URLSession` used to upload beacon batches.
 ///
 /// A background session survives app suspension and termination: the OS continues the
@@ -189,6 +221,25 @@ final class BackgroundSessionManager: NSObject {
         identityLock.lock(); identityRequired.subtract(identityKeys(reconciliation)); identityLock.unlock()
         return storage.removeBatches(ids: reconciliation.storageIds)
     }
+
+    /// The persisted batch ids an upload task carries in its `taskDescription`: the JSON
+    /// reconciliation descriptor, or the comma-separated ids of an older SDK.
+    static func storageIds(taskDescription: String?) -> [String] {
+        guard let description = taskDescription, !description.isEmpty else { return [] }
+        guard description.hasPrefix("{") else { return description.split(separator: ",").map(String.init) }
+        guard let data = description.data(using: .utf8),
+              let reconciliation = try? JSONDecoder().decode(ObservationDeliveryReconciliation.self, from: data)
+        else { return [] }
+        return reconciliation.storageIds
+    }
+
+    /// Batch ids of every upload the background session still holds, including one a previous
+    /// process handed over before it ended (its completion arrives in this process later).
+    func outstandingStorageIds(_ completion: @escaping (Set<String>) -> Void) {
+        session.getAllTasks { tasks in
+            completion(Set(tasks.flatMap { Self.storageIds(taskDescription: $0.taskDescription) }))
+        }
+    }
 }
 
 extension BackgroundSessionManager: URLSessionDataDelegate {
@@ -352,6 +403,12 @@ class APIClient {
         get { observerLock.lock(); defer { observerLock.unlock() }; return _transport }
         set { observerLock.lock(); defer { observerLock.unlock() }; _transport = newValue }
     }
+    private var _outstandingUploads: ((@escaping (Set<String>) -> Void) -> Void)?
+    /// Replaces the background session query in `pendingDeliveryIds` (tests).
+    var outstandingUploads: ((@escaping (Set<String>) -> Void) -> Void)? {
+        get { observerLock.lock(); defer { observerLock.unlock() }; return _outstandingUploads }
+        set { observerLock.lock(); defer { observerLock.unlock() }; _outstandingUploads = newValue }
+    }
 
     /// Short-timeout session for `.immediateFirst` deliveries. Ephemeral: no cache/cookies,
     /// nothing persisted — the durable path is the background session + OfflineBatchStorage.
@@ -427,9 +484,18 @@ class APIClient {
         forceIdentity: Bool = false, attemptObserver: (() -> Void)? = nil,
         isEligible: @escaping (RequestSubmissionContext, SamplingClock) -> Bool = { _, _ in true },
         body: @escaping (RequestSubmissionContext, SamplingClock) throws -> Data,
-        completion: @escaping (Result<Data, Error>) -> Void) {
+        completion settle: @escaping (Result<Data, Error>) -> Void) {
         guard let url = URL(string: "\(configuration.apiBaseURL)/ingest") else {
-            completion(.failure(APIError.invalidURL)); return
+            settle(.failure(APIError.invalidURL)); return
+        }
+        // In flight until the final result, across the background fallback and the identity
+        // retry. Released after the caller ran: on success it has removed the batch by then,
+        // so no drain sees it on disk without the mark.
+        let persistedIds = reconciliation.storageIds
+        InFlightDeliveries.shared.begin(persistedIds)
+        let completion: (Result<Data, Error>) -> Void = { result in
+            settle(result)
+            InFlightDeliveries.shared.end(persistedIds)
         }
         var submittedLogicalOperation = false
         func attempt(_ path: DeliveryPath, identityRetry: Bool = false, forceAttemptIdentity: Bool = false) {
@@ -540,6 +606,27 @@ class APIClient {
     /// pending delegate callbacks fire). Cheap and idempotent.
     func ensureBackgroundSessionAlive() {
         sessionManager.ensureSessionAlive()
+    }
+
+    /// Persisted batch ids the retry drain must not submit now: those with a submission still
+    /// running in this process and those the background session still holds an upload for.
+    /// Answers with the in-process ids alone if the session does not answer within `timeout`,
+    /// so a session that never calls back cannot stall the queue.
+    func pendingDeliveryIds(timeout: TimeInterval = 5, _ completion: @escaping (Set<String>) -> Void) {
+        let query: (@escaping (Set<String>) -> Void) -> Void
+        if let outstandingUploads { query = outstandingUploads }
+        else if transport != nil { query = { $0([]) } }
+        else { query = sessionManager.outstandingStorageIds }
+        let lock = NSLock()
+        var answered = false
+        let answer: (Set<String>?) -> Void = { outstanding in
+            lock.lock(); let first = !answered; answered = true; lock.unlock()
+            guard first else { return }
+            if outstanding == nil { NSLog("[BeAroundSDK] Background upload list unavailable after %.0fs; using in-process deliveries only", timeout) }
+            completion((outstanding ?? []).union(InFlightDeliveries.shared.ids))
+        }
+        DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + timeout) { answer(nil) }
+        query { answer($0) }
     }
 
     /// `persistedBatchIds`: OfflineBatchStorage id(s) backing this payload. They ride on the
