@@ -200,6 +200,12 @@ final class DwellSamplingStore {
         ended[environmentId] = date.timeIntervalSince1970
         defaults.set(ended, forKey: Self.keyEndedAt)
     }
+
+    func clearEnd(_ environmentId: String) {
+        guard var ended = defaults.dictionary(forKey: Self.keyEndedAt) as? [String: Double],
+              ended.removeValue(forKey: environmentId) != nil else { return }
+        defaults.set(ended, forKey: Self.keyEndedAt)
+    }
 }
 
 // MARK: - DwellSampler
@@ -334,6 +340,9 @@ final class DwellSampler {
     func endStay(environmentId: String) {
         if burst?.environmentId == environmentId { finish(.fenceExit) }
         store.sampledStays.remove(environmentId)
+        // The cooldown only holds back a repeat within the same stay: after an exit, the next
+        // entry is a new stay (often seconds later, when the fence edge is crossed on arrival).
+        store.clearEnd(environmentId)
     }
 
     /// Ends any burst (detection switched off, permission changed, SDK stopped) and forgets
