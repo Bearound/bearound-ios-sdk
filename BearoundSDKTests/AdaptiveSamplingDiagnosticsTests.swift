@@ -4,7 +4,7 @@ import Testing
 
 @Suite("Adaptive Sampling Diagnostics Tests", .serialized)
 struct AdaptiveSamplingDiagnosticsTests {
-    private let base: Int64 = 1_791_907_200_000
+    private let base: Int64 = Int64(Date().timeIntervalSince1970) * 1_000
     private let boot = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
 
     private func clock(_ offset: Int64 = 0, boot: String? = nil) -> SamplingClock {
