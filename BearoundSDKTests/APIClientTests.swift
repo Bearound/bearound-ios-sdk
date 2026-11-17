@@ -16,7 +16,7 @@ struct APIClientTests {
 
     private func immutableEnvelope(protocol delivery: StoredObservationEnvelope.DeliveryProtocol = .adaptive) throws -> StoredObservationEnvelope {
         let id = UUID().uuidString
-        let timestamp: Int64 = 1_791_907_200_000
+        let timestamp: Int64 = Int64(Date().timeIntervalSince1970) * 1_000
         let sampling = SamplingEnvelope(version: 1, kind: .live, batchId: id, captureStreamId: UUID().uuidString,
             windowId: UUID().uuidString, observedFrom: timestamp, observedTo: timestamp, sentAt: timestamp,
             motion: MotionEvidence(state: .unknown, source: .none, confidence: .none, reason: "no_evidence",

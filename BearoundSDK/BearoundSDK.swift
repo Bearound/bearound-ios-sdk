@@ -211,7 +211,9 @@ public class BeAroundSDK {
     /// beacon eye; it gates itself on the kill switch, Always authorization and the policy.
     private var visitMonitor: VisitMonitor?
     private let bluetoothManager = BluetoothManager()
-    private var apiClient: APIClient?
+    private var apiClient: APIClient? {
+        didSet { installDwellAnswerObserver() }
+    }
     private var samplingRuntime: AdaptiveSamplingRuntime?
     private var samplingGeneration: UInt64 = 0
     private let samplingLifecycleLock = NSLock()
@@ -1559,7 +1561,12 @@ public class BeAroundSDK {
                     locationManager: CoreLocationVisitManager(),
                     fetcher: PlacesConfigClient(configuration: { [weak self] in self?.configuration }),
                     sender: VisitEventForwarder { [weak self] event in self?.sendVisitEvent(event) },
-                    wifi: WifiCollector()
+                    wifi: WifiCollector(),
+                    dwell: DwellSampler(
+                        locationManager: CoreLocationDwellManager(),
+                        sender: { [weak self] fix, environmentId in
+                            self?.sendDwellSample(fix, environmentId: environmentId)
+                        })
                 )
             }
             self.visitMonitor?.start()
@@ -1643,6 +1650,41 @@ public class BeAroundSDK {
         DetectionLogStore.append(type: "Visit", detail: "\(event.kind.rawValue) queued")
         // The drain skips while a sync is in flight; that sync's completion drains the queue.
         drainRetryQueue()
+    }
+
+    /// One dwell sample is a normal `/ingest` payload like a visit event, without the `visit`
+    /// block: `syncTrigger: "dwell"` and the fresh fix as `location` (real fix time,
+    /// `source: "gnss"`). Persisted and delivered by the retry drain, like a visit event.
+    private func sendDwellSample(_ fix: VisitFix, environmentId: String) {
+        var userDevice = deviceInfoCollector.collectDeviceInfo(
+            locationPermission: Self.authorizationStatus(),
+            bluetoothState: bluetoothManager.isPoweredOn ? "powered_on" : "powered_off",
+            appInForeground: !isInBackground
+        )
+        userDevice.location = DeviceLocation(latitude: fix.latitude, longitude: fix.longitude,
+                                             accuracy: fix.accuracy, timestamp: fix.timestamp,
+                                             source: VisitMonitor.locationSource)
+        userDevice.visit = nil
+        guard let batchId = offlineBatchStorage.saveBatchReturningId([], userDevice: userDevice,
+                                                                     syncTrigger: Self.dwellSyncTrigger) else {
+            NSLog("[BeAroundSDK] Dwell sample dropped: could not persist it")
+            return
+        }
+        NSLog("[BeAroundSDK] Dwell sample at %@ queued as %@ (fix at %@, accuracy %.0fm)",
+              environmentId, batchId, "\(fix.timestamp)", fix.accuracy ?? -1)
+        DetectionLogStore.append(type: "Dwell", detail: "sample queued")
+        drainRetryQueue()
+    }
+
+    static let dwellSyncTrigger = "dwell"
+
+    /// Every successful `/ingest` answer goes through here: one that names a place asking for
+    /// dwell sampling starts a burst there.
+    private func installDwellAnswerObserver() {
+        apiClient?.ingestAnswerObserver = { [weak self] data in
+            guard let directive = DwellDirective.decode(data) else { return }
+            DispatchQueue.main.async { self?.visitMonitor?.handle(directive) }
+        }
     }
 
     /// The captured context of a visit event: the device snapshot with the visit fix as its

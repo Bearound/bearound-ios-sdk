@@ -50,10 +50,12 @@ struct PlacesConfig: Codable, Equatable {
         /// Hashed identifiers (`ApIdentifier`) of the access points known to belong to the
         /// environment. Absent from older responses, which decode as an empty list.
         let knownApIds: [String]
+        /// How to sample a stay at the place. nil (absent, or malformed) keeps arrival and departure only.
+        let dwellSampling: DwellSamplingPolicy?
 
         init(environmentId: String, businessId: String?, name: String?, gpsVisitClass: String?,
              geometry: Geometry, distanceMeters: Double, minDwellMinutes: Int?,
-             knownApIds: [String] = []) {
+             knownApIds: [String] = [], dwellSampling: DwellSamplingPolicy? = nil) {
             self.environmentId = environmentId
             self.businessId = businessId
             self.name = name
@@ -62,6 +64,7 @@ struct PlacesConfig: Codable, Equatable {
             self.distanceMeters = distanceMeters
             self.minDwellMinutes = minDwellMinutes
             self.knownApIds = knownApIds
+            self.dwellSampling = dwellSampling
         }
 
         init(from decoder: Decoder) throws {
@@ -74,6 +77,8 @@ struct PlacesConfig: Codable, Equatable {
             distanceMeters = try container.decode(Double.self, forKey: .distanceMeters)
             minDwellMinutes = try container.decodeIfPresent(Int.self, forKey: .minDwellMinutes)
             knownApIds = try container.decodeIfPresent([String].self, forKey: .knownApIds) ?? []
+            // A policy this SDK cannot read must not drop the place.
+            dwellSampling = (try? container.decodeIfPresent(DwellSamplingPolicy.self, forKey: .dwellSampling)) ?? nil
         }
     }
 
