@@ -668,7 +668,7 @@ extension VisitMonitor {
              source: .wifi, wifis: Self.wifiList(matched: matched, at: at, seen: seen))
         store.openStop = nil
         store.lastDepartureAt = at
-        dwell?.departed(environmentId: environmentId)
+        dwell?.departed(environmentId: environmentId, at: at)
     }
 
     /// Matched observations first, then the others. The matched ones carry `at`, the real
@@ -752,7 +752,7 @@ extension VisitMonitor: VisitLocationManagerDelegate {
                  source: .clvisit, wifis: carriedWifis(open, at: departure))
             store.openStop = nil
             store.lastDepartureAt = departure
-            dwell?.departed(environmentId: open?.environmentId)
+            dwell?.departed(environmentId: open?.environmentId, at: departure)
             return
         }
 

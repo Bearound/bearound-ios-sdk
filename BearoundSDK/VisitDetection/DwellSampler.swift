@@ -367,10 +367,16 @@ final class DwellSampler {
 
     /// A verified departure (visit or Wi-Fi) closed the stay at `environmentId`, or at an
     /// unknown place (nil): clears the marker of a place with no armed fence, whose exit
-    /// would never close it.
-    func departed(environmentId: String?) {
+    /// would never close it. A departure at an unknown place that happened before the active
+    /// burst started belongs to an earlier stop: the burst and its stay marker are kept.
+    func departed(environmentId: String?, at departure: Date) {
         if let environmentId {
             endStay(environmentId: environmentId)
+            return
+        }
+        if let current = burst, departure < current.startedAt {
+            for id in store.sampledStays where id != current.environmentId { store.clearEnd(id) }
+            store.sampledStays = store.sampledStays.intersection([current.environmentId])
             return
         }
         if burst != nil { finish(.leftArea) }
@@ -448,6 +454,9 @@ final class DwellSampler {
            VisitMonitor.distanceMeters(fix.latitude, fix.longitude, current.center.lat, current.center.lng)
             > current.radiusMeters + Self.leaveMarginMeters {
             finish(.leftArea)
+            // The stay is over: the next one at this place can be sampled once the cooldown
+            // (kept by `finish`) has passed.
+            store.sampledStays.remove(current.environmentId)
             return
         }
         // A fix too close to the last sample adds nothing (a stationary device may redeliver it).
@@ -483,10 +492,12 @@ final class DwellSampler {
         current.minFixAt = fix.timestamp.addingTimeInterval(currentInterval(at: clock.now) / 2)
         burst = current
         sender(fix, current.environmentId)
-        advance()
+        advance(sampleTime: clock.now)
     }
 
-    private func advance() {
+    /// Schedules the next sample. After a sample, at least one full interval separates it from
+    /// the next, even when it was taken late.
+    private func advance(sampleTime: Date? = nil) {
         guard var current = burst, !deadlineReached(current) else { return }
         current.dueSince = nil
         let now = clock.now
@@ -497,6 +508,7 @@ final class DwellSampler {
             return
         }
         var next = current.nextDueAt.addingTimeInterval(interval)
+        if let sampleTime { next = max(next, sampleTime.addingTimeInterval(interval)) }
         if next <= now { next = now.addingTimeInterval(interval) }
         // The next deadline must fit in the maximum duration, by the monotonic elapsed time
         // and by the schedule.
