@@ -250,6 +250,9 @@ final class DwellSampler {
         let radiusMeters: Double
         let policy: DwellSamplingPolicy
         let startedAt: Date
+        /// Monotonic reading at the start: the maximum duration is measured against it, so a
+        /// wall-clock change cannot stretch a burst.
+        let startedMonotonic: TimeInterval
         var nextDueAt: Date
         var dueSince: Date?
         var bestFix: VisitFix?
@@ -264,6 +267,8 @@ final class DwellSampler {
     private let clock: VisitClock
     private let power: DwellPowerReading
     private let scheduler: DwellScheduling
+    /// Seconds from a monotonic source that keeps counting during sleep.
+    private let monotonic: () -> TimeInterval
 
     private var burst: Burst?
     /// Whether the location source is at full accuracy.
@@ -277,7 +282,9 @@ final class DwellSampler {
          store: DwellSamplingStore = DwellSamplingStore(),
          clock: VisitClock = SystemVisitClock(),
          power: DwellPowerReading = SystemDwellPower(),
-         scheduler: DwellScheduling = MainQueueDwellScheduler()) {
+         scheduler: DwellScheduling = MainQueueDwellScheduler(),
+         monotonic: @escaping () -> TimeInterval = DwellSampler.systemMonotonic) {
+        self.monotonic = monotonic
         self.locationManager = locationManager
         self.sender = sender
         self.store = store
@@ -288,6 +295,19 @@ final class DwellSampler {
     }
 
     var activeEnvironmentId: String? { burst?.environmentId }
+
+    /// `CLOCK_MONOTONIC` keeps counting while the device sleeps.
+    static func systemMonotonic() -> TimeInterval {
+        TimeInterval(clock_gettime_nsec_np(CLOCK_MONOTONIC)) / 1_000_000_000
+    }
+
+    /// Whether the burst already ran its maximum duration. Checked before a fix is accepted or
+    /// sent, so a delayed callback cannot add a sample past the limit; ends the burst when so.
+    private func deadlineReached(_ current: Burst) -> Bool {
+        guard monotonic() - current.startedMonotonic >= current.policy.maxDurationSeconds else { return false }
+        finish(.completed)
+        return true
+    }
 
     private var powerAllows: Bool {
         if power.isLowPowerMode { return false }
@@ -324,7 +344,7 @@ final class DwellSampler {
         store.recordBurstStart(at: now)
         store.sampledStays.insert(environmentId)
         burst = Burst(environmentId: environmentId, center: center, radiusMeters: radiusMeters,
-                      policy: policy, startedAt: now,
+                      policy: policy, startedAt: now, startedMonotonic: monotonic(),
                       nextDueAt: now.addingTimeInterval(policy.intervalSeconds))
         precise = policy.intervalSeconds < Self.reducedAccuracyFromInterval
         locationManager.start(precise: precise)
@@ -343,6 +363,19 @@ final class DwellSampler {
         // The cooldown only holds back a repeat within the same stay: after an exit, the next
         // entry is a new stay (often seconds later, when the fence edge is crossed on arrival).
         store.clearEnd(environmentId)
+    }
+
+    /// A verified departure (visit or Wi-Fi) closed the stay at `environmentId`, or at an
+    /// unknown place (nil): clears the marker of a place with no armed fence, whose exit
+    /// would never close it.
+    func departed(environmentId: String?) {
+        if let environmentId {
+            endStay(environmentId: environmentId)
+            return
+        }
+        if burst != nil { finish(.leftArea) }
+        for id in store.sampledStays { store.clearEnd(id) }
+        store.sampledStays = []
     }
 
     /// Ends any burst (detection switched off, permission changed, SDK stopped) and forgets
@@ -377,7 +410,7 @@ final class DwellSampler {
     }
 
     private func due() {
-        guard var current = burst else { return }
+        guard var current = burst, !deadlineReached(current) else { return }
         guard powerAllows else {
             finish(.power)
             return
@@ -397,7 +430,7 @@ final class DwellSampler {
     }
 
     private func graceExpired() {
-        guard let current = burst, let dueSince = current.dueSince else { return }
+        guard let current = burst, let dueSince = current.dueSince, !deadlineReached(current) else { return }
         if let fix = current.bestFix,
            fix.timestamp >= dueSince.addingTimeInterval(-Self.freshFixMaxAge),
            (fix.accuracy ?? .infinity) <= Self.acceptableFixMaxAccuracy {
@@ -442,7 +475,7 @@ final class DwellSampler {
     }
 
     private func take(_ fix: VisitFix) {
-        guard var current = burst else { return }
+        guard var current = burst, !deadlineReached(current) else { return }
         graceTimer?.cancel()
         current.samples += 1
         current.dueSince = nil
@@ -454,7 +487,7 @@ final class DwellSampler {
     }
 
     private func advance() {
-        guard var current = burst else { return }
+        guard var current = burst, !deadlineReached(current) else { return }
         current.dueSince = nil
         let now = clock.now
         let interval = currentInterval(at: now)
@@ -465,7 +498,11 @@ final class DwellSampler {
         }
         var next = current.nextDueAt.addingTimeInterval(interval)
         if next <= now { next = now.addingTimeInterval(interval) }
-        guard next.timeIntervalSince(current.startedAt) <= current.policy.maxDurationSeconds else {
+        // The next deadline must fit in the maximum duration, by the monotonic elapsed time
+        // and by the schedule.
+        let elapsed = monotonic() - current.startedMonotonic
+        guard elapsed + next.timeIntervalSince(now) <= current.policy.maxDurationSeconds,
+              next.timeIntervalSince(current.startedAt) <= current.policy.maxDurationSeconds else {
             burst = current
             finish(.completed)
             return

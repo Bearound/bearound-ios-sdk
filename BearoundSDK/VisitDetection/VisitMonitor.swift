@@ -520,7 +520,6 @@ final class VisitMonitor {
     private func fenceArrival(environmentId: String) {
         guard canReportVisits else { return }
         startDwellSampling(environmentId: environmentId, trigger: "fence")
-        startDwellSampling(environmentId: environmentId, trigger: "fence")
         // Arrival already sent for this stop (CLVisit or an earlier fence).
         if isFenceArrivalCovered(environmentId: environmentId) {
             store.reportedFenceStays.insert(environmentId)
@@ -669,6 +668,7 @@ extension VisitMonitor {
              source: .wifi, wifis: Self.wifiList(matched: matched, at: at, seen: seen))
         store.openStop = nil
         store.lastDepartureAt = at
+        dwell?.departed(environmentId: environmentId)
     }
 
     /// Matched observations first, then the others. The matched ones carry `at`, the real
@@ -752,6 +752,7 @@ extension VisitMonitor: VisitLocationManagerDelegate {
                  source: .clvisit, wifis: carriedWifis(open, at: departure))
             store.openStop = nil
             store.lastDepartureAt = departure
+            dwell?.departed(environmentId: open?.environmentId)
             return
         }
 
